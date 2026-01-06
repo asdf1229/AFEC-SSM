@@ -15,6 +15,7 @@
 #include <set>
 #include <map>
 #include <unordered_set>
+#include <sys/time.h>
 #include "configuration/types.h"
 #include "configuration/config.h"
 
@@ -22,11 +23,6 @@
 #define mp make_pair
 #define mmax(a,b) ((a)>(b)?(a):(b))
 #define mmin(a,b) ((a)<(b)?(a):(b))
-
-#define _EXPAND_ALL_
-#define _EARLY_STOP_
-#define _UPPER_BOUND_
-const double hybrid_ratio = 1.0;
 
 const int INF = 10000000;
 const double EPS = 10e-6;
@@ -69,6 +65,23 @@ struct PairHash {
     size_t operator()(const std::pair<ui, ui>& p) const {
         return (size_t(p.first) << 32) ^ p.second;
     }
+};
+
+class Timer {
+public:
+	Timer() { m_start = timestamp(); }
+	void restart() { m_start = timestamp(); }
+	long long elapsed() { return timestamp() - m_start; }
+
+private:
+	long long m_start;
+
+	// Returns a timestamp ('now') in microseconds
+	long long timestamp() {
+		struct timeval tp;
+		gettimeofday(&tp, nullptr);
+		return ((long long)(tp.tv_sec))*1000000 + tp.tv_usec;
+	}
 };
 
 #endif

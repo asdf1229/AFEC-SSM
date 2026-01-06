@@ -5,9 +5,12 @@ project(SSM_GED LANGUAGES CXX)
 # --------------------------------------------
 # Optimization flags
 # --------------------------------------------
-if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-O3 -g -Wall -march=native)
-endif()
+# add_compile_options(-O3 -g -Wall -march=native)
+add_compile_options(-O3 -g -Wall)
+# if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+#    add_compile_options(-O3 -g -Wall -march=native -fsanitize=address -fno-omit-frame-pointer)
+#    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+# endif()
 
 include_directories(
     ${PROJECT_SOURCE_DIR}

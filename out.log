@@ -1,0 +1,365 @@
+===== RESULTS WILL BE SAVED TO: ./result/20260106_021331 =====
+===== Building Version 2 (Approximate_Matching_V2) =====
+========================================
+Build Configuration:
+  Directory : build_v2
+  Version 2 : ON
+========================================
+Cleaning build directory 'build_v2'...
+Running CMake...
+-- The CXX compiler identification is GNU 11.4.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Looking for C++ include pthread.h
+-- Looking for C++ include pthread.h - found
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE  
+-- Using Approximate_Matching_V2
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/zxh/code/subgraph_similarity_matching/SSM-GED/build_v2
+Compiling...
+[ 33%] Building CXX object CMakeFiles/ssm_ged.dir/graph/graph.cpp.o
+[ 66%] Building CXX object CMakeFiles/ssm_ged.dir/matching/main.cpp.o
+[100%] Linking CXX executable ssm_ged
+[100%] Built target ssm_ged
+========================================
+Build successful!
+Executable: build_v2/ssm_ged
+========================================
+===== Running version v2 for all query graphs =====
+Dataset: Lastfm
+  Query: query_10_0
+    [OK] t=0 Total Time: 46032
+67.1550 ms
+    [OK] t=1 Total Time: 47968
+69.0930 ms
+    [OK] t=2 Total Time: 44733
+65.6620 ms
+    [OK] t=3 Total Time: 44901
+65.8330 ms
+  Query: query_10_1
+    [OK] t=0 Total Time: 174859
+194.6000 ms
+    [OK] t=1 Total Time: 198745
+219.4440 ms
+    [OK] t=2 Total Time: 255417
+276.7750 ms
+    [OK] t=3 Total Time: 313760
+334.7310 ms
+  Query: query_10_2
+    [OK] t=0 Total Time: 113945
+134.7680 ms
+    [OK] t=1 Total Time: 195551
+216.4300 ms
+    [OK] t=2 Total Time: 380098
+400.8470 ms
+    [OK] t=3 Total Time: 551433
+571.0780 ms
+  Query: query_1_0
+    [OK] t=0 Total Time: 1736
+21.3320 ms
+    [OK] t=1 Total Time: 1995
+22.9690 ms
+    [OK] t=2 Total Time: 1960
+22.8770 ms
+    [OK] t=3 Total Time: 1870
+22.6400 ms
+  Query: query_1_1
+    [OK] t=0 Total Time: 1898
+22.6620 ms
+    [OK] t=1 Total Time: 1742
+22.4060 ms
+    [OK] t=2 Total Time: 1672
+21.3010 ms
+    [OK] t=3 Total Time: 1761
+22.4800 ms
+  Query: query_1_2
+    [OK] t=0 Total Time: 1793
+21.4630 ms
+    [OK] t=1 Total Time: 1793
+22.3130 ms
+    [OK] t=2 Total Time: 2087
+22.8720 ms
+    [OK] t=3 Total Time: 1768
+22.3790 ms
+  Query: query_20_0
+    [OK] t=0 Total Time: 3921024
+3942.1690 ms
+    [OK] t=1 Total Time: 8636505
+8651.6600 ms
+    [OK] t=2 Total Time: 16162846
+16183.7900 ms
+    [OK] t=3 Total Time: 30297807
+30318.3440 ms
+  Query: query_20_1
+    [OK] t=0 Total Time: 5318084
+5338.9780 ms
+    [OK] t=1 Total Time: 7675292
+7696.1610 ms
+    [OK] t=2 Total Time: 11875124
+11896.0370 ms
+    [OK] t=3 Total Time: 13485153
+13506.1400 ms
+  Query: query_20_2
+    [OK] t=0 Total Time: 6312577
+6333.7800 ms
+    [OK] t=1 Total Time: 22545739
+22560.8920 ms
+    [OK] t=2 Total Time: 234182599
+234203.4840 ms
+    [OK] t=3 Total Time: 610194750
+610215.7170 ms
+  Query: query_2_0
+    [OK] t=0 Total Time: 10694
+31.3800 ms
+    [OK] t=1 Total Time: 10666
+30.0620 ms
+    [OK] t=2 Total Time: 10844
+30.2790 ms
+    [OK] t=3 Total Time: 10908
+30.6010 ms
+  Query: query_2_1
+    [OK] t=0 Total Time: 8447
+29.2420 ms
+    [OK] t=1 Total Time: 9909
+30.7380 ms
+    [OK] t=2 Total Time: 9124
+29.8470 ms
+    [OK] t=3 Total Time: 9146
+28.7040 ms
+  Query: query_2_2
+    [OK] t=0 Total Time: 20109
+41.3840 ms
+    [OK] t=1 Total Time: 17915
+38.6170 ms
+    [OK] t=2 Total Time: 18578
+39.3750 ms
+    [OK] t=3 Total Time: 17775
+38.6710 ms
+  Query: query_30_0
+    [OK] t=0 Total Time: 692230889
+692251.9900 ms
+    [OK] t=1 Total Time: 1468800751
+1468821.7960 ms
+    [OK] t=2 Total Time: 2956289276
+2956310.2650 ms
+    [OK] t=3 Total Time: 6041993024
+6042013.9270 ms
+  Query: query_30_1
+    [OK] t=0 Total Time: 18977876
+18998.8770 ms
+    [OK] t=1 Total Time: 167118179
+167133.3150 ms
+    [OK] t=2 Total Time: 526594855
+526610.2440 ms
+    [OK] t=3 Total Time: 1439639828
+1439660.8050 ms
+  Query: query_30_2
+    [OK] t=0 Total Time: 31742830
+31763.9580 ms
+    [OK] t=1 Total Time: 166093696
+166108.9520 ms
+    [OK] t=2 Total Time: 314002534
+314023.4600 ms
+    [OK] t=3 Total Time: 507042549
+507057.6600 ms
+  Query: query_3_0
+    [OK] t=0 Total Time: 11495
+32.3340 ms
+    [OK] t=1 Total Time: 12066
+32.9180 ms
+    [OK] t=2 Total Time: 12030
+31.5920 ms
+    [OK] t=3 Total Time: 12558
+32.0320 ms
+  Query: query_3_1
+    [OK] t=0 Total Time: 11060
+31.9150 ms
+    [OK] t=1 Total Time: 12313
+32.8850 ms
+    [OK] t=2 Total Time: 11558
+32.2550 ms
+    [OK] t=3 Total Time: 10128
+30.6750 ms
+  Query: query_3_2
+    [OK] t=0 Total Time: 24608
+45.2670 ms
+    [OK] t=1 Total Time: 20511
+40.9780 ms
+    [OK] t=2 Total Time: 23852
+44.4400 ms
+    [OK] t=3 Total Time: 24878
+45.7970 ms
+  Query: query_4_0
+    [OK] t=0 Total Time: 14693
+35.3500 ms
+    [OK] t=1 Total Time: 16893
+37.5500 ms
+    [OK] t=2 Total Time: 16999
+36.5420 ms
+    [OK] t=3 Total Time: 17821
+37.4590 ms
+  Query: query_4_1
+    [OK] t=0 Total Time: 35941
+57.1480 ms
+    [OK] t=1 Total Time: 31374
+51.7350 ms
+    [OK] t=2 Total Time: 42320
+62.9280 ms
+    [OK] t=3 Total Time: 44086
+64.7320 ms
+  Query: query_4_2
+    [OK] t=0 Total Time: 30666
+51.1330 ms
+    [OK] t=1 Total Time: 28241
+43.1630 ms
+    [OK] t=2 Total Time: 37332
+57.9300 ms
+    [OK] t=3 Total Time: 30674
+51.0250 ms
+  Query: query_5_0
+    [OK] t=0 Total Time: 42996
+63.6230 ms
+    [OK] t=1 Total Time: 84950
+105.6550 ms
+    [OK] t=2 Total Time: 87210
+106.7760 ms
+    [OK] t=3 Total Time: 87201
+106.7000 ms
+  Query: query_5_1
+    [OK] t=0 Total Time: 24668
+45.2270 ms
+    [OK] t=1 Total Time: 37726
+52.8530 ms
+    [OK] t=2 Total Time: 49407
+70.0930 ms
+    [OK] t=3 Total Time: 50282
+69.7010 ms
+  Query: query_5_2
+    [OK] t=0 Total Time: 36919
+57.7760 ms
+    [OK] t=1 Total Time: 50899
+71.6390 ms
+    [OK] t=2 Total Time: 38642
+59.2430 ms
+    [OK] t=3 Total Time: 47571
+68.4700 ms
+  Query: query_6_0
+    [OK] t=0 Total Time: 23222
+44.1060 ms
+    [OK] t=1 Total Time: 34577
+55.4240 ms
+    [OK] t=2 Total Time: 37553
+58.1960 ms
+    [OK] t=3 Total Time: 36607
+56.1460 ms
+  Query: query_6_1
+    [OK] t=0 Total Time: 29393
+50.0620 ms
+    [OK] t=1 Total Time: 34687
+55.5050 ms
+    [OK] t=2 Total Time: 34170
+53.6900 ms
+    [OK] t=3 Total Time: 35865
+56.5630 ms
+  Query: query_6_2
+    [OK] t=0 Total Time: 17767
+38.1830 ms
+    [OK] t=1 Total Time: 20416
+36.2480 ms
+    [OK] t=2 Total Time: 20542
+35.9680 ms
+    [OK] t=3 Total Time: 26405
+47.0650 ms
+  Query: query_7_0
+    [OK] t=0 Total Time: 19394
+40.4590 ms
+    [OK] t=1 Total Time: 28271
+48.8490 ms
+    [OK] t=2 Total Time: 41216
+62.0160 ms
+    [OK] t=3 Total Time: 37650
+57.3370 ms
+  Query: query_7_1
+    [OK] t=0 Total Time: 21618
+42.3820 ms
+    [OK] t=1 Total Time: 35284
+56.1630 ms
+    [OK] t=2 Total Time: 37682
+58.4480 ms
+    [OK] t=3 Total Time: 40214
+60.9000 ms
+  Query: query_7_2
+    [OK] t=0 Total Time: 33885
+54.7240 ms
+    [OK] t=1 Total Time: 116079
+135.7340 ms
+    [OK] t=2 Total Time: 128971
+148.7540 ms
+    [OK] t=3 Total Time: 129471
+149.2720 ms
+  Query: query_8_0
+    [OK] t=0 Total Time: 61103
+81.8150 ms
+    [OK] t=1 Total Time: 106258
+125.8070 ms
+    [OK] t=2 Total Time: 164119
+183.9110 ms
+    [OK] t=3 Total Time: 164912
+184.5120 ms
+  Query: query_8_1
+    [OK] t=0 Total Time: 28396
+49.4610 ms
+    [OK] t=1 Total Time: 37894
+58.7100 ms
+    [OK] t=2 Total Time: 38936
+58.5420 ms
+    [OK] t=3 Total Time: 38806
+58.3560 ms
+  Query: query_8_2
+    [OK] t=0 Total Time: 91072
+111.8960 ms
+    [OK] t=1 Total Time: 184874
+205.6550 ms
+    [OK] t=2 Total Time: 244542
+264.1190 ms
+    [OK] t=3 Total Time: 251031
+271.8660 ms
+  Query: query_9_0
+    [OK] t=0 Total Time: 117623
+138.1660 ms
+    [OK] t=1 Total Time: 224862
+239.7900 ms
+    [OK] t=2 Total Time: 493323
+514.0100 ms
+    [OK] t=3 Total Time: 753049
+773.8460 ms
+  Query: query_9_1
+    [OK] t=0 Total Time: 145980
+165.5440 ms
+    [OK] t=1 Total Time: 280820
+301.5380 ms
+    [OK] t=2 Total Time: 390896
+405.8270 ms
+    [OK] t=3 Total Time: 438838
+453.7990 ms
+  Query: query_9_2
+    [OK] t=0 Total Time: 80435
+101.1400 ms
+    [OK] t=1 Total Time: 111504
+131.0210 ms
+    [OK] t=2 Total Time: 209135
+229.6270 ms
+    [OK] t=3 Total Time: 463275
+483.9020 ms
+===== ALL DONE =====
+Results saved at: ./result/20260106_021331
+===== SUMMARY =====
+Total runs:   144
+Matched:      0
+Missing Total Time:0

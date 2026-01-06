@@ -12,14 +12,12 @@ private:
 	ui 			n;			// number of vertices
 	ept 		m;			// number of edges
 	ept 		*pstart;	// pstart[u]: starting position of vertex u in edges array
-	ui 		*edges;		// edges array
+	ui			*edges;		// edges array
 	LabelID 	*vlabels;	// vertex labels array
-// #ifdef ENABLE_EDGE_LABEL
-	LabelID 	*elabels;	// edge labels array
-// #endif
 
 	ui			_max_degree; // maximum degree of the graph
-	std::unordered_map<LabelID, ui> vertex_labels_frequency; // frequency of each vertex label
+	// std::unordered_map<LabelID, ui> vertex_labels_frequency; // frequency of each vertex label
+	ui          labels_count;
 public:
 	Graph()
 	{
@@ -29,10 +27,8 @@ public:
 		pstart = nullptr;
 		edges = nullptr;
 		vlabels = nullptr;
-#ifdef ENABLE_EDGE_LABEL
-		elabels = nullptr;
-#endif
 		_max_degree = 0;
+		labels_count = 0;
 	}
 
 	~Graph()
@@ -40,9 +36,6 @@ public:
 		if(pstart != nullptr) { delete[] pstart; pstart = nullptr; }
 		if(edges != nullptr) { delete[] edges; edges = nullptr; }
 		if(vlabels != nullptr) { delete[] vlabels; vlabels = nullptr; }
-#ifdef ENABLE_EDGE_LABEL
-		if(elabels != nullptr) { delete[] elabels; elabels = nullptr; }
-#endif
 	}
 
 	void build_graph(const std::string &id,
@@ -73,9 +66,9 @@ public:
 		return vlabels[u];
 	}
 
-	ui getVertexLabelsFrequency(LabelID label) {
-		return vertex_labels_frequency.find(label) == vertex_labels_frequency.end() ? 0 : vertex_labels_frequency.at(label);
-	}
+    ui getLabelsCount() const {
+        return labels_count;
+    }
 
     const ui * getVertexNeighbors(const ui id, ui& count) const {
         count = pstart[id + 1] - pstart[id];
