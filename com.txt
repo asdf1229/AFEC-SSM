@@ -1,2 +1,0 @@
-./ssm_ged -d ../test/dataset/graph_g.txt -q ../test/dataset/query_graph/query_9_1.txt -t 0
-./build_v2/ssm_ged -d ./test/dataset/Lastfm/graph_g.txt -q ./test/dataset/Lastfm/query_graph/query_9_1.txt -t 0
