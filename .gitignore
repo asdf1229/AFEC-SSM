@@ -4,3 +4,6 @@ result/
 .*/
 out.log
 bug.log
+com.txt
+compare.sh
+compare2.sh
