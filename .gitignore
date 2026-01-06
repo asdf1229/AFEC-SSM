@@ -2,3 +2,5 @@ build*/
 test/
 result/
 .*/
+out.log
+bug.log
