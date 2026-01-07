@@ -54,8 +54,8 @@ int main(int argc, char *argv[]) {
     load_time = t.elapsed();
 
     // print graphs
-    query_graph->print_graph();
-    data_graph->print_graph();
+    // query_graph->print_graph();
+    // data_graph->print_graph();
 
     // print label counts for data graph
     // map<int, int> label_counts;
@@ -85,14 +85,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // generate order
-    vector<ui> order;
-
     vector<vector<pair<ui, ui> > > M_ANS;
     M_ANS.clear();
 
     t.restart();
-    Approximate_Matching_v2(query_graph, data_graph, candidates, order, M_ANS, threshold);
+    Approximate_Matching_v2(query_graph, data_graph, candidates, M_ANS, threshold);
     matching_time = t.elapsed();
 
     // ui count = 0;
