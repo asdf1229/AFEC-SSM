@@ -235,3 +235,34 @@
 
     }
 }
+
+ui calPartialMissing(const Graph *query_graph, const Graph *data_graph,
+                     const vector<pair<ui, ui>> &part_M)
+{
+    ui missing = 0;
+    ui mn = part_M.size();
+    for (ui i = 0; i < mn; ++i) {
+        ui u1 = part_M[i].first;
+        ui v1 = part_M[i].second;
+        for (ui j = i + 1; j < mn; ++j) {
+            ui u2 = part_M[j].first;
+            ui v2 = part_M[j].second;
+            if (query_graph->hasEdge(u1, u2)) {
+                if (!data_graph->hasEdge(v1, v2))
+                    missing++;
+            }
+        }
+    }
+    return missing;
+}
+
+void getUnmappedNeighborLabelsVector(const Graph *g, ui u, const vector<int> &mapped, vector<ui> &label_counts) {
+    ui count;
+    const ui* neighbors = g->getVertexNeighbors(u, count);
+    for (ui i = 0; i < count; ++i) {
+        ui neighbor = neighbors[i];
+        if (mapped[neighbor] == -1) {
+            label_counts[g->getVertexLabel(neighbor)]++;
+        }
+    }
+}
