@@ -3,6 +3,6 @@
 
 // #define ENABLE_EDGE_LABEL
 #define LOWER_BOUND
-#define NDEBUG
+// #define NDEBUG
 
 #endif //_CONFIG_H_
