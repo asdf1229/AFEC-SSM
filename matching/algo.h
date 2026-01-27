@@ -94,13 +94,6 @@ private:
     vector<vector<ui>> Lq_counts, Lg_counts;
     vector<ui> Lq_degrees, Lg_degrees;
 
-    // --- OPTIMIZATION: Incremental Cache State ---
-    vector<int> q_last_update; // Timestamp when Lq_counts[u] changed
-    vector<int> g_last_update; // Timestamp when Lg_counts[v] changed
-    int global_time;           // Increments on every update
-    vector<vector<ui>> delta_cache;        // Cache [u][v] -> cost
-    vector<vector<int>> delta_cache_time;  // Cache [u][v] -> valid timestamp
-
     // --- Lower Bound Optimization & Memoization ---
     vector<ui> min_costs;
     vector<ui> best_cands;
@@ -149,37 +142,22 @@ private:
         lb_token = 0;
         lb_v_to_col.assign(gn, -1);
 
-        // Reset Cache Structures
-        q_last_update.assign(qn, 0);
-        g_last_update.assign(gn, 0);
-        global_time = 0;
-
-        // Initialize cache matrix if needed (preserves memory across calls if object reused, but resets content logic)
-        if (delta_cache.size() != qn) {
-            delta_cache.assign(qn, vector<ui>(gn, 0));
-            delta_cache_time.assign(qn, vector<int>(gn, 0));
-        }
-        else {
-            // Fast clear by just resetting timestamps to 0
-            for (auto &row : delta_cache_time) fill(row.begin(), row.end(), 0);
-        }
-
         // Reset Stats
         stats = TimeStats();
     }
 
-    void initGlobalLabelCounts(const Graph *g, vector<vector<ui>> &counts, vector<ui> &degrees)
+    void initGlobalLabelCounts(const Graph *_g, vector<vector<ui>> &counts, vector<ui> &degrees)
     {
-        ui n = g->getVerticesCount();
-        ui num_labels = g->getLabelsCount();
+        ui n = _g->getVerticesCount();
+        ui num_labels = _g->getLabelsCount();
         counts.assign(n, vector<ui>(num_labels, 0));
         degrees.assign(n, 0);
 
         for (ui u = 0; u < n; ++u) {
-            ui deg; const ui *neighbors = g->getVertexNeighbors(u, deg);
+            ui deg; const ui *neighbors = _g->getVertexNeighbors(u, deg);
             for (ui i = 0; i < deg; ++i) {
                 ui v = neighbors[i];
-                LabelID l_v = g->getVertexLabel(v);
+                LabelID l_v = _g->getVertexLabel(v);
                 counts[u][l_v]++;
                 degrees[u]++;
             }
@@ -193,9 +171,6 @@ private:
             for (ui v = 0; v < gn; ++v) {
                 if (label_u != data_graph->getVertexLabel(v)) continue;
                 ui delta = computeDeltaInnerDoubledVector(Lq_counts[u], Lg_counts[v]);
-                assert(delta_cache.size() == qn && delta_cache[u].size() == gn && global_time == 0);
-                delta_cache[u][v] = delta;
-                delta_cache_time[u][v] = global_time;
                 if (delta <= threshold) candidates[u].push_back(v);
             }
             if (candidates[u].empty())  return false;
@@ -203,11 +178,11 @@ private:
         return true;
     }
 
-    void updateNeighborCounts(const Graph *g, ui vertex, const vector<int> &mapped_status,
-        vector<vector<ui>> &counts, vector<ui> &degrees, bool is_add, vector<int> &timestamps)
+    void updateNeighborCounts(const Graph *_g, ui vertex, const vector<int> &mapped_status,
+                              vector<vector<ui>> &counts, vector<ui> &degrees, bool is_add)
     {
-        LabelID label = g->getVertexLabel(vertex);
-        ui deg; const ui *neighbors = g->getVertexNeighbors(vertex, deg);
+        LabelID label = _g->getVertexLabel(vertex);
+        ui deg; const ui *neighbors = _g->getVertexNeighbors(vertex, deg);
         for (ui i = 0; i < deg; ++i) {
             ui neighbor = neighbors[i];
             if (mapped_status[neighbor] == -1) {
@@ -219,8 +194,6 @@ private:
                     counts[neighbor][label]--;
                     degrees[neighbor]--;
                 }
-                // [MOD] Mark this neighbor as modified at current global time
-                timestamps[neighbor] = ++global_time;
             }
         }
     }
@@ -234,21 +207,9 @@ private:
         return diff;
     }
 
-    // [MOD]: Memoized Delta Calculation
     inline ui getDelta(ui u, ui v)
     {
-        // If the cache is newer than the last modification of either u or v, use it
-        if (delta_cache_time[u][v] >= q_last_update[u] &&
-            delta_cache_time[u][v] >= g_last_update[v]) {
-            return delta_cache[u][v];
-        }
-
-        // Otherwise compute, store, and update timestamp
-        ui val = computeDeltaInnerDoubledVector(Lq_counts[u], Lg_counts[v]);
-        delta_cache[u][v] = val;
-        // The cache is valid for the current global_time
-        delta_cache_time[u][v] = global_time;
-        return val;
+        return computeDeltaInnerDoubledVector(Lq_counts[u], Lg_counts[v]);
     }
 
     ui calIncrementalMissing(ui new_u, ui new_v)
@@ -291,30 +252,29 @@ private:
 
         ui q_count; const ui *q_neighbors = query_graph->getVertexNeighbors(new_u, q_count);
         ui g_count; const ui *g_neighbors = data_graph->getVertexNeighbors(new_v, g_count);
-        size_t inherit_end = Mcand.size();
-        static vector<bool> local_g_mark;
-        if (local_g_mark.size() < gn) local_g_mark.resize(gn, false);
+        size_t fa_end = Mcand.size();
+        static vector<bool> mark; if (mark.size() < gn) mark.resize(gn, false);
 
         // 2. Generate new candidates based on neighbors
-        for (ui i = 0; i < g_count; ++i) local_g_mark[g_neighbors[i]] = true;
+        for (ui i = 0; i < g_count; ++i) mark[g_neighbors[i]] = true;
         for (ui i = 0; i < q_count; ++i) {
             ui u2 = q_neighbors[i];
             if (mapped_q[u2] != -1) continue;
 
             for (ui v2 : candidates[u2]) {
                 if (mapped_g[v2] != -1) continue;
-                if (local_g_mark[v2]) {
+                if (mark[v2]) {
                     if (X.count({ u2, v2 })) continue;
                     Mcand.emplace_back(u2, v2);
                 }
             }
         }
-        for (ui i = 0; i < g_count; ++i) local_g_mark[g_neighbors[i]] = false;
+        for (ui i = 0; i < g_count; ++i) mark[g_neighbors[i]] = false;
 
         // 3. Deduplicate
-        if (Mcand.size() > inherit_end) {
-            sort(Mcand.begin() + inherit_end, Mcand.end());
-            if (inherit_end > 0) inplace_merge(Mcand.begin(), Mcand.begin() + inherit_end, Mcand.end());
+        if (Mcand.size() > fa_end) {
+            sort(Mcand.begin() + fa_end, Mcand.end());
+            if (fa_end > 0) inplace_merge(Mcand.begin(), Mcand.begin() + fa_end, Mcand.end());
             Mcand.erase(unique(Mcand.begin(), Mcand.end()), Mcand.end());
         }
     }
@@ -683,9 +643,8 @@ private:
                 ui delta = calIncrementalMissing(u, v);
 
                 if (missing + delta <= threshold) {
-                    // [MOD] Update Counts and Timestamps
-                    updateNeighborCounts(query_graph, u, mapped_q, Lq_counts, Lq_degrees, false, q_last_update);
-                    updateNeighborCounts(data_graph, v, mapped_g, Lg_counts, Lg_degrees, false, g_last_update);
+                    updateNeighborCounts(query_graph, u, mapped_q, Lq_counts, Lq_degrees, false);
+                    updateNeighborCounts(data_graph, v, mapped_g, Lg_counts, Lg_degrees, false);
                     mapped_q[u] = v;
                     mapped_g[v] = u;
                     part_M.emplace_back(u, v);
@@ -697,9 +656,8 @@ private:
                     mapped_q[u] = -1;
                     mapped_g[v] = -1;
                     part_M.pop_back();
-                    // [MOD]
-                    updateNeighborCounts(query_graph, u, mapped_q, Lq_counts, Lq_degrees, true, q_last_update);
-                    updateNeighborCounts(data_graph, v, mapped_g, Lg_counts, Lg_degrees, true, g_last_update);
+                    updateNeighborCounts(query_graph, u, mapped_q, Lq_counts, Lq_degrees, true);
+                    updateNeighborCounts(data_graph, v, mapped_g, Lg_counts, Lg_degrees, true);
                 }
                 X.insert({ u, v });
                 local_X_additions.push_back({ u, v });
@@ -720,7 +678,7 @@ private:
             best_cands[get<0>(rec)] = get<2>(rec);
         }
         stats.branch_time += t_branch.elapsed();
-}
+    }
 };
 
 // ============================================================================

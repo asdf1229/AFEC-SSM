@@ -110,26 +110,25 @@ static std::string mapping_to_key(const std::vector<std::pair<ui, ui>> &mapping)
 }
 
 void check_correctness(const Graph *query_graph, const Graph *data_graph,
-                       const std::vector<std::vector<std::pair<ui, ui>>> &M_ANS, ui threshold)
+                       const std::vector<std::vector<std::pair<ui, ui> > > &M_ANS, const ui threshold)
 {
     printf("--- Verifying Results ---\n");
     ui qn = query_graph->getVerticesCount();
+    ui gn = data_graph->getVerticesCount();
 
     // ============================================================
     // 0) 去重：映射对应完全相同（u->v 相同，pair 顺序无关）视为重复
     // ============================================================
     std::unordered_set<std::string> seen;
-    std::vector<std::vector<std::pair<ui, ui>>> unique_results;
+    std::vector<std::vector<std::pair<ui, ui> > > unique_results;
     size_t duplicate_count = 0;
 
     unique_results.reserve(M_ANS.size());
     for (const auto &mapping : M_ANS) {
         std::string key = mapping_to_key(mapping);
-        if (seen.insert(key).second) {
-            unique_results.push_back(mapping); // 第一次出现，保留
-        } else {
-            duplicate_count++;                 // 重复，丢弃
-        }
+        // printf("key: %s\n", key.c_str());
+        if (seen.insert(key).second) unique_results.push_back(mapping);
+        else duplicate_count++;
     }
 
     printf(">>> Duplicate mappings removed: %zu\n", duplicate_count);
@@ -140,14 +139,13 @@ void check_correctness(const Graph *query_graph, const Graph *data_graph,
     // ============================================================
     size_t invalid_count = 0;
 
-    for (size_t i = 0; i < unique_results.size(); ++i) {
+    for (size_t i = 0; i < unique_results.size(); ++i) {                
         const auto &mapping = unique_results[i];
         bool is_valid = true;
 
         // 1. 映射大小检查
         if (mapping.size() != qn) {
-            printf("Result %zu Error: Mapping size %zu != Query size %u\n",
-                   i, mapping.size(), qn);
+            printf("Result %zu Error: Mapping size %zu != Query size %u\n", i, mapping.size(), qn);
             invalid_count++;
             continue;
         }
@@ -161,7 +159,8 @@ void check_correctness(const Graph *query_graph, const Graph *data_graph,
             ui v = p.second;
 
             // 基本范围保护（可选，但很建议）
-            if (u >= qn || v >= data_graph->getVerticesCount()) {
+            assert(u < qn && v < gn);
+            if (u >= qn || v >= gn) {
                 printf("Result %zu Error: Out of range mapping u%u -> v%u\n", i, u, v);
                 is_valid = false;
                 break;
@@ -193,6 +192,39 @@ void check_correctness(const Graph *query_graph, const Graph *data_graph,
         if (!is_valid) {
             invalid_count++;
             continue;
+        }
+
+                // check whether it is connected
+        // 从第一个点开始 BFS
+
+        for(ui u = 0; u < qn; u++) {
+            assert(map_q[u] != -1);
+        }
+        ui start_u = 0;
+
+        vector<bool> visited_q(qn, false);
+
+        queue<ui> bfs_q;
+        bfs_q.push(start_u);
+        ui vis_count = 0;
+
+        while(!bfs_q.empty()) {
+            ui u = bfs_q.front(); bfs_q.pop();
+            if(visited_q[u]) continue;
+            visited_q[u] = true;
+            vis_count++;
+            ui deg_u; const ui* nbrs_u = query_graph->getVertexNeighbors(u, deg_u);
+            for(ui i = 0; i < deg_u; ++i) {
+                ui u_nbr = nbrs_u[i];
+                if (!visited_q[u_nbr] && data_graph->hasEdge((ui)map_q[u], map_q[u_nbr])) {
+                    bfs_q.push(u_nbr);
+                }
+            }
+        }
+
+        if(vis_count < qn) {
+            // Not connected
+            return;
         }
 
         // 3. 检查缺失边 (Missing Edges Check)
@@ -233,82 +265,6 @@ void check_correctness(const Graph *query_graph, const Graph *data_graph,
     }
     printf("-------------------------\n");
 }
-
-
-// void check_correctness(const Graph *query_graph, const Graph *data_graph, 
-//                        const vector<vector<pair<ui, ui>>> &M_ANS, ui threshold)
-// {
-//     printf("--- Verifying Results ---\n");
-//     ui qn = query_graph->getVerticesCount();
-//     size_t invalid_count = 0;
-
-//     for (size_t i = 0; i < M_ANS.size(); ++i) {
-//         const auto &mapping = M_ANS[i];
-//         bool is_valid = true;
-        
-//         // 1. 映射大小检查
-//         if (mapping.size() != qn) {
-//             printf("Result %zu Error: Mapping size %zu != Query size %u\n", i, mapping.size(), qn);
-//             invalid_count++;
-//             continue;
-//         }
-
-//         // 构建快速查找表: map_q[u] -> v
-//         vector<int> map_q(qn, -1);
-
-//         // 2. 检查节点标签 (Label Check)
-//         for (const auto &p : mapping) {
-//             ui u = p.first;
-//             ui v = p.second;
-//             map_q[u] = v;
-
-//             if (query_graph->getVertexLabel(u) != data_graph->getVertexLabel(v)) {
-//                 printf("Result %zu Error: Label Mismatch u%u(L%u) -> v%u(L%u)\n", 
-//                        i, u, query_graph->getVertexLabel(u), v, data_graph->getVertexLabel(v));
-//                 is_valid = false;
-//                 break;
-//             }
-//         }
-//         if (!is_valid) {
-//             invalid_count++;
-//             continue;
-//         }
-
-//         // 3. 检查缺失边 (Missing Edges Check)
-//         ui missing_edges = 0;
-//         for (ui u = 0; u < qn; ++u) {
-//             ui count;
-//             const ui* neighbors = query_graph->getVertexNeighbors(u, count);
-//             for (ui k = 0; k < count; ++k) {
-//                 ui u_next = neighbors[k];
-//                 // 为了避免无向图重复计算，只在 u < u_next 时检查
-//                 if (u < u_next) {
-//                     int v = map_q[u];
-//                     int v_next = map_q[u_next];
-                    
-//                     // 如果查询图有边 (u, u_next)，但数据图没有边 (v, v_next)，则记为缺失
-//                     if (!data_graph->hasEdge(v, v_next)) {
-//                         missing_edges++;
-//                     }
-//                 }
-//             }
-//         }
-
-//         if (missing_edges > threshold) {
-//             printf("Result %zu Error: Missing Edges %u > Threshold %u\n", i, missing_edges, threshold);
-//             is_valid = false;
-//         }
-
-//         if (!is_valid) invalid_count++;
-//     }
-
-//     if (invalid_count == 0) {
-//         printf(">>> All %lu results PASSED verification.\n", M_ANS.size());
-//     } else {
-//         printf(">>> Verification FAILED: %zu/%lu results are invalid.\n", invalid_count, M_ANS.size());
-//     }
-//     printf("-------------------------\n");
-// }
 
 // Usage: [0]exe [1]input_graph [2]k
 int main(int argc, char *argv[]) {
@@ -352,8 +308,9 @@ int main(int argc, char *argv[]) {
 
     // load graphs
     t.restart();
-    load_graph(data_graph_file, data_graph, vM, eM);
     load_graph(query_graph_file, query_graph, vM, eM);
+    load_graph(data_graph_file, data_graph, vM, eM);
+    
     load_time = t.elapsed();
 
     vector<vector<pair<ui, ui> > > M_ANS;
@@ -364,11 +321,11 @@ int main(int argc, char *argv[]) {
     Approximate_Matching(query_graph, data_graph, M_ANS, threshold);
     matching_time = t.elapsed();
 
-    printf("Our Matching Results:\n");
-    printf("  count: %lu\n", M_ANS.size());
-    printf("  Load Graphs Time: %.4lf ms\n", load_time / 1000.0);
-    printf("  Matching Time: %.4lf ms\n", matching_time / 1000.0);
-    printf("  Total Time: %.4lf ms\n", (load_time + matching_time) / 1000.0);
+    printf("Matching Results:\n");
+    printf("  Matching count: %lu\n", M_ANS.size());
+    printf("  Matching Load Graphs Time: %.4lf ms\n", load_time / 1000.0);
+    printf("  Matching Matching Time: %.4lf ms\n", matching_time / 1000.0);
+    printf("  Matching Total Time: %.4lf ms\n", (load_time + matching_time) / 1000.0);
 
     // Check Correctness for Method 1
     if (!M_ANS.empty()) {
@@ -383,10 +340,10 @@ int main(int argc, char *argv[]) {
     treespan_time = t.elapsed();
     
     printf("TreeSpan Results:\n");
-    printf("  count: %lu\n", M_ANS.size());
-    printf("  Load Graphs Time: %.4lf ms\n", load_time / 1000.0);
-    printf("  Matching Time: %.4lf ms\n", treespan_time / 1000.0);
-    printf("  Total Time: %.4lf ms\n", (load_time + treespan_time) / 1000.0);
+    printf("  TreeSpan count: %lu\n", M_ANS.size());
+    printf("  TreeSpan Load Graphs Time: %.4lf ms\n", load_time / 1000.0);
+    printf("  TreeSpan Matching Time: %.4lf ms\n", treespan_time / 1000.0);
+    printf("  TreeSpan Total Time: %.4lf ms\n", (load_time + treespan_time) / 1000.0);
 
     // Check Correctness for Method 2
     if (!M_ANS.empty()) {
