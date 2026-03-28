@@ -8,26 +8,26 @@ using namespace std;
 
 LabelID label2int(const string str, map<string, LabelID> &M)
 {
-	if(M.find(str) == M.end()) M[str] = M.size();
-	return M[str];
+    if (M.find(str) == M.end()) M[str] = M.size();
+    return M[str];
 }
 
 void load_graph(const string &input_graph, Graph *graph,
-                map<string, LabelID> &vM, map<string, LabelID> &eM)
+    map<string, LabelID> &vM, map<string, LabelID> &eM)
 {
     ifstream fin(input_graph);
     string line;
 
     while (getline(fin, line)) if (!line.empty() && line[0] == 't') break;
 
-    if(!fin) {
+    if (!fin) {
         printf("!!! Cannot open graph file %s !!!\n", input_graph.c_str());
         assert(false);
         exit(1);
     }
 
     istringstream head(line);
-    char tchar; 
+    char tchar;
     string sharp, id;
     if (!(head >> tchar >> sharp >> id) || tchar != 't') {
         fprintf(stderr, "!!! Invalid graph header line: %s !!!\n", line.c_str());
@@ -46,7 +46,7 @@ void load_graph(const string &input_graph, Graph *graph,
 
         istringstream iss(line);
 
-        if(type == 'v') {
+        if (type == 'v') {
             char c;
             ui vid;
             string vlab;
@@ -86,7 +86,7 @@ void load_graph(const string &input_graph, Graph *graph,
     vector<pair<pair<ui, ui>, LabelID> > edges;
     edges.reserve(undirected_edges.size() * 2);
 
-    for(auto &e: undirected_edges) {
+    for (auto &e : undirected_edges) {
         edges.emplace_back(make_pair(e.first.first, e.first.second), e.second);
         edges.emplace_back(make_pair(e.first.second, e.first.first), e.second);
     }
@@ -110,7 +110,7 @@ static std::string mapping_to_key(const std::vector<std::pair<ui, ui>> &mapping)
 }
 
 void check_correctness(const Graph *query_graph, const Graph *data_graph,
-                       const std::vector<std::vector<std::pair<ui, ui> > > &M_ANS, const ui threshold)
+    const std::vector<std::vector<std::pair<ui, ui> > > &M_ANS, const ui threshold)
 {
     printf("--- Verifying Results ---\n");
     ui qn = query_graph->getVerticesCount();
@@ -139,7 +139,7 @@ void check_correctness(const Graph *query_graph, const Graph *data_graph,
     // ============================================================
     size_t invalid_count = 0;
 
-    for (size_t i = 0; i < unique_results.size(); ++i) {                
+    for (size_t i = 0; i < unique_results.size(); ++i) {
         const auto &mapping = unique_results[i];
         bool is_valid = true;
 
@@ -170,8 +170,8 @@ void check_correctness(const Graph *query_graph, const Graph *data_graph,
 
             if (query_graph->getVertexLabel(u) != data_graph->getVertexLabel(v)) {
                 printf("Result %zu Error: Label Mismatch u%u(L%u) -> v%u(L%u)\n",
-                       i, u, query_graph->getVertexLabel(u),
-                       v, data_graph->getVertexLabel(v));
+                    i, u, query_graph->getVertexLabel(u),
+                    v, data_graph->getVertexLabel(v));
                 is_valid = false;
                 break;
             }
@@ -194,10 +194,10 @@ void check_correctness(const Graph *query_graph, const Graph *data_graph,
             continue;
         }
 
-                // check whether it is connected
-        // 从第一个点开始 BFS
+        // check whether it is connected
+// 从第一个点开始 BFS
 
-        for(ui u = 0; u < qn; u++) {
+        for (ui u = 0; u < qn; u++) {
             assert(map_q[u] != -1);
         }
         ui start_u = 0;
@@ -208,13 +208,13 @@ void check_correctness(const Graph *query_graph, const Graph *data_graph,
         bfs_q.push(start_u);
         ui vis_count = 0;
 
-        while(!bfs_q.empty()) {
+        while (!bfs_q.empty()) {
             ui u = bfs_q.front(); bfs_q.pop();
-            if(visited_q[u]) continue;
+            if (visited_q[u]) continue;
             visited_q[u] = true;
             vis_count++;
-            ui deg_u; const ui* nbrs_u = query_graph->getVertexNeighbors(u, deg_u);
-            for(ui i = 0; i < deg_u; ++i) {
+            ui deg_u; const ui *nbrs_u = query_graph->getVertexNeighbors(u, deg_u);
+            for (ui i = 0; i < deg_u; ++i) {
                 ui u_nbr = nbrs_u[i];
                 if (!visited_q[u_nbr] && data_graph->hasEdge((ui)map_q[u], map_q[u_nbr])) {
                     bfs_q.push(u_nbr);
@@ -222,9 +222,12 @@ void check_correctness(const Graph *query_graph, const Graph *data_graph,
             }
         }
 
-        if(vis_count < qn) {
+        if (vis_count < qn) {
             // Not connected
-            return;
+            printf("Result %zu Error: Disconnected mapping in data graph image (visited %u / %u)\n",
+                i, vis_count, qn);
+            invalid_count++;
+            continue;
         }
 
         // 3. 检查缺失边 (Missing Edges Check)
@@ -249,7 +252,7 @@ void check_correctness(const Graph *query_graph, const Graph *data_graph,
 
         if (missing_edges > threshold) {
             printf("Result %zu Error: Missing Edges %u > Threshold %u\n",
-                   i, missing_edges, threshold);
+                i, missing_edges, threshold);
             is_valid = false;
         }
 
@@ -258,20 +261,22 @@ void check_correctness(const Graph *query_graph, const Graph *data_graph,
 
     if (invalid_count == 0) {
         printf(">>> All %lu unique results PASSED verification.\n",
-               (unsigned long)unique_results.size());
-    } else {
+            (unsigned long)unique_results.size());
+    }
+    else {
         printf(">>> Verification FAILED: %zu/%lu unique results are invalid.\n",
-               invalid_count, (unsigned long)unique_results.size());
+            invalid_count, (unsigned long)unique_results.size());
     }
     printf("-------------------------\n");
 }
 
 // Usage: [0]exe [1]input_graph [2]k
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
 #ifndef NDEBUG
-	printf("**** SSM-GED (Debug) build at %s %s ***\n", __TIME__, __DATE__);
+    printf("**** SSM-GED (Debug) build at %s %s ***\n", __TIME__, __DATE__);
 #else
-	printf("**** SSM-GED (Release) build at %s %s ***\n", __TIME__, __DATE__);
+    printf("**** SSM-GED (Release) build at %s %s ***\n", __TIME__, __DATE__);
 #endif
 
     int threshold = 0;
@@ -279,22 +284,22 @@ int main(int argc, char *argv[]) {
     OptionParser op("Allowed options");
     auto help_option = op.add<Switch>("h", "help", "\'produce help message\'");
     auto data_option = op.add<Value<string>>("d", "data graph", "\'data graph file name\'");
-	auto query_option = op.add<Value<string>>("q", "query graph", "\'query graph file name\'");
+    auto query_option = op.add<Value<string>>("q", "query graph", "\'query graph file name\'");
     auto threshold_option = op.add<Value<int>>("t", "threshold", "\'threshold", 0, &threshold);
     op.parse(argc, argv);
 
-    if(help_option->is_set() || argc == 1) cout << op << endl;
-	if(!data_option->is_set()||!query_option->is_set()) {
-		printf("!!! Data graph file name or query graph file name is not provided! Exit !!!\n");
-		return 0;
-	}
-    if(!threshold_option->is_set()) {
+    if (help_option->is_set() || argc == 1) cout << op << endl;
+    if (!data_option->is_set() || !query_option->is_set()) {
+        printf("!!! Data graph file name or query graph file name is not provided! Exit !!!\n");
+        return 0;
+    }
+    if (!threshold_option->is_set()) {
         printf("!!! Threshold is not provided! Exit !!!\n");
         return 0;
     }
 
     string data_graph_file = data_option->value();
-	string query_graph_file = query_option->value();
+    string query_graph_file = query_option->value();
 
     Timer t;
     long long load_time = 0;
@@ -310,7 +315,7 @@ int main(int argc, char *argv[]) {
     t.restart();
     load_graph(query_graph_file, query_graph, vM, eM);
     load_graph(data_graph_file, data_graph, vM, eM);
-    
+
     load_time = t.elapsed();
 
     vector<vector<pair<ui, ui> > > M_ANS;
@@ -325,7 +330,8 @@ int main(int argc, char *argv[]) {
     printf("  Matching count: %lu\n", M_ANS.size());
     printf("  Matching Load Graphs Time: %.4lf ms\n", load_time / 1000.0);
     printf("  Matching Matching Time: %.4lf ms\n", matching_time / 1000.0);
-    printf("  Matching Total Time: %.4lf ms\n", (load_time + matching_time) / 1000.0);
+    printf("  Matching Total Time: %.4lf ms\n", matching_time / 1000.0);
+    // printf("  Matching Total Time: %.4lf ms\n", (load_time + matching_time) / 1000.0);
 
     // Check Correctness for Method 1
     if (!M_ANS.empty()) {
@@ -338,12 +344,13 @@ int main(int argc, char *argv[]) {
     t.restart();
     Approximate_TreeSpan(query_graph, data_graph, M_ANS, threshold);
     treespan_time = t.elapsed();
-    
+
     printf("TreeSpan Results:\n");
     printf("  TreeSpan count: %lu\n", M_ANS.size());
     printf("  TreeSpan Load Graphs Time: %.4lf ms\n", load_time / 1000.0);
     printf("  TreeSpan Matching Time: %.4lf ms\n", treespan_time / 1000.0);
-    printf("  TreeSpan Total Time: %.4lf ms\n", (load_time + treespan_time) / 1000.0);
+    printf("  TreeSpan Total Time: %.4lf ms\n", treespan_time / 1000.0);
+    // printf("  TreeSpan Total Time: %.4lf ms\n", (load_time + treespan_time) / 1000.0);
 
     // Check Correctness for Method 2
     if (!M_ANS.empty()) {

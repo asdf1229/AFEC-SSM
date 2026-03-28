@@ -30,7 +30,7 @@ void Graph::print_graph() const {
 
 void Graph::build_graph(const std::string &id,
                         std::vector<std::pair<ui, LabelID> > &vertices, 
-		                std::vector<std::pair<std::pair<ui, ui>, LabelID> > &edges_list)
+                        std::vector<std::pair<std::pair<ui, ui>, LabelID> > &edges_list)
 {
     graph_id = id;
     n = vertices.size();

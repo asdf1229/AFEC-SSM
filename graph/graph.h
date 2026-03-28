@@ -11,9 +11,9 @@ private:
 	std::string graph_id;	// graph id
 	ui 			n;			// number of vertices
 	ept 		m;			// number of edges
-	ept 		*pstart;	// pstart[u]: starting position of vertex u in edges array
-	ui			*edges;		// edges array
-	LabelID 	*vlabels;	// vertex labels array
+	ept *pstart;	// pstart[u]: starting position of vertex u in edges array
+	ui *edges;		// edges array
+	LabelID *vlabels;	// vertex labels array
 
 	ui			_max_degree; // maximum degree of the graph
 	// std::unordered_map<LabelID, ui> vertex_labels_frequency; // frequency of each vertex label
@@ -33,50 +33,58 @@ public:
 
 	~Graph()
 	{
-		if(pstart != nullptr) { delete[] pstart; pstart = nullptr; }
-		if(edges != nullptr) { delete[] edges; edges = nullptr; }
-		if(vlabels != nullptr) { delete[] vlabels; vlabels = nullptr; }
+		if (pstart != nullptr) { delete[] pstart; pstart = nullptr; }
+		if (edges != nullptr) { delete[] edges; edges = nullptr; }
+		if (vlabels != nullptr) { delete[] vlabels; vlabels = nullptr; }
 	}
 
 	void build_graph(const std::string &id,
-					 std::vector<std::pair<ui, LabelID> > &vertices, 
-					 std::vector<std::pair<std::pair<ui, ui>, LabelID> > &edges_list);
-	
+		std::vector<std::pair<ui, LabelID> > &vertices,
+		std::vector<std::pair<std::pair<ui, ui>, LabelID> > &edges_list);
+
 	void print_graph() const;
 
-	ui getVerticesCount() const {
+	ui getVerticesCount() const
+	{
 		return n;
 	}
 
-	ept getEdgesCount() const {
+	ept getEdgesCount() const
+	{
 		return m;
 	}
 
-	ui getVertexDegree(ui u) const {
+	ui getVertexDegree(ui u) const
+	{
 		assert(u >= 0 && u < n);
 		return pstart[u + 1] - pstart[u];
 	}
 
-	ui getMaxDegree() const {
+	ui getMaxDegree() const
+	{
 		return _max_degree;
 	}
 
-	LabelID getVertexLabel(ui u) const {
+	LabelID getVertexLabel(ui u) const
+	{
 		assert(u >= 0 && u < n);
 		return vlabels[u];
 	}
 
-    ui getLabelsCount() const {
-        return labels_count;
-    }
+	ui getLabelsCount() const
+	{
+		return labels_count;
+	}
 
-    const ui * getVertexNeighbors(const ui id, ui& count) const {
-        count = pstart[id + 1] - pstart[id];
-        return edges + pstart[id];
-    }
+	const ui *getVertexNeighbors(const ui id, ui &count) const
+	{
+		count = pstart[id + 1] - pstart[id];
+		return edges + pstart[id];
+	}
 
 	// Check if there is an edge u -> v
-	bool hasEdge(ui u, ui v) const {
+	bool hasEdge(ui u, ui v) const
+	{
 		assert(u < n && v < n);
 		ept l = pstart[u], r = pstart[u + 1];
 		// binary search in sorted adjacency list

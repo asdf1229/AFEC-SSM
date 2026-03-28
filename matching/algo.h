@@ -3,165 +3,164 @@
 
 using namespace std;
 
+const int INT_MAX = 0x7fffffff;
+
+// ============================================================================
+// MatchingSolver Implementation (EnumerateOnDemand Strategy)
+// ============================================================================
+
+// ============================================================================
+// MatchingSolver Implementation (EnumerateOnDemand Strategy)
+// ============================================================================
+
 class MatchingSolver {
 public:
     MatchingSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr) {}
+
     bool init(const Graph *q, const Graph *g, ui match_threshold)
     {
-        // 1. Initialization
+        Timer t_init;
+        t_init.restart();
+
         query_graph = q;
         data_graph = g;
         threshold = match_threshold;
         qn = query_graph->getVerticesCount();
         gn = data_graph->getVerticesCount();
+
         resetState();
 
-        // 2. Initial Setup
         initGlobalLabelCounts(query_graph, Lq_counts, Lq_degrees);
         initGlobalLabelCounts(data_graph, Lg_counts, Lg_degrees);
 
         bool res = calVerticesFilter();
-        if (res == false) {
-            printf("!!! No candidates for some query vertex. No possible mapping. !!!\n");
-            assert(false);
+        if (!res) {
+            stats.init_time = t_init.elapsed();
             return false;
         }
+
+        generateMatchingOrder();
+
+        stats.init_time = t_init.elapsed();
         return true;
     }
+
     void match(vector<vector<pair<ui, ui>>> &results)
     {
-        results_ptr = &results;
-        vector<pair<ui, ui>> initial_Mcand; // Empty for root
+        Timer t_search;
+        t_search.restart();
 
-        // 3. Start Recursion
-        Timer t_dfs;
-        dfs(0, (ui)-1, (ui)-1, initial_Mcand);
-        stats.dfs_time += t_dfs.elapsed();
+        results_ptr = &results;
+        results_ptr->clear();
+
+        ui v = _order[0];
+        for (ui v0 : candidates[v]) {
+            mapped_q[v] = v0;
+            mapped_g[v0] = v;
+            in_Mq[v] = 1;
+            matched_count = 1;
+            part_M.push_back({ v, v0 }); // v -> v0
+
+            dfs(0, (int)v);
+
+            mapped_q[v] = -1;
+            mapped_g[v0] = -1;
+            in_Mq[v] = 0;
+            matched_count = 0;
+            part_M.pop_back();
+        }
+
+        stats.dfs_time = t_search.elapsed();
+        stats.total_time = stats.init_time + stats.dfs_time;
     }
 
-    // --- Stats ---
     struct TimeStats {
         long long total_time = 0;
-        long long dfs_time = 0;         // DFS 耗时
-        long long get_cand_time = 0;    // ExpandableMappings 耗时
-        long long lb_time = 0;          // calLowerBound 耗时
-        long long branch_time = 0;      // 分支时间
-        long long recursion_calls = 0;  // 递归调用次数计数
-        long long prun_calls = 0;       // 剪枝次数
-
-        // calLowerBound 内部细分时间
-        long long lb_identify_sets_time = 0; // 1. Identify Nq, Rq, Ng, Rg
-        long long lb_remain_time = 0; // 2. Calculate LB_remain
-        long long lb_front_time = 0; // 3. Calculate LB_front
-        long long lb_mwpm_time = 0; // MWPM 求解时间
-    }stats;
+        long long init_time = 0;
+        long long dfs_time = 0;
+        long long branch_time = 0;
+        long long lb_time = 0;
+        long long recursion_calls = 0;
+        long long prun_calls = 0;
+    } stats;
 
     void printStats() const
     {
-        printf("\n--- Matching Time Analysis ---\n");
+        printf("\n--- CDE-Match (Connected Delayed Extension) Time Analysis ---\n");
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
-        printf("DFS Time:            %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, (double)stats.dfs_time / stats.total_time * 100);
-        printf("- Mcand Time:        %.4lf ms (%.2f%% of DFS)\n", stats.get_cand_time / 1000.0, (double)stats.get_cand_time / stats.dfs_time * 100);
-        printf("- Branch Time:       %.4lf ms (%.2f%% of DFS)\n", stats.branch_time / 1000.0, (double)stats.branch_time / stats.dfs_time * 100);
-        printf("- LowerBound Time:   %.4lf ms (%.2f%% of DFS)\n", stats.lb_time / 1000.0, (double)stats.lb_time / stats.dfs_time * 100);
-        printf("  - Identify Sets:   %.4lf ms (%.2f%% of LB)\n", stats.lb_identify_sets_time / 1000.0, (double)stats.lb_identify_sets_time / stats.lb_time * 100);
-        printf("  - LB Remain:       %.4lf ms (%.2f%% of LB)\n", stats.lb_remain_time / 1000.0, (double)stats.lb_remain_time / stats.lb_time * 100);
-        printf("  - LB Front (MWPM): %.4lf ms (%.2f%% of LB)\n", stats.lb_front_time / 1000.0, (double)stats.lb_front_time / stats.lb_time * 100);
-        printf("    - MWPM:          %.4lf ms (%.2f%% of LB Front)\n", stats.lb_mwpm_time / 1000.0, (double)stats.lb_mwpm_time / stats.lb_front_time * 100);
+        printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, stats.total_time > 0 ? (double)stats.init_time / stats.total_time * 100 : 0);
+        printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, stats.total_time > 0 ? (double)stats.dfs_time / stats.total_time * 100 : 0);
+        printf("- Branch Time:       %.4lf ms (%.2f%% of Search)\n", stats.branch_time / 1000.0, stats.dfs_time > 0 ? (double)stats.branch_time / stats.dfs_time * 100 : 0);
+        printf("- LowerBound Time:   %.4lf ms (%.2f%% of Search)\n", stats.lb_time / 1000.0, stats.dfs_time > 0 ? (double)stats.lb_time / stats.dfs_time * 100 : 0);
         printf("Recursion Calls:     %lld\n", stats.recursion_calls);
         printf("Pruning Calls:       %lld\n", stats.prun_calls);
         printf("Results Found:       %zu\n", results_ptr ? results_ptr->size() : 0);
-        printf("---------------------------------\n");
+        printf("-----------------------------------------------------------\n");
     }
+
 private:
-    // --- Input Data ---
     const Graph *query_graph;
     const Graph *data_graph;
-    vector<vector<pair<ui, ui> > > *results_ptr; // Results
+    vector<vector<pair<ui, ui>>> *results_ptr;
     ui threshold;
     ui qn, gn;
 
-    vector<vector<ui>> candidates; // Pointer to external candidates
-
-    // --- Global State (Modified during DFS) ---
-    vector<int> mapped_q; // Query vertex -> Data vertex
-    vector<int> mapped_g; // Data vertex -> Query vertex
-    vector<pair<ui, ui>> part_M; // Current partial mapping
-    unordered_set<pair<ui, ui>, PairHash> X; // Exclusion set
-
-
-    // --- Dynamic Lookahead / Filtering Stats ---
+    vector<vector<ui>> candidates;
     vector<vector<ui>> Lq_counts, Lg_counts;
     vector<ui> Lq_degrees, Lg_degrees;
 
-    // --- Lower Bound Optimization & Memoization ---
-    vector<ui> min_costs;
-    vector<ui> best_cands;
-    vector<int> g_mark;
-    int mark_token;
+    // --- CDE Core States ---
+    vector<int> mapped_q;         // f: query vertex → data vertex (-1 if unmapped)
+    vector<int> mapped_g;         // reverse: data vertex → query vertex (-1 if unused)
+    vector<char> in_Mq;           // 当前已匹配集合 M_q
+    vector<vector<int>> is_excluded; // X: 排除边集合 (symmetric, is_excluded[u][v] > 0 means (u,v) ∈ X)
+    vector<char> in_P;            // P: 延期顶点集合
+    ui matched_count;
+    vector<pair<ui, ui>> part_M;
 
-    // --- Buffers for LB ---
+    vector<ui> _order;           // 固定搜索顺序 π
 
-    // Members for Identify Sets
-    vector<int> lb_in_Nq, lb_in_Ng;
-    vector<vector<ui>> lb_adj_Mcand;
-    int lb_token;
-
-    // Members for MWPM (KM Algorithm) to avoid malloc in loop
-    vector<int> km_lx, km_ly, km_mx, km_my;
-    vector<int> km_slack, km_slackmy;
-    vector<int> km_prev, km_queue;
-    vector<char> km_visX, km_visY;
-
-    // Members for LB Front
-    vector<int> lb_v_to_col;
-
-    // State Helpers
     void resetState()
     {
         mapped_q.assign(qn, -1);
         mapped_g.assign(gn, -1);
+        in_Mq.assign(qn, 0);
+        is_excluded.assign(qn, vector<int>(qn, 0));
+        in_P.assign(qn, 0);
+        matched_count = 0;
         part_M.clear();
         part_M.reserve(qn);
-        X.clear();
-        if (results_ptr != nullptr) results_ptr->clear();
-
-        // Reset Candidates
         candidates.clear();
         candidates.resize(qn);
-
-        min_costs.assign(qn, (ui)-1);
-        best_cands.assign(qn, (ui)-1);
-        g_mark.assign(gn, 0);
-        mark_token = 0;
-
-        // Reset LB buffers
-        lb_in_Nq.assign(qn, 0);
-        lb_in_Ng.assign(gn, 0);
-        lb_adj_Mcand.assign(qn, vector<ui>());
-        lb_token = 0;
-        lb_v_to_col.assign(gn, -1);
-
-        // Reset Stats
+        _order.clear();
         stats = TimeStats();
     }
 
-    void initGlobalLabelCounts(const Graph *_g, vector<vector<ui>> &counts, vector<ui> &degrees)
+    void initGlobalLabelCounts(const Graph *g, vector<vector<ui>> &counts, vector<ui> &degrees)
     {
-        ui n = _g->getVerticesCount();
-        ui num_labels = _g->getLabelsCount();
+        ui n = g->getVerticesCount();
+        ui num_labels = g->getLabelsCount();
         counts.assign(n, vector<ui>(num_labels, 0));
         degrees.assign(n, 0);
-
         for (ui u = 0; u < n; ++u) {
-            ui deg; const ui *neighbors = _g->getVertexNeighbors(u, deg);
+            ui deg; const ui *neighbors = g->getVertexNeighbors(u, deg);
             for (ui i = 0; i < deg; ++i) {
-                ui v = neighbors[i];
-                LabelID l_v = _g->getVertexLabel(v);
-                counts[u][l_v]++;
+                counts[u][g->getVertexLabel(neighbors[i])]++;
                 degrees[u]++;
             }
         }
+    }
+
+    ui computeNLF(ui u, ui v)
+    {
+        ui diff = 0;
+        size_t sz = Lq_counts[u].size();
+        for (size_t i = 0; i < sz; ++i) {
+            if (Lq_counts[u][i] > Lg_counts[v][i]) {
+                diff += (Lq_counts[u][i] - Lg_counts[v][i]);
+            }
+        }
+        return diff;
     }
 
     bool calVerticesFilter()
@@ -170,516 +169,518 @@ private:
             LabelID label_u = query_graph->getVertexLabel(u);
             for (ui v = 0; v < gn; ++v) {
                 if (label_u != data_graph->getVertexLabel(v)) continue;
-                ui delta = computeDeltaInnerDoubledVector(Lq_counts[u], Lg_counts[v]);
-                if (delta <= threshold) candidates[u].push_back(v);
+                if (Lq_degrees[u] > Lg_degrees[v] + threshold) continue;
+                if (computeNLF(u, v) <= threshold) {
+                    candidates[u].push_back(v);
+                }
             }
-            if (candidates[u].empty())  return false;
+            if (candidates[u].empty()) return false;
+            sort(candidates[u].begin(), candidates[u].end());
         }
         return true;
     }
 
-    void updateNeighborCounts(const Graph *_g, ui vertex, const vector<int> &mapped_status,
-                              vector<vector<ui>> &counts, vector<ui> &degrees, bool is_add)
+    // TODO
+    void generateMatchingOrder()
     {
-        LabelID label = _g->getVertexLabel(vertex);
-        ui deg; const ui *neighbors = _g->getVertexNeighbors(vertex, deg);
-        for (ui i = 0; i < deg; ++i) {
-            ui neighbor = neighbors[i];
-            if (mapped_status[neighbor] == -1) {
-                if (is_add) {
-                    counts[neighbor][label]++;
-                    degrees[neighbor]++;
-                }
-                else {
-                    counts[neighbor][label]--;
-                    degrees[neighbor]--;
-                }
+        _order.clear();
+        vector<bool> visited(qn, false);
+
+        ui root = 0;
+        size_t min_cand = candidates[0].size();
+        for (ui u = 1; u < qn; ++u) {
+            if (candidates[u].size() < min_cand) {
+                min_cand = candidates[u].size();
+                root = u;
             }
         }
-    }
 
-    // Missing Edges & Delta
+        _order.push_back(root);
+        visited[root] = true;
 
-    ui computeDeltaInnerDoubledVector(const vector<ui> &Lq, const vector<ui> &Lg)
-    {
-        ui diff = 0;
-        for (size_t i = 0; i < Lq.size(); ++i) if (Lq[i] > Lg[i]) diff += (Lq[i] - Lg[i]);
-        return diff;
-    }
+        for (ui step = 1; step < qn; ++step) {
+            bool found = false;
+            ui best_a = 0, best_b = 0;
 
-    inline ui getDelta(ui u, ui v)
-    {
-        return computeDeltaInnerDoubledVector(Lq_counts[u], Lg_counts[v]);
-    }
+            for (ui u = 0; u < qn; ++u) {
+                if (!visited[u]) continue;
 
-    ui calIncrementalMissing(ui new_u, ui new_v)
-    {
-        ui delta_missing = 0;
-        for (const auto &p : part_M) {
-            ui u_prev = p.first;
-            ui v_prev = p.second;
-            if (query_graph->hasEdge(new_u, u_prev) && !data_graph->hasEdge(new_v, v_prev)) delta_missing++;
+                ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
+                for (ui i = 0; i < deg; ++i) {
+                    ui v = nbrs[i];
+                    if (visited[v]) continue;
+
+                    ui a = min(u, v);
+                    ui b = max(u, v);
+                    if (!found || a < best_a || (a == best_a && b < best_b)) {
+                        best_a = a;
+                        best_b = b;
+                        found = true;
+                    }
+                }
+            }
+
+            if (!found) break;
+
+            ui next_u = visited[best_a] ? best_b : best_a;
+            visited[next_u] = true;
+            _order.push_back(next_u);
         }
-        return delta_missing;
+
+#ifndef NDEBUG
+        printf("matching order: ");
+        for (auto u : _order) {
+            printf("%u ", u);
+        }
+        printf("\n");
+#endif
     }
 
-    // Candidate Generation
-
-    void getIncrementalExpandableMappings(ui new_u, ui new_v, const vector<pair<ui, ui>> &fa_Mcand, vector<pair<ui, ui> > &Mcand)
+    // TODO
+    ui computeLowerBound(ui current_miss)
     {
-        Mcand.clear();
+        Timer t_lb;
+        t_lb.restart();
 
-        if (part_M.empty()) {
-            assert(new_u == (ui)-1 && new_v == (ui)-1);
-            // select 0 as starting vertex
-            ui u = 0;
-            assert(mapped_q[u] == -1);
+        auto finish = [&](ui ans) -> ui {
+            stats.lb_time += t_lb.elapsed();
+            return ans;
+            };
+
+        if (current_miss > threshold) {
+            return finish(current_miss);
+        }
+
+        // ------------------------------------------------------------
+        // 1) 取当前 frontier：与 dfs() 中 U_frontier 的定义保持一致
+        //    只考虑：未匹配、未延期、且存在 active anchor (到 M_q 的活跃边) 的点
+        // ------------------------------------------------------------
+        vector<ui> frontier;
+        vector<vector<ui>> frontier_anchors;   // 与 frontier 对齐
+        frontier.reserve(qn);
+        frontier_anchors.reserve(qn);
+
+        for (ui u : _order) {
+            if (in_Mq[u] || in_P[u]) continue;
+
+            ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
+
+            vector<ui> anchors;
+            anchors.reserve(deg);
+
+            for (ui i = 0; i < deg; ++i) {
+                ui a = nbrs[i];
+                if (in_Mq[a] && !is_excluded[u][a]) {
+                    anchors.push_back(a);
+                }
+            }
+
+            if (!anchors.empty()) {
+                frontier.push_back(u);
+                frontier_anchors.push_back(std::move(anchors));
+            }
+        }
+
+        if (frontier.empty()) {
+            return finish(current_miss);
+        }
+
+        // ------------------------------------------------------------
+        // 2) 先做 independent base lower bound
+        //    对每个 frontier 点 u：
+        //      min_delta(u) = min_{v 可用候选} miss_M(u, v)
+        //    其中 miss_M(u, v) 是 u->v 后，u 到当前 M_q 的 active anchors 中缺失的边数
+        //
+        //    同时保留每个候选的 delta，后面做 injective/Hall 风格的 collision lower bound
+        // ------------------------------------------------------------
+        const ui m = (ui)frontier.size();
+
+        vector<ui> min_delta(m, 0);
+
+        // raw_costs[i] 里存 frontier[i] 的候选 (data_v, delta)
+        vector<vector<pair<ui, ui>>> raw_costs(m);
+        raw_costs.assign(m, vector<pair<ui, ui>>());
+
+        ui base_lb = 0;
+
+        for (ui i = 0; i < m; ++i) {
+            ui u = frontier[i];
+            const vector<ui> &anchors = frontier_anchors[i];
+
+            ui best = (ui)anchors.size();  // 最差就是 anchors 全缺
+            bool has_free_candidate = false;
+
+            raw_costs[i].reserve(candidates[u].size());
+
             for (ui v : candidates[u]) {
-                assert(mapped_g[v] == -1 && !X.count({ u, v }));
-                Mcand.emplace_back(u, v);
-            }
-            return;
-        }
+                if (mapped_g[v] != -1) continue;  // injective: 已占用不能再用
+                has_free_candidate = true;
 
-        Mcand.reserve(fa_Mcand.size() + 64);
-
-        // 1. Inherit from parent
-        for (const auto &p : fa_Mcand) {
-            if (p.first == new_u || p.second == new_v) continue;
-            if (X.count(p)) continue;
-            Mcand.push_back(p);
-        }
-
-        ui q_count; const ui *q_neighbors = query_graph->getVertexNeighbors(new_u, q_count);
-        ui g_count; const ui *g_neighbors = data_graph->getVertexNeighbors(new_v, g_count);
-        size_t fa_end = Mcand.size();
-        static vector<bool> mark; if (mark.size() < gn) mark.resize(gn, false);
-
-        // 2. Generate new candidates based on neighbors
-        for (ui i = 0; i < g_count; ++i) mark[g_neighbors[i]] = true;
-        for (ui i = 0; i < q_count; ++i) {
-            ui u2 = q_neighbors[i];
-            if (mapped_q[u2] != -1) continue;
-
-            for (ui v2 : candidates[u2]) {
-                if (mapped_g[v2] != -1) continue;
-                if (mark[v2]) {
-                    if (X.count({ u2, v2 })) continue;
-                    Mcand.emplace_back(u2, v2);
-                }
-            }
-        }
-        for (ui i = 0; i < g_count; ++i) mark[g_neighbors[i]] = false;
-
-        // 3. Deduplicate
-        if (Mcand.size() > fa_end) {
-            sort(Mcand.begin() + fa_end, Mcand.end());
-            if (fa_end > 0) inplace_merge(Mcand.begin(), Mcand.begin() + fa_end, Mcand.end());
-            Mcand.erase(unique(Mcand.begin(), Mcand.end()), Mcand.end());
-        }
-    }
-
-    /**
-     * @brief 求解最小权重完美匹配 (Minimum Weight Perfect Matching)
-     * 逻辑参考自 Application.txt 中的 Hungarian 实现。
-     *
-     * @param cost_matrix 代价矩阵，行表示查询图节点，列表示数据图节点
-     * @return 最小权重之和
-     */
-    ui solveMWPM(const vector<vector<ui>> &cost_matrix, ui limit)
-    {
-        if (cost_matrix.empty()) return 0;
-        int n = (int)cost_matrix.size();
-        int m = (int)cost_matrix[0].size();
-        const int INF_INT = 1e9;
-
-        // Resize buffers if necessary
-        if (km_lx.size() < (size_t)n) { km_lx.resize(n); km_mx.resize(n); km_prev.resize(n); km_queue.resize(n); km_visX.resize(n); }
-        if (km_ly.size() < (size_t)m) { km_ly.resize(m); km_my.resize(m); km_slack.resize(m); km_slackmy.resize(m); km_visY.resize(m); }
-
-        // Reset buffers
-        fill(km_lx.begin(), km_lx.begin() + n, 0);
-        fill(km_ly.begin(), km_ly.begin() + m, 0);
-        fill(km_mx.begin(), km_mx.begin() + n, -1);
-        fill(km_my.begin(), km_my.begin() + m, -1);
-
-        // 1. Initialization & Row Reduction
-        long long lb_row = 0;
-        for (int i = 0; i < n; i++) {
-            int min_val = INF_INT;
-            for (int j = 0; j < m; j++) {
-                if ((int)cost_matrix[i][j] < min_val) min_val = (int)cost_matrix[i][j];
-            }
-            km_lx[i] = min_val;
-            if (min_val == INF_INT) return limit + 1;
-            lb_row += min_val;
-        }
-        if (lb_row > limit) return limit + 1;
-
-        // Column Reduction check omitted for brevity/speed trade-off, or can be added back.
-
-        // 2. Greedy Initialization
-        for (int i = 0; i < n; i++) {
-            for (int j = 0; j < m; j++) {
-                if (km_my[j] == -1 && (int)cost_matrix[i][j] == km_lx[i]) {
-                    km_mx[i] = j;
-                    km_my[j] = i;
-                    break;
-                }
-            }
-        }
-
-        // 3. Augmentation
-        for (int u = 0; u < n; u++) {
-            if (km_mx[u] != -1) continue;
-
-            fill(km_visX.begin(), km_visX.begin() + n, 0);
-            fill(km_visY.begin(), km_visY.begin() + m, 0);
-
-            for (int j = 0; j < m; j++) {
-                km_slack[j] = (int)cost_matrix[u][j] - km_lx[u] - km_ly[j];
-                km_slackmy[j] = u;
-            }
-
-            km_visX[u] = 1;
-            int q_size = 0;
-            km_queue[q_size++] = u;
-            int target_y = -1, last_x = -1;
-
-            while (true) {
-                int q_ptr = 0;
-                while (q_ptr < q_size) {
-                    int v = km_queue[q_ptr++];
-                    for (int j = 0; j < m; j++) {
-                        if (!km_visY[j] && (int)cost_matrix[v][j] == km_lx[v] + km_ly[j]) {
-                            if (km_my[j] == -1) { last_x = v; target_y = j; goto found_path; }
-                            km_visY[j] = 1;
-                            int next_x = km_my[j];
-                            km_visX[next_x] = 1;
-                            km_prev[next_x] = v;
-                            km_queue[q_size++] = next_x;
-                            for (int k = 0; k < m; k++) {
-                                int s = (int)cost_matrix[next_x][k] - km_lx[next_x] - km_ly[k];
-                                if (!km_visY[k] && s < km_slack[k]) {
-                                    km_slack[k] = s; km_slackmy[k] = next_x;
-                                }
-                            }
-                        }
+                ui delta = 0;
+                for (ui a : anchors) {
+                    if (!data_graph->hasEdge(v, (ui)mapped_q[a])) {
+                        delta++;
                     }
                 }
 
-                int delta = INF_INT;
-                for (int j = 0; j < m; j++) if (!km_visY[j] && km_slack[j] < delta) delta = km_slack[j];
-                if (delta == INF_INT) return limit + 1;
+                raw_costs[i].push_back({ v, delta });
 
-                for (int i = 0; i < n; i++) if (km_visX[i]) km_lx[i] += delta;
-                for (int j = 0; j < m; j++) {
-                    if (km_visY[j]) km_ly[j] -= delta;
-                    else km_slack[j] -= delta;
-                }
-
-                q_size = 0;
-                for (int j = 0; j < m; j++) {
-                    if (!km_visY[j] && km_slack[j] == 0) {
-                        if (km_my[j] == -1) { last_x = km_slackmy[j]; target_y = j; goto found_path; }
-                        km_visY[j] = 1;
-                        if (!km_visX[km_my[j]]) {
-                            int next_x = km_my[j];
-                            km_visX[next_x] = 1;
-                            km_prev[next_x] = km_slackmy[j];
-                            km_queue[q_size++] = next_x;
-                            for (int k = 0; k < m; k++) {
-                                int s = (int)cost_matrix[next_x][k] - km_lx[next_x] - km_ly[k];
-                                if (!km_visY[k] && s < km_slack[k]) { km_slack[k] = s; km_slackmy[k] = next_x; }
-                            }
-                        }
+                if (delta < best) {
+                    best = delta;
+                    if (best == 0) {
+                        // 已经找到最优，不提前 break，因为后面 Hall LB 还要看完整候选分布
                     }
                 }
             }
 
-        found_path:
-            while (true) {
-                int ty = km_mx[last_x];
-                km_mx[last_x] = target_y;
-                km_my[target_y] = last_x;
-                if (last_x == u) break;
-                target_y = ty;
-                last_x = km_prev[last_x];
+            // 没有任何可用候选，则该状态无解
+            if (!has_free_candidate) {
+                return finish(threshold + 1);
+            }
+
+            min_delta[i] = best;
+            base_lb += best;
+
+            if (current_miss + base_lb > threshold) {
+                return finish(current_miss + base_lb);
             }
         }
 
-        unsigned long long total_cost = 0;
-        for (int i = 0; i < n; i++) if (km_mx[i] != -1) total_cost += cost_matrix[i][km_mx[i]];
-        if (total_cost > limit) return limit + 1;
-        return total_cost;
-    }
-
-    // Lower Bound
-    ui calLowerBound(const vector<pair<ui, ui>> &Mcand, ui last_u, ui last_v,
-        vector<tuple<ui, ui, ui>> &restore_log)
-    {
-        Timer t_part;
-        t_part.restart();
-
-        // 1. Identify Nq, Ng, Rq
-        lb_token++;
-        if (lb_token == 0) {
-            fill(lb_in_Nq.begin(), lb_in_Nq.end(), 0);
-            fill(lb_in_Ng.begin(), lb_in_Ng.end(), 0);
-            lb_token = 1;
+        ui lb = current_miss + base_lb;
+        if (lb > threshold) {
+            return finish(lb);
         }
 
-        vector<ui> Nq, Ng, Rq;
-        // Clearing adj_Mcand
-        for (ui i = 0; i < qn; ++i) lb_adj_Mcand[i].clear();
-
-        for (const auto &p : Mcand) {
-            ui u = p.first; ui v = p.second;
-            lb_adj_Mcand[u].push_back(v);
-            if (lb_in_Nq[u] != lb_token) { lb_in_Nq[u] = lb_token; Nq.push_back(u); }
-            if (lb_in_Ng[v] != lb_token) { lb_in_Ng[v] = lb_token; Ng.push_back(v); }
+        // 剩余预算；collision LB 没必要算到超过它
+        ui remaining_budget = threshold - lb;
+        if (remaining_budget == 0 || m <= 1) {
+            return finish(lb);
         }
-        for (ui u = 0; u < qn; ++u) if (mapped_q[u] == -1 && lb_in_Nq[u] != lb_token) Rq.push_back(u);
-        stats.lb_identify_sets_time += t_part.elapsed();
 
-        // 2. Calculate LB_remain (Greedy relaxation for Rq) [MOD](doubled)
-        t_part.restart();
-        ui LB_remain_doubled = 0;
-        vector<ui> dirty_nodes;
+        // ------------------------------------------------------------
+        // 3) Hall-style collision lower bound
+        //
+        //    先把每个候选的“残余代价”定义为：
+        //      residual(u, v) = delta(u, v) - min_delta(u) >= 0
+        //
+        //    base_lb 已经收了每个点的独立最优代价；
+        //    这里再估计因为 injective 冲突 / 候选重叠，至少还要多付多少。
+        //
+        //    对任意顶点子集 S：
+        //      G_k(u) = { v | residual(u,v) <= k }
+        //      A_k(S) = | union_{u in S} G_k(u) |
+        //
+        //    若 A_k(S) < |S|，则至少有 |S|-A_k(S) 个点的 residual >= k+1
+        //    所以 subset 的额外下界可以写成：
+        //      sum_{k>=0} max(0, |S|-A_k(S))
+        //
+        //    最终 collision_lb 取所有检查过的子集中的最大值。
+        // ------------------------------------------------------------
 
-        if (last_u == (ui)-1) {
-            dirty_nodes = Rq;
+        vector<vector<pair<ui, ui>>> residual_costs(m);
+        residual_costs.assign(m, vector<pair<ui, ui>>());
+
+        for (ui i = 0; i < m; ++i) {
+            residual_costs[i].reserve(raw_costs[i].size());
+            for (const auto &pr : raw_costs[i]) {
+                ui v = pr.first;
+                ui delta = pr.second;
+                ui residual = delta - min_delta[i];
+                if (residual <= remaining_budget) {
+                    residual_costs[i].push_back({ v, residual });
+                }
+            }
+
+            sort(residual_costs[i].begin(), residual_costs[i].end(),
+                [](const pair<ui, ui> &a, const pair<ui, ui> &b) {
+                    if (a.second != b.second) return a.second < b.second;
+                    return a.first < b.first;
+                });
+        }
+
+        // stamp 技巧做 union 计数，避免反复清空大数组
+        static thread_local vector<int> seen;
+        static thread_local int stamp = 1;
+
+        if (seen.size() < gn) {
+            seen.assign(gn, 0);
+        }
+
+        auto nextStamp = [&]() {
+            ++stamp;
+            if (stamp == INT_MAX) {
+                std::fill(seen.begin(), seen.end(), 0);
+                stamp = 1;
+            }
+            };
+
+        auto subsetCollisionLB = [&](const vector<ui> &idxs) -> ui {
+            const ui s = (ui)idxs.size();
+            ui extra = 0;
+
+            // 对 k = 0 .. remaining_budget-1
+            // 统计 residual <= k 的候选并集大小
+            for (ui k = 0; k < remaining_budget; ++k) {
+                nextStamp();
+                ui union_cnt = 0;
+
+                for (ui id : idxs) {
+                    const auto &lst = residual_costs[id];
+                    for (const auto &pr : lst) {
+                        if (pr.second > k) break;
+                        ui v = pr.first;
+                        if (seen[v] != stamp) {
+                            seen[v] = stamp;
+                            union_cnt++;
+                        }
+                    }
+                }
+
+                if (union_cnt < s) {
+                    extra += (s - union_cnt);
+                    if (lb + extra > threshold) {
+                        return extra; // 提前结束
+                    }
+                }
+            }
+
+            return extra;
+            };
+
+        ui collision_lb = 0;
+
+        // ------------------------------------------------------------
+        // 4) 子集枚举策略
+        //    - query 很小（如你当前 5 点）时，完整枚举全部子集，效果最好
+        //    - query 较大时，退化成：全体 frontier + 所有二元子集
+        //      仍然安全，只是 lower bound 会更松
+        // ------------------------------------------------------------
+        if (m <= 12) {
+            const ui total_masks = (1u << m);
+
+            vector<ui> idxs;
+            idxs.reserve(m);
+
+            for (ui mask = 1; mask < total_masks; ++mask) {
+                idxs.clear();
+                for (ui i = 0; i < m; ++i) {
+                    if (mask & (1u << i)) idxs.push_back(i);
+                }
+
+                ui extra = subsetCollisionLB(idxs);
+                if (extra > collision_lb) {
+                    collision_lb = extra;
+                    if (lb + collision_lb > threshold) {
+                        return finish(lb + collision_lb);
+                    }
+                }
+            }
         }
         else {
-            mark_token++;
-            ui g_deg; const ui *g_neighbors = data_graph->getVertexNeighbors(last_v, g_deg);
-            for (ui i = 0; i < g_deg; i++) g_mark[g_neighbors[i]] = mark_token;
-            g_mark[last_v] = mark_token;
+            // 退化版：检查整个 frontier
+            {
+                vector<ui> all_idxs;
+                all_idxs.reserve(m);
+                for (ui i = 0; i < m; ++i) all_idxs.push_back(i);
 
-            for (ui u : Rq) {
-                bool is_dirty = false;
-                if (query_graph->hasEdge(u, last_u)) is_dirty = true;
-                else {
-                    ui old_best = best_cands[u];
-                    if (old_best != (ui)-1 && g_mark[old_best] == mark_token) is_dirty = true;
-                }
-                if (is_dirty) dirty_nodes.push_back(u);
-            }
-        }
-
-        for (ui u : dirty_nodes) {
-            restore_log.emplace_back(u, min_costs[u], best_cands[u]);
-
-            ui min_u_cost = (ui)-1;
-            ui best_v = (ui)-1;
-            ui deg_u = Lq_degrees[u];
-
-            for (ui v : candidates[u]) {
-                if (mapped_g[v] != -1) continue;
-                ui deg_v = Lg_degrees[v];
-                if (min_u_cost != (ui)-1) if (deg_u > deg_v && (deg_u - deg_v) >= min_u_cost) continue;
-
-                // ui cost = computeDeltaInnerDoubledVector(Lq_counts[u], Lg_counts[v]);
-                // [MOD] USE OPTIMIZED DELTA
-                ui cost = getDelta(u, v);
-
-                if (cost < min_u_cost) {
-                    min_u_cost = cost;
-                    best_v = v;
-                    if (min_u_cost == 0) break;
-                }
-            }
-            min_costs[u] = min_u_cost;
-            best_cands[u] = best_v;
-        }
-
-        for (ui u : Rq) {
-            if (min_costs[u] == (ui)-1) return threshold + 1;
-            LB_remain_doubled += min_costs[u];
-        }
-        stats.lb_remain_time += t_part.elapsed();
-
-        if (LB_remain_doubled > 2 * threshold) return threshold + 1;
-
-        // 3. Calculate LB_front (MWPM)
-        Timer t_mwpm;
-        t_part.restart();
-        ui LB_front_doubled = 0;
-
-        vector<pair<LabelID, ui>> Nq_labeled;
-        Nq_labeled.reserve(Nq.size());
-        for (ui u : Nq) Nq_labeled.emplace_back(query_graph->getVertexLabel(u), u);
-        sort(Nq_labeled.begin(), Nq_labeled.end());
-
-        ui remaining_budget_doubled = 2 * threshold - LB_remain_doubled;
-        vector<ui> cols_to_reset;
-
-        size_t ptr = 0;
-        while (ptr < Nq_labeled.size()) {
-            LabelID label = Nq_labeled[ptr].first;
-            size_t qtr = ptr;
-            while (qtr < Nq_labeled.size() && Nq_labeled[qtr].first == label) qtr++;
-
-            size_t u_count = qtr - ptr;
-            vector<ui> v_list;
-            v_list.reserve(Ng.size());
-            cols_to_reset.clear();
-
-            for (ui v : Ng) {
-                if (data_graph->getVertexLabel(v) == label) {
-                    lb_v_to_col[v] = v_list.size();
-                    v_list.push_back(v);
-                    cols_to_reset.push_back(v);
-                }
-            }
-
-            vector<ui> w_ext_doubled(u_count);
-            for (size_t i = 0; i < u_count; ++i) {
-                ui u = Nq_labeled[ptr + i].second;
-                ui cross_fixed = 0;
-                ui deg; const ui *neighbors = query_graph->getVertexNeighbors(u, deg);
-                for (ui k = 0; k < deg; ++k) if (mapped_q[neighbors[k]] != -1) cross_fixed++;
-
-                ui min_inner_doubled = (ui)-1;
-                bool found_rg = false;
-                ui deg_u = Lq_degrees[u];
-
-                for (ui v : candidates[u]) {
-                    if (mapped_g[v] != -1) continue;
-                    if (lb_in_Ng[v] == lb_token) continue;
-
-                    ui deg_v = Lg_degrees[v];
-                    if (found_rg && deg_u > deg_v && (deg_u - deg_v) >= min_inner_doubled) continue;
-
-                    // ui d = computeDeltaInnerDoubledVector(Lq_counts[u], Lg_counts[v]);
-                    // [MOD] USE OPTIMIZED DELTA
-                    ui d = getDelta(u, v);
-
-                    if (!found_rg || d < min_inner_doubled) { min_inner_doubled = d; found_rg = true; }
-                    if (min_inner_doubled == 0) break;
-                }
-                if (!found_rg) min_inner_doubled = 0;
-                w_ext_doubled[i] = (2 * cross_fixed) + min_inner_doubled;
-            }
-
-            size_t row_n = u_count;
-            size_t col_n = v_list.size() + row_n;
-            const ui INF_COST = 1e9;
-            vector<vector<ui>> cost_matrix(row_n, vector<ui>(col_n, INF_COST));
-
-            for (size_t i = 0; i < row_n; ++i) {
-                ui u = Nq_labeled[ptr + i].second;
-                // Virtual
-                for (size_t k = 0; k < row_n; ++k) cost_matrix[i][v_list.size() + k] = w_ext_doubled[i];
-                // Real
-                for (ui v : lb_adj_Mcand[u]) {
-                    int col_idx = lb_v_to_col[v];
-                    if (col_idx != -1) {
-                        ui d_cross = 0;
-                        ui u_deg; const ui *u_neighbors = query_graph->getVertexNeighbors(u, u_deg);
-                        for (ui k = 0; k < u_deg; ++k) {
-                            ui un = u_neighbors[k];
-                            if (mapped_q[un] != -1 && !data_graph->hasEdge(v, (ui)mapped_q[un])) d_cross++;
-                        }
-
-                        // cost_matrix[i][col_idx] = (2 * d_cross) + computeDeltaInnerDoubledVector(Lq_counts[u], Lg_counts[v]);
-                        // [MOD] USE OPTIMIZED DELTA
-                        cost_matrix[i][col_idx] = (2 * d_cross) + getDelta(u, v);
+                ui extra = subsetCollisionLB(all_idxs);
+                if (extra > collision_lb) {
+                    collision_lb = extra;
+                    if (lb + collision_lb > threshold) {
+                        return finish(lb + collision_lb);
                     }
                 }
             }
 
-            t_mwpm.restart();
-            ui local_limit = remaining_budget_doubled - LB_front_doubled;
-            ui local_cost = solveMWPM(cost_matrix, local_limit);
-            stats.lb_mwpm_time += t_mwpm.elapsed();
-
-            if (local_cost > local_limit) {
-                LB_front_doubled = remaining_budget_doubled + 1;
-                for (ui v : cols_to_reset) lb_v_to_col[v] = -1;
-                break;
+            // 再检查所有 pair，抓局部强冲突
+            for (ui i = 0; i < m; ++i) {
+                for (ui j = i + 1; j < m; ++j) {
+                    vector<ui> pair_idxs = { i, j };
+                    ui extra = subsetCollisionLB(pair_idxs);
+                    if (extra > collision_lb) {
+                        collision_lb = extra;
+                        if (lb + collision_lb > threshold) {
+                            return finish(lb + collision_lb);
+                        }
+                    }
+                }
             }
-            LB_front_doubled += local_cost;
-            for (ui v : cols_to_reset) lb_v_to_col[v] = -1;
-            ptr = qtr;
         }
-        stats.lb_front_time += t_part.elapsed();
 
-        return (LB_front_doubled + LB_remain_doubled + 1) / 2;
+        return finish(lb + collision_lb);
     }
 
-    void dfs(ui missing, ui last_u, ui last_v, const vector<pair<ui, ui>> &fa_Mcand)
+    // 在查询图中，仅使用 (E_q \ X \ E_cut(u)) 的边，
+    // 检查 u 是否还能到达 M_q 中任意点。
+    bool isConnectionMandatory(ui u)
     {
-        stats.recursion_calls++;
+        vector<char> visited(qn, 0);
+        queue<ui> bfs_q;
+        visited[u] = 1;
+        bfs_q.push(u);
 
-        if (part_M.size() == qn) {
+        while (!bfs_q.empty()) {
+            ui cur = bfs_q.front();
+            bfs_q.pop();
+
+            ui deg; const ui *nbrs = query_graph->getVertexNeighbors(cur, deg);
+            for (ui i = 0; i < deg; ++i) {
+                ui nxt = nbrs[i];
+
+                if (visited[nxt]) continue;
+
+                // 去掉 X 中的边
+                if (is_excluded[cur][nxt]) continue;
+
+                // 去掉 E_cut(u): u 与当前 M_q 之间的边
+                if ((cur == u && in_Mq[nxt]) || (nxt == u && in_Mq[cur])) continue;
+
+                visited[nxt] = 1;
+
+                if (in_Mq[nxt]) return false;
+
+                bfs_q.push(nxt);
+            }
+        }
+
+        return true;
+    }
+
+    // =====================================================
+    // DFS 搜索过程
+    // 对应伪代码: Procedure DFS(M_part, cost, X, P, u_new)
+    //
+    // cost:  当前部分映射中已确认缺失的查询边数量
+    // u_new: 最近一次新加入映射的查询顶点 (-1 表示 undefined)
+    // =====================================================
+    void dfs(ui cost, int u_new)
+    {
+        assert(matched_count > 0);
+        assert(matched_count <= qn);
+        assert(cost <= threshold);
+
+        if (matched_count == qn) {
             results_ptr->push_back(part_M);
             return;
         }
 
-        Timer t_cand;
-        vector<pair<ui, ui> > Mcand;
-        getIncrementalExpandableMappings(last_u, last_v, fa_Mcand, Mcand);
-        stats.get_cand_time += t_cand.elapsed();
-        if (Mcand.empty()) return;
-
         Timer t_lb;
-        ui lb = 0;
-        vector<tuple<ui, ui, ui>> restore_log;
-
-#ifdef LOWER_BOUND
-        lb = calLowerBound(Mcand, last_u, last_v, restore_log);
-#endif
+        ui lb = computeLowerBound(cost);
         stats.lb_time += t_lb.elapsed();
 
-        Timer t_branch;
-        if (missing + lb <= threshold) {
-            vector<pair<ui, ui>> local_X_additions;
-            local_X_additions.reserve(Mcand.size());
-            for (auto p : Mcand) {
-                t_branch.restart();
-                ui u = p.first;
-                ui v = p.second;
-                ui delta = calIncrementalMissing(u, v);
-
-                if (missing + delta <= threshold) {
-                    updateNeighborCounts(query_graph, u, mapped_q, Lq_counts, Lq_degrees, false);
-                    updateNeighborCounts(data_graph, v, mapped_g, Lg_counts, Lg_degrees, false);
-                    mapped_q[u] = v;
-                    mapped_g[v] = u;
-                    part_M.emplace_back(u, v);
-                    stats.branch_time += t_branch.elapsed();
-
-                    dfs(missing + delta, u, v, Mcand);
-
-                    t_branch.restart();
-                    mapped_q[u] = -1;
-                    mapped_g[v] = -1;
-                    part_M.pop_back();
-                    updateNeighborCounts(query_graph, u, mapped_q, Lq_counts, Lq_degrees, true);
-                    updateNeighborCounts(data_graph, v, mapped_g, Lg_counts, Lg_degrees, true);
-                }
-                X.insert({ u, v });
-                local_X_additions.push_back({ u, v });
-                stats.branch_time += t_branch.elapsed();
-            }
-            t_branch.restart();
-            for (const auto &p : local_X_additions) X.erase(p);
-            stats.branch_time += t_branch.elapsed();
-    }
-        else {
+        if (lb > threshold) {
             stats.prun_calls++;
+            return;
         }
 
-        // Restore LB state
-        t_branch.restart();
-        for (const auto &rec : restore_log) {
-            min_costs[get<0>(rec)] = get<1>(rec);
-            best_cands[get<0>(rec)] = get<2>(rec);
+        stats.recursion_calls++;
+
+        vector<ui> reEnabledP;
+        if (u_new >= 0) {
+            ui deg; const ui *nbrs = query_graph->getVertexNeighbors((ui)u_new, deg);
+            for (ui i = 0; i < deg; ++i) {
+                ui w = nbrs[i];
+                if (in_P[w]) {
+                    reEnabledP.push_back(w);
+                    in_P[w] = 0;
+                }
+            }
         }
-        stats.branch_time += t_branch.elapsed();
+
+        vector<ui> U_frontier;
+        for (ui u : _order) {
+            if (!in_Mq[u] && !in_P[u]) {
+                bool has_valid_anchor = false;
+                ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
+                for (ui i = 0; i < deg; ++i) {
+                    if (in_Mq[nbrs[i]] && !is_excluded[u][nbrs[i]]) {
+                        has_valid_anchor = true;
+                        break;
+                    }
+                }
+                if (has_valid_anchor) U_frontier.push_back(u);
+            }
+        }
+
+        if (U_frontier.empty()) {
+            stats.prun_calls++;
+            for (ui w : reEnabledP) in_P[w] = 1;
+            return;
+        }
+
+        vector<ui> local_P;
+        vector<pair<ui, ui>> local_X;
+        ui current_cost = cost;
+
+        for (ui u : U_frontier) {
+            ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
+            vector<ui> U_anchor;
+            for (ui i = 0; i < deg; ++i) if (in_Mq[nbrs[i]]) U_anchor.push_back(nbrs[i]);
+
+            // --- matching u ---
+            for (ui v : candidates[u]) {
+                if (mapped_g[v] != -1) continue;
+
+                bool conflict = false;
+                bool connects = false;
+                ui delta = 0;
+
+                for (ui ua : U_anchor) {
+                    bool has_edge = data_graph->hasEdge(v, mapped_q[ua]);
+                    if (is_excluded[u][ua]) {
+                        if (has_edge) { conflict = true; break; }
+                    }
+                    else {
+                        if (has_edge) connects = true;
+                        else delta++;
+                    }
+                }
+
+                if (conflict || !connects || current_cost + delta > threshold) continue;
+
+                mapped_q[u] = v;
+                mapped_g[v] = u;
+                in_Mq[u] = 1;
+                matched_count++;
+                part_M.push_back({ u, v });
+
+                dfs(current_cost + delta, (int)u);
+
+                part_M.pop_back();
+                matched_count--;
+                in_Mq[u] = 0;
+                mapped_g[v] = -1;
+                mapped_q[u] = -1;
+            }
+
+            if (isConnectionMandatory(u)) break;
+
+            // --- delay u ---
+            ui delta = 0;
+            for (ui ua : U_anchor) if (!is_excluded[u][ua]) if (++current_cost + delta > threshold) break;
+
+            in_P[u] = 1;
+            local_P.push_back(u);
+            for (ui ua : U_anchor) {
+                if (!is_excluded[u][ua]) {
+                    is_excluded[u][ua] = 1;
+                    is_excluded[ua][u] = 1;
+                    local_X.push_back({ u, ua });
+                }
+            }
+        }
+
+        // backtracking
+        for (ui u : local_P) in_P[u] = 0;
+        for (auto &e : local_X) {
+            is_excluded[e.first][e.second] = 0;
+            is_excluded[e.second][e.first] = 0;
+        }
+
+        for (ui w : reEnabledP) in_P[w] = 1;
     }
 };
+
 
 // ============================================================================
 // TreeSpanSolver Implementation (EnumerateOnDemand Strategy)
