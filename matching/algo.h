@@ -68,19 +68,35 @@ public:
             matched_count = 1;
             part_M.push_back({ v, v0 }); // v -> v0
 
-            // 动态维护: 更新邻居的未映射度数
-            for (ui i = 0; i < deg; ++i) unmapped_degrees[nbrs[i]]--;
+            updateFrontierStatus(v);
+
+            for (ui i = 0; i < deg; ++i) {
+                ui nbr = nbrs[i];
+                unmapped_degrees[nbr]--;
+                if (!is_excluded[nbr][v]) {
+                    anchor_count[nbr]++;
+                }
+                updateFrontierStatus(nbr);
+            }
 
             dfs(0, (int)v);
 
-            // 状态回溯
-            for (ui i = 0; i < deg; ++i) unmapped_degrees[nbrs[i]]++;
+            for (ui i = 0; i < deg; ++i) {
+                ui nbr = nbrs[i];
+                unmapped_degrees[nbr]++;
+                if (!is_excluded[nbr][v]) {
+                    anchor_count[nbr]--;
+                }
+                updateFrontierStatus(nbr);
+            }
 
             mapped_q[v] = -1;
             mapped_g[v0] = -1;
             in_Mq[v] = 0;
             matched_count = 0;
             part_M.pop_back();
+
+            updateFrontierStatus(v);
         }
 
         stats.dfs_time = t_search.elapsed();
@@ -150,6 +166,33 @@ private:
     vector<ui> unmapped_degrees;
 
     vector<ui> _order;               // 固定搜索顺序 π
+    vector<ui> order_rank;           // 用于还原原始匹配顺序的排名
+
+    // --- Incremental U_frontier States ---
+    vector<ui> anchor_count;         // 记录每个顶点当前有多少个未排斥(un-excluded)的已匹配邻居
+    vector<int> frontier_pos;        // 记录顶点在 active_frontier 中的位置，-1表示不在其中
+    vector<ui> active_frontier;      // 动态维护的 U_frontier 集合
+
+
+    // O(1) 增量更新顶点 u 的 Frontier 状态
+    inline void updateFrontierStatus(ui u)
+    {
+        bool should_be = (!in_Mq[u] && !in_P[u] && unmapped_degrees[u] > 0 && anchor_count[u] > 0);
+        bool is_in = (frontier_pos[u] != -1);
+
+        if (should_be && !is_in) {
+            frontier_pos[u] = active_frontier.size();
+            active_frontier.push_back(u);
+        }
+        else if (!should_be && is_in) {
+            ui idx = frontier_pos[u];
+            ui last_u = active_frontier.back();
+            active_frontier[idx] = last_u;
+            frontier_pos[last_u] = idx;
+            active_frontier.pop_back();
+            frontier_pos[u] = -1;
+        }
+    }
 
     void resetState()
     {
@@ -165,6 +208,12 @@ private:
         candidates.resize(qn);
         unmapped_degrees.assign(qn, 0);
         _order.clear();
+
+        anchor_count.assign(qn, 0);
+        frontier_pos.assign(qn, -1);
+        active_frontier.clear();
+        order_rank.assign(qn, 0);
+
         stats = TimeStats();
     }
 
@@ -288,6 +337,12 @@ private:
             _order.push_back(best_u);
         }
 
+        // 缓存排名以便于后续 O(F log F) 的 Frontier 快速定序
+        order_rank.assign(qn, 0);
+        for (ui i = 0; i < qn; ++i) {
+            order_rank[_order[i]] = i;
+        }
+
 #ifndef NDEBUG
         printf("matching order: ");
         for (auto u : _order) {
@@ -377,6 +432,7 @@ private:
                 if (in_P[w]) {
                     reEnabledP.push_back(w);
                     in_P[w] = 0;
+                    updateFrontierStatus(w);
                 }
             }
         }
@@ -405,35 +461,30 @@ private:
             processShell(0, cost, local_shells);
             stats.shell_time += t_shell.elapsed();
 
-            // 回溯 reEnabledP 状态后返回，避免破坏外层 DFS 的状态
-            for (ui w : reEnabledP) in_P[w] = 1;
+            for (ui w : reEnabledP) {
+                in_P[w] = 1;
+                updateFrontierStatus(w);
+            }
             return;
         }
-        // ====================================================================
 
         Timer t_frontier;
-        vector<ui> U_frontier;
-        for (ui u : _order) {
-            // /!in_Mq[u]               : 尚未被匹配
-            // /!in_P[u]                : 没有被放入 CDE 延迟集合
-            // unmapped_degrees[u] > 0 : 不是 Shell 节点（Shell 节点的未匹配邻居数为 0，需排除在 U_frontier 外）
-            if (!in_Mq[u] && !in_P[u] && unmapped_degrees[u] > 0) {
-                bool has_valid_anchor = false;
-                ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
-                for (ui i = 0; i < deg; ++i) {
-                    if (in_Mq[nbrs[i]] && !is_excluded[u][nbrs[i]]) {
-                        has_valid_anchor = true;
-                        break;
-                    }
-                }
-                if (has_valid_anchor) U_frontier.push_back(u);
-            }
+        vector<ui> U_frontier = active_frontier;
+        // TODO
+        if (U_frontier.size() > 1) {
+            // 通过极小规模排序来保证原本的遍历顺序
+            sort(U_frontier.begin(), U_frontier.end(), [&](ui a, ui b) {
+                return order_rank[a] < order_rank[b];
+                });
         }
         stats.frontier_time += t_frontier.elapsed();
 
         if (U_frontier.empty()) {
             stats.prun_calls++;
-            for (ui w : reEnabledP) in_P[w] = 1;
+            for (ui w : reEnabledP) {
+                in_P[w] = 1;
+                updateFrontierStatus(w);
+            }
             return;
         }
 
@@ -475,21 +526,38 @@ private:
                 matched_count++;
                 part_M.push_back({ u, v });
 
-                // DYNAMIC MAINTENANCE: 更新邻居的未映射度数
-                for (ui i = 0; i < deg; ++i) unmapped_degrees[nbrs[i]]--;
+                updateFrontierStatus(u);
+
+                for (ui i = 0; i < deg; ++i) {
+                    ui nbr = nbrs[i];
+                    unmapped_degrees[nbr]--;
+                    if (!is_excluded[nbr][u]) {
+                        anchor_count[nbr]++;
+                    }
+                    updateFrontierStatus(nbr);
+                }
 
                 Timer t_child;
                 dfs(current_cost + delta, (int)u);
                 child_dfs_time += t_child.elapsed();
 
-                // RESTORE: 状态回溯
-                for (ui i = 0; i < deg; ++i) unmapped_degrees[nbrs[i]]++;
+
+                for (ui i = 0; i < deg; ++i) {
+                    ui nbr = nbrs[i];
+                    unmapped_degrees[nbr]++;
+                    if (!is_excluded[nbr][u]) {
+                        anchor_count[nbr]--;
+                    }
+                    updateFrontierStatus(nbr);
+                }
 
                 part_M.pop_back();
                 matched_count--;
                 in_Mq[u] = 0;
                 mapped_g[v] = -1;
                 mapped_q[u] = -1;
+
+                updateFrontierStatus(u);
             }
 
             if (isConnectionMandatory(u)) break;
@@ -500,11 +568,15 @@ private:
 
             in_P[u] = 1;
             local_P.push_back(u);
+            updateFrontierStatus(u);
+
             for (ui ua : U_anchor) {
                 if (!is_excluded[u][ua]) {
                     is_excluded[u][ua] = 1;
                     is_excluded[ua][u] = 1;
                     local_X.push_back({ u, ua });
+
+                    anchor_count[u]--;
                 }
             }
         }
@@ -512,13 +584,24 @@ private:
         stats.branch_time += t_branch.elapsed() - child_dfs_time;
 
         // backtracking
-        for (ui u : local_P) in_P[u] = 0;
+        for (ui u : local_P) {
+            in_P[u] = 0;
+            updateFrontierStatus(u);
+        }
         for (auto &e : local_X) {
             is_excluded[e.first][e.second] = 0;
             is_excluded[e.second][e.first] = 0;
+
+            if (in_Mq[e.second]) anchor_count[e.first]++;
+            if (in_Mq[e.first]) anchor_count[e.second]++;
+            updateFrontierStatus(e.first);
+            updateFrontierStatus(e.second);
         }
 
-        for (ui w : reEnabledP) in_P[w] = 1;
+        for (ui w : reEnabledP) {
+            in_P[w] = 1;
+            updateFrontierStatus(w);
+        }
     }
 
     // 独立集 (Shell) 批量枚举处理
