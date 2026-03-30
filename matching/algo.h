@@ -6,11 +6,7 @@ using namespace std;
 const int INT_MAX = 0x7fffffff;
 
 // ============================================================================
-// MatchingSolver Implementation (EnumerateOnDemand Strategy)
-// ============================================================================
-
-// ============================================================================
-// MatchingSolver Implementation (EnumerateOnDemand Strategy)
+// MatchingSolver Implementation (CDE + Dynamic Kernel-and-Shell Strategy)
 // ============================================================================
 
 class MatchingSolver {
@@ -30,16 +26,25 @@ public:
 
         resetState();
 
+        // 初始化每个查询顶点的未映射邻居数 (初始即为其度数)
+        for (ui i = 0; i < qn; ++i) {
+            unmapped_degrees[i] = query_graph->getVertexDegree(i);
+        }
+
         initGlobalLabelCounts(query_graph, Lq_counts, Lq_degrees);
         initGlobalLabelCounts(data_graph, Lg_counts, Lg_degrees);
 
+        Timer t_filter;
         bool res = calVerticesFilter();
+        stats.filter_time = t_filter.elapsed();
         if (!res) {
             stats.init_time = t_init.elapsed();
             return false;
         }
 
+        Timer t_order;
         generateMatchingOrder();
+        stats.order_time = t_order.elapsed();
 
         stats.init_time = t_init.elapsed();
         return true;
@@ -54,6 +59,8 @@ public:
         results_ptr->clear();
 
         ui v = _order[0];
+        ui deg; const ui *nbrs = query_graph->getVertexNeighbors(v, deg);
+
         for (ui v0 : candidates[v]) {
             mapped_q[v] = v0;
             mapped_g[v0] = v;
@@ -61,7 +68,13 @@ public:
             matched_count = 1;
             part_M.push_back({ v, v0 }); // v -> v0
 
+            // 动态维护: 更新邻居的未映射度数
+            for (ui i = 0; i < deg; ++i) unmapped_degrees[nbrs[i]]--;
+
             dfs(0, (int)v);
+
+            // 状态回溯
+            for (ui i = 0; i < deg; ++i) unmapped_degrees[nbrs[i]]++;
 
             mapped_q[v] = -1;
             mapped_g[v0] = -1;
@@ -76,22 +89,37 @@ public:
 
     struct TimeStats {
         long long total_time = 0;
+        // init breakdown
         long long init_time = 0;
+        long long filter_time = 0;
+        long long order_time = 0;
+        // search breakdown
         long long dfs_time = 0;
-        long long branch_time = 0;
-        long long lb_time = 0;
+        long long branch_time = 0;   // candidate enumeration & matching in dfs
+        long long lb_time = 0;       // computeLowerBound
+        long long frontier_time = 0; // building U_frontier
+        long long shell_time = 0;    // NEW: shell batch processing time
+        // counters
         long long recursion_calls = 0;
         long long prun_calls = 0;
     } stats;
 
     void printStats() const
     {
-        printf("\n--- CDE-Match (Connected Delayed Extension) Time Analysis ---\n");
+        auto pct = [](long long part, long long whole) -> double {
+            return whole > 0 ? (double)part / whole * 100.0 : 0.0;
+            };
+
+        printf("\n--- CDE-Match with Dynamic KSS Time Analysis ---\n");
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
-        printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, stats.total_time > 0 ? (double)stats.init_time / stats.total_time * 100 : 0);
-        printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, stats.total_time > 0 ? (double)stats.dfs_time / stats.total_time * 100 : 0);
-        printf("- Branch Time:       %.4lf ms (%.2f%% of Search)\n", stats.branch_time / 1000.0, stats.dfs_time > 0 ? (double)stats.branch_time / stats.dfs_time * 100 : 0);
-        printf("- LowerBound Time:   %.4lf ms (%.2f%% of Search)\n", stats.lb_time / 1000.0, stats.dfs_time > 0 ? (double)stats.lb_time / stats.dfs_time * 100 : 0);
+        printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
+        printf("  - Filter Time:     %.4lf ms (%.2f%% of Init)\n", stats.filter_time / 1000.0, pct(stats.filter_time, stats.init_time));
+        printf("  - Order Time:      %.4lf ms (%.2f%% of Init)\n", stats.order_time / 1000.0, pct(stats.order_time, stats.init_time));
+        printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, pct(stats.dfs_time, stats.total_time));
+        printf("  - LowerBound Time: %.4lf ms (%.2f%% of Search)\n", stats.lb_time / 1000.0, pct(stats.lb_time, stats.dfs_time));
+        printf("  - Frontier Time:   %.4lf ms (%.2f%% of Search)\n", stats.frontier_time / 1000.0, pct(stats.frontier_time, stats.dfs_time));
+        printf("  - Branch Time:     %.4lf ms (%.2f%% of Search)\n", stats.branch_time / 1000.0, pct(stats.branch_time, stats.dfs_time));
+        printf("  - Shell Time:      %.4lf ms (%.2f%% of Search)\n", stats.shell_time / 1000.0, pct(stats.shell_time, stats.dfs_time));
         printf("Recursion Calls:     %lld\n", stats.recursion_calls);
         printf("Pruning Calls:       %lld\n", stats.prun_calls);
         printf("Results Found:       %zu\n", results_ptr ? results_ptr->size() : 0);
@@ -109,16 +137,19 @@ private:
     vector<vector<ui>> Lq_counts, Lg_counts;
     vector<ui> Lq_degrees, Lg_degrees;
 
-    // --- CDE Core States ---
-    vector<int> mapped_q;         // f: query vertex → data vertex (-1 if unmapped)
-    vector<int> mapped_g;         // reverse: data vertex → query vertex (-1 if unused)
-    vector<char> in_Mq;           // 当前已匹配集合 M_q
+    // --- CDE & Dynamic KSS Core States ---
+    vector<int> mapped_q;            // f: query vertex → data vertex (-1 if unmapped)
+    vector<int> mapped_g;            // reverse: data vertex → query vertex (-1 if unused)
+    vector<char> in_Mq;              // 当前已匹配集合 M_q
     vector<vector<int>> is_excluded; // X: 排除边集合 (symmetric, is_excluded[u][v] > 0 means (u,v) ∈ X)
-    vector<char> in_P;            // P: 延期顶点集合
+    vector<char> in_P;               // P: 延期顶点集合
     ui matched_count;
     vector<pair<ui, ui>> part_M;
 
-    vector<ui> _order;           // 固定搜索顺序 π
+    // 动态维护每个顶点有多少个邻居还尚未被映射
+    vector<ui> unmapped_degrees;
+
+    vector<ui> _order;               // 固定搜索顺序 π
 
     void resetState()
     {
@@ -132,6 +163,7 @@ private:
         part_M.reserve(qn);
         candidates.clear();
         candidates.resize(qn);
+        unmapped_degrees.assign(qn, 0);
         _order.clear();
         stats = TimeStats();
     }
@@ -177,10 +209,17 @@ private:
             if (candidates[u].empty()) return false;
             sort(candidates[u].begin(), candidates[u].end());
         }
+
+#ifndef NDEBUG
+        printf("candidates nums:\n");
+        for (ui u = 0; u < qn; ++u) {
+            printf("u = %u: %zu candidates\n", u, candidates[u].size());
+        }
+#endif
+
         return true;
     }
 
-    // TODO
     void generateMatchingOrder()
     {
         _order.clear();
@@ -200,31 +239,53 @@ private:
 
         for (ui step = 1; step < qn; ++step) {
             bool found = false;
-            ui best_a = 0, best_b = 0;
+            ui best_u = 0;
+            ui best_anchor_sz = qn;
+            ui best_cand_sz = qn;
 
             for (ui u = 0; u < qn; ++u) {
-                if (!visited[u]) continue;
+                if (visited[u]) continue;
 
+                // anchor size
+                ui current_anchor_sz = 0;
                 ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
-                for (ui i = 0; i < deg; ++i) {
-                    ui v = nbrs[i];
-                    if (visited[v]) continue;
+                for (ui i = 0; i < deg; ++i) if (visited[nbrs[i]]) current_anchor_sz++;
 
-                    ui a = min(u, v);
-                    ui b = max(u, v);
-                    if (!found || a < best_a || (a == best_a && b < best_b)) {
-                        best_a = a;
-                        best_b = b;
-                        found = true;
+                if (current_anchor_sz == 0) continue;
+
+                ui current_cand_sz = candidates[u].size();
+
+                bool is_better = false;
+
+                if (found == false) {
+                    found = true;
+                    is_better = true;
+                }
+                else {
+                    if (current_cand_sz < best_cand_sz) {
+                        is_better = true;
                     }
+                    else if (current_cand_sz == best_cand_sz) {
+                        if (current_anchor_sz > best_anchor_sz) { // modified
+                            is_better = true;
+                        }
+                        else if (current_anchor_sz == best_anchor_sz) {
+                            if (u < best_u) is_better = true;
+                        }
+                    }
+                }
+
+                if (is_better) {
+                    best_u = u;
+                    best_anchor_sz = current_anchor_sz;
+                    best_cand_sz = current_cand_sz;
                 }
             }
 
-            if (!found) break;
+            assert(found);
 
-            ui next_u = visited[best_a] ? best_b : best_a;
-            visited[next_u] = true;
-            _order.push_back(next_u);
+            visited[best_u] = true;
+            _order.push_back(best_u);
         }
 
 #ifndef NDEBUG
@@ -239,275 +300,7 @@ private:
     // TODO
     ui computeLowerBound(ui current_miss)
     {
-        Timer t_lb;
-        t_lb.restart();
-
-        auto finish = [&](ui ans) -> ui {
-            stats.lb_time += t_lb.elapsed();
-            return ans;
-            };
-
-        if (current_miss > threshold) {
-            return finish(current_miss);
-        }
-
-        // ------------------------------------------------------------
-        // 1) 取当前 frontier：与 dfs() 中 U_frontier 的定义保持一致
-        //    只考虑：未匹配、未延期、且存在 active anchor (到 M_q 的活跃边) 的点
-        // ------------------------------------------------------------
-        vector<ui> frontier;
-        vector<vector<ui>> frontier_anchors;   // 与 frontier 对齐
-        frontier.reserve(qn);
-        frontier_anchors.reserve(qn);
-
-        for (ui u : _order) {
-            if (in_Mq[u] || in_P[u]) continue;
-
-            ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
-
-            vector<ui> anchors;
-            anchors.reserve(deg);
-
-            for (ui i = 0; i < deg; ++i) {
-                ui a = nbrs[i];
-                if (in_Mq[a] && !is_excluded[u][a]) {
-                    anchors.push_back(a);
-                }
-            }
-
-            if (!anchors.empty()) {
-                frontier.push_back(u);
-                frontier_anchors.push_back(std::move(anchors));
-            }
-        }
-
-        if (frontier.empty()) {
-            return finish(current_miss);
-        }
-
-        // ------------------------------------------------------------
-        // 2) 先做 independent base lower bound
-        //    对每个 frontier 点 u：
-        //      min_delta(u) = min_{v 可用候选} miss_M(u, v)
-        //    其中 miss_M(u, v) 是 u->v 后，u 到当前 M_q 的 active anchors 中缺失的边数
-        //
-        //    同时保留每个候选的 delta，后面做 injective/Hall 风格的 collision lower bound
-        // ------------------------------------------------------------
-        const ui m = (ui)frontier.size();
-
-        vector<ui> min_delta(m, 0);
-
-        // raw_costs[i] 里存 frontier[i] 的候选 (data_v, delta)
-        vector<vector<pair<ui, ui>>> raw_costs(m);
-        raw_costs.assign(m, vector<pair<ui, ui>>());
-
-        ui base_lb = 0;
-
-        for (ui i = 0; i < m; ++i) {
-            ui u = frontier[i];
-            const vector<ui> &anchors = frontier_anchors[i];
-
-            ui best = (ui)anchors.size();  // 最差就是 anchors 全缺
-            bool has_free_candidate = false;
-
-            raw_costs[i].reserve(candidates[u].size());
-
-            for (ui v : candidates[u]) {
-                if (mapped_g[v] != -1) continue;  // injective: 已占用不能再用
-                has_free_candidate = true;
-
-                ui delta = 0;
-                for (ui a : anchors) {
-                    if (!data_graph->hasEdge(v, (ui)mapped_q[a])) {
-                        delta++;
-                    }
-                }
-
-                raw_costs[i].push_back({ v, delta });
-
-                if (delta < best) {
-                    best = delta;
-                    if (best == 0) {
-                        // 已经找到最优，不提前 break，因为后面 Hall LB 还要看完整候选分布
-                    }
-                }
-            }
-
-            // 没有任何可用候选，则该状态无解
-            if (!has_free_candidate) {
-                return finish(threshold + 1);
-            }
-
-            min_delta[i] = best;
-            base_lb += best;
-
-            if (current_miss + base_lb > threshold) {
-                return finish(current_miss + base_lb);
-            }
-        }
-
-        ui lb = current_miss + base_lb;
-        if (lb > threshold) {
-            return finish(lb);
-        }
-
-        // 剩余预算；collision LB 没必要算到超过它
-        ui remaining_budget = threshold - lb;
-        if (remaining_budget == 0 || m <= 1) {
-            return finish(lb);
-        }
-
-        // ------------------------------------------------------------
-        // 3) Hall-style collision lower bound
-        //
-        //    先把每个候选的“残余代价”定义为：
-        //      residual(u, v) = delta(u, v) - min_delta(u) >= 0
-        //
-        //    base_lb 已经收了每个点的独立最优代价；
-        //    这里再估计因为 injective 冲突 / 候选重叠，至少还要多付多少。
-        //
-        //    对任意顶点子集 S：
-        //      G_k(u) = { v | residual(u,v) <= k }
-        //      A_k(S) = | union_{u in S} G_k(u) |
-        //
-        //    若 A_k(S) < |S|，则至少有 |S|-A_k(S) 个点的 residual >= k+1
-        //    所以 subset 的额外下界可以写成：
-        //      sum_{k>=0} max(0, |S|-A_k(S))
-        //
-        //    最终 collision_lb 取所有检查过的子集中的最大值。
-        // ------------------------------------------------------------
-
-        vector<vector<pair<ui, ui>>> residual_costs(m);
-        residual_costs.assign(m, vector<pair<ui, ui>>());
-
-        for (ui i = 0; i < m; ++i) {
-            residual_costs[i].reserve(raw_costs[i].size());
-            for (const auto &pr : raw_costs[i]) {
-                ui v = pr.first;
-                ui delta = pr.second;
-                ui residual = delta - min_delta[i];
-                if (residual <= remaining_budget) {
-                    residual_costs[i].push_back({ v, residual });
-                }
-            }
-
-            sort(residual_costs[i].begin(), residual_costs[i].end(),
-                [](const pair<ui, ui> &a, const pair<ui, ui> &b) {
-                    if (a.second != b.second) return a.second < b.second;
-                    return a.first < b.first;
-                });
-        }
-
-        // stamp 技巧做 union 计数，避免反复清空大数组
-        static thread_local vector<int> seen;
-        static thread_local int stamp = 1;
-
-        if (seen.size() < gn) {
-            seen.assign(gn, 0);
-        }
-
-        auto nextStamp = [&]() {
-            ++stamp;
-            if (stamp == INT_MAX) {
-                std::fill(seen.begin(), seen.end(), 0);
-                stamp = 1;
-            }
-            };
-
-        auto subsetCollisionLB = [&](const vector<ui> &idxs) -> ui {
-            const ui s = (ui)idxs.size();
-            ui extra = 0;
-
-            // 对 k = 0 .. remaining_budget-1
-            // 统计 residual <= k 的候选并集大小
-            for (ui k = 0; k < remaining_budget; ++k) {
-                nextStamp();
-                ui union_cnt = 0;
-
-                for (ui id : idxs) {
-                    const auto &lst = residual_costs[id];
-                    for (const auto &pr : lst) {
-                        if (pr.second > k) break;
-                        ui v = pr.first;
-                        if (seen[v] != stamp) {
-                            seen[v] = stamp;
-                            union_cnt++;
-                        }
-                    }
-                }
-
-                if (union_cnt < s) {
-                    extra += (s - union_cnt);
-                    if (lb + extra > threshold) {
-                        return extra; // 提前结束
-                    }
-                }
-            }
-
-            return extra;
-            };
-
-        ui collision_lb = 0;
-
-        // ------------------------------------------------------------
-        // 4) 子集枚举策略
-        //    - query 很小（如你当前 5 点）时，完整枚举全部子集，效果最好
-        //    - query 较大时，退化成：全体 frontier + 所有二元子集
-        //      仍然安全，只是 lower bound 会更松
-        // ------------------------------------------------------------
-        if (m <= 12) {
-            const ui total_masks = (1u << m);
-
-            vector<ui> idxs;
-            idxs.reserve(m);
-
-            for (ui mask = 1; mask < total_masks; ++mask) {
-                idxs.clear();
-                for (ui i = 0; i < m; ++i) {
-                    if (mask & (1u << i)) idxs.push_back(i);
-                }
-
-                ui extra = subsetCollisionLB(idxs);
-                if (extra > collision_lb) {
-                    collision_lb = extra;
-                    if (lb + collision_lb > threshold) {
-                        return finish(lb + collision_lb);
-                    }
-                }
-            }
-        }
-        else {
-            // 退化版：检查整个 frontier
-            {
-                vector<ui> all_idxs;
-                all_idxs.reserve(m);
-                for (ui i = 0; i < m; ++i) all_idxs.push_back(i);
-
-                ui extra = subsetCollisionLB(all_idxs);
-                if (extra > collision_lb) {
-                    collision_lb = extra;
-                    if (lb + collision_lb > threshold) {
-                        return finish(lb + collision_lb);
-                    }
-                }
-            }
-
-            // 再检查所有 pair，抓局部强冲突
-            for (ui i = 0; i < m; ++i) {
-                for (ui j = i + 1; j < m; ++j) {
-                    vector<ui> pair_idxs = { i, j };
-                    ui extra = subsetCollisionLB(pair_idxs);
-                    if (extra > collision_lb) {
-                        collision_lb = extra;
-                        if (lb + collision_lb > threshold) {
-                            return finish(lb + collision_lb);
-                        }
-                    }
-                }
-            }
-        }
-
-        return finish(lb + collision_lb);
+        return current_miss;
     }
 
     // 在查询图中，仅使用 (E_q \ X \ E_cut(u)) 的边，
@@ -548,6 +341,7 @@ private:
 
     // =====================================================
     // DFS 搜索过程
+    // 包含 CDE 原有逻辑及 Dynamic KSS (Kernel-and-Shell) 机制
     // 对应伪代码: Procedure DFS(M_part, cost, X, P, u_new)
     //
     // cost:  当前部分映射中已确认缺失的查询边数量
@@ -559,11 +353,6 @@ private:
         assert(matched_count <= qn);
         assert(cost <= threshold);
 
-        if (matched_count == qn) {
-            results_ptr->push_back(part_M);
-            return;
-        }
-
         Timer t_lb;
         ui lb = computeLowerBound(cost);
         stats.lb_time += t_lb.elapsed();
@@ -574,6 +363,11 @@ private:
         }
 
         stats.recursion_calls++;
+
+        if (matched_count == qn) {
+            results_ptr->push_back(part_M);
+            return;
+        }
 
         vector<ui> reEnabledP;
         if (u_new >= 0) {
@@ -587,9 +381,43 @@ private:
             }
         }
 
+        // ====================================================================
+        // NEW: 动态 Kernel & Shell 判定
+        // 当所有未分配顶点的所有邻居都已被访问（即未映射度数均为 0）时，
+        // 说明它们互不相连构成绝对的独立集 (Shell)。此时拦截下来批量枚举。
+        // ====================================================================
+        bool all_shells = true;
+        vector<ui> local_shells;
+        for (ui u : _order) {
+            if (!in_Mq[u]) {
+                if (unmapped_degrees[u] == 0) {
+                    local_shells.push_back(u);
+                }
+                else {
+                    all_shells = false;
+                    break;
+                }
+            }
+        }
+
+        if (all_shells && !local_shells.empty()) {
+            Timer t_shell;
+            processShell(0, cost, local_shells);
+            stats.shell_time += t_shell.elapsed();
+
+            // 回溯 reEnabledP 状态后返回，避免破坏外层 DFS 的状态
+            for (ui w : reEnabledP) in_P[w] = 1;
+            return;
+        }
+        // ====================================================================
+
+        Timer t_frontier;
         vector<ui> U_frontier;
         for (ui u : _order) {
-            if (!in_Mq[u] && !in_P[u]) {
+            // /!in_Mq[u]               : 尚未被匹配
+            // /!in_P[u]                : 没有被放入 CDE 延迟集合
+            // unmapped_degrees[u] > 0 : 不是 Shell 节点（Shell 节点的未匹配邻居数为 0，需排除在 U_frontier 外）
+            if (!in_Mq[u] && !in_P[u] && unmapped_degrees[u] > 0) {
                 bool has_valid_anchor = false;
                 ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
                 for (ui i = 0; i < deg; ++i) {
@@ -601,6 +429,7 @@ private:
                 if (has_valid_anchor) U_frontier.push_back(u);
             }
         }
+        stats.frontier_time += t_frontier.elapsed();
 
         if (U_frontier.empty()) {
             stats.prun_calls++;
@@ -608,6 +437,8 @@ private:
             return;
         }
 
+        Timer t_branch;
+        long long child_dfs_time = 0;
         vector<ui> local_P;
         vector<pair<ui, ui>> local_X;
         ui current_cost = cost;
@@ -617,7 +448,7 @@ private:
             vector<ui> U_anchor;
             for (ui i = 0; i < deg; ++i) if (in_Mq[nbrs[i]]) U_anchor.push_back(nbrs[i]);
 
-            // --- matching u ---
+            // --- matching u (Kernel 扩展) ---
             for (ui v : candidates[u]) {
                 if (mapped_g[v] != -1) continue;
 
@@ -644,7 +475,15 @@ private:
                 matched_count++;
                 part_M.push_back({ u, v });
 
+                // DYNAMIC MAINTENANCE: 更新邻居的未映射度数
+                for (ui i = 0; i < deg; ++i) unmapped_degrees[nbrs[i]]--;
+
+                Timer t_child;
                 dfs(current_cost + delta, (int)u);
+                child_dfs_time += t_child.elapsed();
+
+                // RESTORE: 状态回溯
+                for (ui i = 0; i < deg; ++i) unmapped_degrees[nbrs[i]]++;
 
                 part_M.pop_back();
                 matched_count--;
@@ -670,6 +509,8 @@ private:
             }
         }
 
+        stats.branch_time += t_branch.elapsed() - child_dfs_time;
+
         // backtracking
         for (ui u : local_P) in_P[u] = 0;
         for (auto &e : local_X) {
@@ -678,6 +519,63 @@ private:
         }
 
         for (ui w : reEnabledP) in_P[w] = 1;
+    }
+
+    // 独立集 (Shell) 批量枚举处理
+    // 注意：因为 Shell 之间无边，所以在此函数中不需要再维护 unmapped_degrees
+    void processShell(size_t idx, ui cost, const vector<ui> &shells)
+    {
+        stats.recursion_calls++;
+
+        if (idx == shells.size()) {
+            results_ptr->push_back(part_M);
+            return;
+        }
+
+        ui u = shells[idx];
+        ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
+
+        vector<ui> U_anchor;
+        for (ui i = 0; i < deg; ++i) {
+            // Shell 此时的定义保证了它的所有邻居必定均在 M_q 中
+            U_anchor.push_back(nbrs[i]);
+        }
+
+        for (ui v : candidates[u]) {
+            if (mapped_g[v] != -1) continue;
+
+            bool conflict = false;
+            bool connects = false;
+            ui delta = 0;
+
+            for (ui ua : U_anchor) {
+                bool has_edge = data_graph->hasEdge(v, mapped_q[ua]);
+                // Shell 节点之前可能由于 CDE 被置入排斥集合 X
+                if (is_excluded[u][ua]) {
+                    if (has_edge) { conflict = true; break; }
+                }
+                else {
+                    if (has_edge) connects = true;
+                    else delta++;
+                }
+            }
+
+            if (conflict || !connects || cost + delta > threshold) continue;
+
+            mapped_q[u] = v;
+            mapped_g[v] = u;
+            in_Mq[u] = 1;
+            matched_count++;
+            part_M.push_back({ u, v });
+
+            processShell(idx + 1, cost + delta, shells);
+
+            part_M.pop_back();
+            matched_count--;
+            in_Mq[u] = 0;
+            mapped_g[v] = -1;
+            mapped_q[u] = -1;
+        }
     }
 };
 
