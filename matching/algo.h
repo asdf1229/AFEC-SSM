@@ -3,10 +3,8 @@
 
 using namespace std;
 
-const int INT_MAX = 0x7fffffff;
-
 // ============================================================================
-// MatchingSolver Implementation (CDE + Dynamic Kernel-and-Shell Strategy)
+// MatchingSolver Implementation (CDE + Dynamic Kernel-and-Shell Strategy + Component-based Frontier)
 // ============================================================================
 
 class MatchingSolver {
@@ -358,40 +356,69 @@ private:
         return current_miss;
     }
 
-    // 在查询图中，仅使用 (E_q \ X \ E_cut(u)) 的边，
-    // 检查 u 是否还能到达 M_q 中任意点。
-    bool isConnectionMandatory(ui u)
+    vector<ui> getBestComponentFrontier()
     {
-        vector<char> visited(qn, 0);
-        queue<ui> bfs_q;
-        visited[u] = 1;
-        bfs_q.push(u);
+        // 1. 遍历一遍，判断当前查询图被 Mq 分割为了几个不相连的部分
+        vector<bool> visited_unmapped(qn, false);
+        vector<vector<ui>> components;
 
-        while (!bfs_q.empty()) {
-            ui cur = bfs_q.front();
-            bfs_q.pop();
+        for (ui i = 0; i < qn; ++i) {
+            if (!in_Mq[i] && !visited_unmapped[i] && unmapped_degrees[i] > 0) {
+                vector<ui> comp;
+                queue<ui> q;
+                q.push(i);
+                visited_unmapped[i] = true;
 
-            ui deg; const ui *nbrs = query_graph->getVertexNeighbors(cur, deg);
-            for (ui i = 0; i < deg; ++i) {
-                ui nxt = nbrs[i];
+                while (!q.empty()) {
+                    ui curr = q.front();
+                    q.pop();
+                    comp.push_back(curr);
 
-                if (visited[nxt]) continue;
-
-                // 去掉 X 中的边
-                if (is_excluded[cur][nxt]) continue;
-
-                // 去掉 E_cut(u): u 与当前 M_q 之间的边
-                if ((cur == u && in_Mq[nxt]) || (nxt == u && in_Mq[cur])) continue;
-
-                visited[nxt] = 1;
-
-                if (in_Mq[nxt]) return false;
-
-                bfs_q.push(nxt);
+                    ui deg; const ui *nbrs = query_graph->getVertexNeighbors(curr, deg);
+                    for (ui j = 0; j < deg; ++j) {
+                        ui nbr = nbrs[j];
+                        // 仅考虑未映射点之间的连通性
+                        if (!in_Mq[nbr] && !visited_unmapped[nbr]) {
+                            visited_unmapped[nbr] = true;
+                            q.push(nbr);
+                        }
+                    }
+                }
+                components.push_back(comp);
             }
         }
 
-        return true;
+        // 2. 选择其中（点数 * 每个点的待选集）最少的部分，以及对应部分的 U_frontier
+        vector<ui> best_U_frontier;
+
+        // 使用 double 替代 unsigned long long 来存储代价，彻底避免乘法溢出风险
+        // 注意：需要包含头文件 <limits>
+        double min_cost = std::numeric_limits<double>::max();
+
+        for (const auto &comp : components) {
+            vector<ui> comp_frontier;
+            double sum_cand = 1.0;
+
+            for (ui v : comp) {
+                sum_cand *= candidates[v].size();
+                // 检查 v 是否属于当前的 active_frontier (O(1)判断)
+                if (frontier_pos[v] != -1) {
+                    comp_frontier.push_back(v);
+                }
+            }
+
+            // 仅对具有合法 Frontier 的连通分量进行代价评估
+            assert(!comp_frontier.empty());
+            if (!comp_frontier.empty()) {
+                if (sum_cand < min_cost) {
+                    min_cost = sum_cand;
+                    best_U_frontier = comp_frontier;
+                }
+            }
+        }
+
+        // 3. 返回找到的最优 U_frontier
+        return best_U_frontier;
     }
 
     // =====================================================
@@ -438,7 +465,7 @@ private:
         }
 
         // ====================================================================
-        // NEW: 动态 Kernel & Shell 判定
+        // 动态 Kernel & Shell 判定
         // 当所有未分配顶点的所有邻居都已被访问（即未映射度数均为 0）时，
         // 说明它们互不相连构成绝对的独立集 (Shell)。此时拦截下来批量枚举。
         // ====================================================================
@@ -469,17 +496,9 @@ private:
         }
 
         Timer t_frontier;
-        vector<ui> U_frontier = active_frontier;
-        // TODO
-        if (U_frontier.size() > 1) {
-            // 通过极小规模排序来保证原本的遍历顺序
-            sort(U_frontier.begin(), U_frontier.end(), [&](ui a, ui b) {
-                return order_rank[a] < order_rank[b];
-                });
-        }
-        stats.frontier_time += t_frontier.elapsed();
 
-        if (U_frontier.empty()) {
+        // 提前拦截：如果当前没有任何 Frontier 点，则直接剪枝回溯
+        if (active_frontier.empty()) {
             stats.prun_calls++;
             for (ui w : reEnabledP) {
                 in_P[w] = 1;
@@ -487,6 +506,13 @@ private:
             }
             return;
         }
+
+        vector<ui> U_frontier = getBestComponentFrontier();
+        // TODO
+        sort(U_frontier.begin(), U_frontier.end(), [&](ui a, ui b) {
+            return order_rank[a] < order_rank[b];
+            });
+        stats.frontier_time += t_frontier.elapsed();
 
         Timer t_branch;
         long long child_dfs_time = 0;
@@ -559,8 +585,6 @@ private:
 
                 updateFrontierStatus(u);
             }
-
-            if (isConnectionMandatory(u)) break;
 
             // --- delay u ---
             ui delta = 0;
