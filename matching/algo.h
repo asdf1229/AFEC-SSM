@@ -130,7 +130,7 @@ public:
             return whole > 0 ? (double)part / whole * 100.0 : 0.0;
             };
 
-        printf("\n--- CDE-Match with Dynamic KSS Time Analysis ---\n");
+        printf("\n--- CDE-Match Time Analysis ---\n");
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
         printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
         printf("  - Filter Time:     %.4lf ms (%.2f%% of Init)\n", stats.filter_time / 1000.0, pct(stats.filter_time, stats.init_time));
@@ -157,6 +157,8 @@ private:
 
     // 修改处 1：将 candidates 声明为 vector<MyBitset>
     vector<MyBitset> candidates;
+    // 全局 cand 排除集，使用 MyBitset 保证 O(1) 插入和查询
+    vector<MyBitset> x_cand;
 
     vector<vector<ui>> Lq_counts, Lg_counts;
     vector<ui> Lq_degrees, Lg_degrees;
@@ -212,6 +214,9 @@ private:
         // 修改处 2：初始化 candidates，为其分配 gn（数据图顶点数）范围的 MyBitset
         candidates.clear();
         candidates.assign(qn, MyBitset(gn));
+
+        x_cand.clear();
+        x_cand.assign(qn, MyBitset(gn));
 
         _order.clear();
 
@@ -497,6 +502,10 @@ private:
         long long child_dfs_time = 0;
         vector<ui> local_P;
         vector<pair<ui, ui>> local_X;
+
+        // 用于在当前 DFS 状态结束时回溯 x_cand 排除集
+        vector<pair<ui, ui>> local_x_cand;
+
         ui current_cost = cost;
 
         for (ui u : U_frontier) {
@@ -514,28 +523,33 @@ private:
             for (ui ua : U_anchor) {
                 if (is_excluded[u][ua]) continue;
 
+                // 第一阶段：精准收集所有与该 anchor 连通的候选点
+                vector<ui> anchor_v_list;
                 ui deg; const ui *nbrs = data_graph->getVertexNeighbors(mapped_q[ua], deg);
                 for (ui j = 0; j < deg; ++j) {
                     ui v = nbrs[j];
-                    if (mapped_g[v] != -1) continue;
+                    // O(1) 利用 Bitset 检查 v 是否为 u 的候选集
+                    if (candidates[u].contains(v)) {
+                        anchor_v_list.push_back(v);
+                    }
+                }
 
-                    // 修改处 5：将 O(log C) 的二分查找替换为 O(1) 的 Bitset 查询
-                    if (!candidates[u].contains(v)) continue;
+                // 第二阶段：第一分支 - 从这些候选点中尝试扩展
+                for (ui v : anchor_v_list) {
+                    // 如果已经被映射过，或者已经进入了全局/分支排除集，则直接跳过
+                    if (mapped_g[v] != -1) continue;
+                    if (x_cand[u].contains(v)) continue;
 
                     bool conflict = false;
                     ui delta = 0;
 
                     for (ui other_ua : U_anchor) {
                         if (other_ua == ua) continue;
+                        if (is_excluded[u][other_ua]) continue;
 
                         bool has_edge = data_graph->hasEdge(v, mapped_q[other_ua]);
 
-                        if (is_excluded[u][other_ua]) {
-                            if (has_edge) { conflict = true; break; }
-                        }
-                        else {
-                            if (!has_edge) delta++;
-                        }
+                        if (!has_edge) delta++;
                     }
 
                     if (conflict || current_cost + delta > threshold) continue;
@@ -579,6 +593,7 @@ private:
                     updateFrontierStatus(u);
                 }
 
+                // 第三阶段：第二分支 - 排斥该边 (u, ua)
                 current_cost++;
                 is_excluded[u][ua] = 1;
                 is_excluded[ua][u] = 1;
@@ -588,6 +603,15 @@ private:
                 if (current_cost > threshold) {
                     threshold_exceeded = true;
                     break;
+                }
+
+                // 一旦该边被加入排斥集，意味着任何与 mapped_q[ua] 连通的候选点 v 都不可能作为 u 的映射。
+                // 我们将上面完整收集的 anchor_v_list 全部加入 x_cand 排斥集。
+                for (ui v : anchor_v_list) {
+                    if (!x_cand[u].contains(v)) {
+                        x_cand[u].insert(v);
+                        local_x_cand.push_back({ u, v });
+                    }
                 }
             }
 
@@ -609,6 +633,7 @@ private:
             in_P[u] = 0;
             updateFrontierStatus(u);
         }
+
         for (auto &e : local_X) {
             is_excluded[e.first][e.second] = 0;
             is_excluded[e.second][e.first] = 0;
@@ -617,6 +642,11 @@ private:
             if (in_Mq[e.first]) anchor_count[e.second]++;
             updateFrontierStatus(e.first);
             updateFrontierStatus(e.second);
+        }
+
+        // 精准清空当前 DFS 分支中加入的排斥集候选点（基于局部回溯记录）
+        for (auto &p : local_x_cand) {
+            x_cand[p.first].remove(p.second);
         }
 
         for (ui w : reEnabledP) {
