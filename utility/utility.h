@@ -16,6 +16,8 @@
 #include <map>
 #include <unordered_set>
 #include <sys/time.h>
+#include <numeric>
+#include <chrono>
 #include "configuration/types.h"
 #include "configuration/config.h"
 
@@ -32,9 +34,10 @@ const ui block_size = 1024;
 
 class Utility {
 public:
-	static FILE *open_file(const char *file_name, const char *mode) {
+	static FILE *open_file(const char *file_name, const char *mode)
+	{
 		FILE *f = fopen(file_name, mode);
-		if(f == nullptr) {
+		if (f == nullptr) {
 			printf("Can not open file: %s\n", file_name);
 			exit(1);
 		}
@@ -42,19 +45,20 @@ public:
 		return f;
 	}
 
-	static std::string integer_to_string(long long number) {
+	static std::string integer_to_string(long long number)
+	{
 		std::vector<ui> sequence;
-		if(number == 0) sequence.pb(0);
-		while(number > 0) {
-			sequence.pb(number%1000);
+		if (number == 0) sequence.pb(0);
+		while (number > 0) {
+			sequence.pb(number % 1000);
 			number /= 1000;
 		}
 
 		char buf[5];
 		std::string res;
-		for(ui i = sequence.size();i > 0;i --) {
-			if(i == sequence.size()) sprintf(buf, "%u", sequence[i-1]);
-			else sprintf(buf, ",%03u", sequence[i-1]);
+		for (ui i = sequence.size(); i > 0; i--) {
+			if (i == sequence.size()) sprintf(buf, "%u", sequence[i - 1]);
+			else sprintf(buf, ",%03u", sequence[i - 1]);
 			res += std::string(buf);
 		}
 		return res;
@@ -62,9 +66,10 @@ public:
 };
 
 struct PairHash {
-    size_t operator()(const std::pair<ui, ui>& p) const {
-        return (size_t(p.first) << 32) ^ p.second;
-    }
+	size_t operator()(const std::pair<ui, ui> &p) const
+	{
+		return (size_t(p.first) << 32) ^ p.second;
+	}
 };
 
 class Timer {
@@ -77,10 +82,11 @@ private:
 	long long m_start;
 
 	// Returns a timestamp ('now') in microseconds
-	long long timestamp() {
+	long long timestamp()
+	{
 		struct timeval tp;
 		gettimeofday(&tp, nullptr);
-		return ((long long)(tp.tv_sec))*1000000 + tp.tv_usec;
+		return ((long long)(tp.tv_sec)) * 1000000 + tp.tv_usec;
 	}
 };
 

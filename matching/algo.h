@@ -1,10 +1,11 @@
 #include "utility/utility.h"
+#include "utility/mybitset.h"
 // #include "graph/graph.h"
 
 using namespace std;
 
 // ============================================================================
-// MatchingSolver Implementation (CDE + Dynamic Kernel-and-Shell Strategy + Component-based Frontier)
+// MatchingSolver Implementation 
 // ============================================================================
 
 class MatchingSolver {
@@ -24,9 +25,13 @@ public:
 
         resetState();
 
-        // 初始化每个查询顶点的未映射邻居数 (初始即为其度数)
-        for (ui i = 0; i < qn; ++i) {
-            unmapped_degrees[i] = query_graph->getVertexDegree(i);
+        // 由于查询图q规模较小，用一个邻接矩阵存储q的数据，使得查询边的存在性判断时间变为O(1)
+        q_matrix.assign(qn, vector<bool>(qn, false));
+        for (ui u = 0; u < qn; ++u) {
+            ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
+            for (ui i = 0; i < deg; ++i) {
+                q_matrix[u][nbrs[i]] = true;
+            }
         }
 
         initGlobalLabelCounts(query_graph, Lq_counts, Lq_degrees);
@@ -57,8 +62,8 @@ public:
         results_ptr->clear();
 
         ui v = _order[0];
-        ui deg; const ui *nbrs = query_graph->getVertexNeighbors(v, deg);
 
+        // MyBitset 支持基于 Iterator 的 range-based for 循环
         for (ui v0 : candidates[v]) {
             mapped_q[v] = v0;
             mapped_g[v0] = v;
@@ -68,24 +73,25 @@ public:
 
             updateFrontierStatus(v);
 
-            for (ui i = 0; i < deg; ++i) {
-                ui nbr = nbrs[i];
-                unmapped_degrees[nbr]--;
-                if (!is_excluded[nbr][v]) {
-                    anchor_count[nbr]++;
+            // 用邻接矩阵 q_matrix 替代 getVertexNeighbors 遍历
+            for (ui i = 0; i < qn; ++i) {
+                if (q_matrix[v][i]) {
+                    if (!is_excluded[i][v]) {
+                        anchor_count[i]++;
+                    }
+                    updateFrontierStatus(i);
                 }
-                updateFrontierStatus(nbr);
             }
 
             dfs(0, (int)v);
 
-            for (ui i = 0; i < deg; ++i) {
-                ui nbr = nbrs[i];
-                unmapped_degrees[nbr]++;
-                if (!is_excluded[nbr][v]) {
-                    anchor_count[nbr]--;
+            for (ui i = 0; i < qn; ++i) {
+                if (q_matrix[v][i]) {
+                    if (!is_excluded[i][v]) {
+                        anchor_count[i]--;
+                    }
+                    updateFrontierStatus(i);
                 }
-                updateFrontierStatus(nbr);
             }
 
             mapped_q[v] = -1;
@@ -112,7 +118,7 @@ public:
         long long branch_time = 0;   // candidate enumeration & matching in dfs
         long long lb_time = 0;       // computeLowerBound
         long long frontier_time = 0; // building U_frontier
-        long long shell_time = 0;    // NEW: shell batch processing time
+        long long shell_time = 0;    // shell batch processing time
         // counters
         long long recursion_calls = 0;
         long long prun_calls = 0;
@@ -147,7 +153,11 @@ private:
     ui threshold;
     ui qn, gn;
 
-    vector<vector<ui>> candidates;
+    vector<vector<bool>> q_matrix;
+
+    // 修改处 1：将 candidates 声明为 vector<MyBitset>
+    vector<MyBitset> candidates;
+
     vector<vector<ui>> Lq_counts, Lg_counts;
     vector<ui> Lq_degrees, Lg_degrees;
 
@@ -160,9 +170,6 @@ private:
     ui matched_count;
     vector<pair<ui, ui>> part_M;
 
-    // 动态维护每个顶点有多少个邻居还尚未被映射
-    vector<ui> unmapped_degrees;
-
     vector<ui> _order;               // 固定搜索顺序 π
     vector<ui> order_rank;           // 用于还原原始匹配顺序的排名
 
@@ -171,11 +178,10 @@ private:
     vector<int> frontier_pos;        // 记录顶点在 active_frontier 中的位置，-1表示不在其中
     vector<ui> active_frontier;      // 动态维护的 U_frontier 集合
 
-
     // O(1) 增量更新顶点 u 的 Frontier 状态
     inline void updateFrontierStatus(ui u)
     {
-        bool should_be = (!in_Mq[u] && !in_P[u] && unmapped_degrees[u] > 0 && anchor_count[u] > 0);
+        bool should_be = (!in_Mq[u] && !in_P[u] && anchor_count[u] > 0);
         bool is_in = (frontier_pos[u] != -1);
 
         if (should_be && !is_in) {
@@ -202,9 +208,11 @@ private:
         matched_count = 0;
         part_M.clear();
         part_M.reserve(qn);
+
+        // 修改处 2：初始化 candidates，为其分配 gn（数据图顶点数）范围的 MyBitset
         candidates.clear();
-        candidates.resize(qn);
-        unmapped_degrees.assign(qn, 0);
+        candidates.assign(qn, MyBitset(gn));
+
         _order.clear();
 
         anchor_count.assign(qn, 0);
@@ -250,17 +258,19 @@ private:
                 if (label_u != data_graph->getVertexLabel(v)) continue;
                 if (Lq_degrees[u] > Lg_degrees[v] + threshold) continue;
                 if (computeNLF(u, v) <= threshold) {
-                    candidates[u].push_back(v);
+                    // 修改处 3：使用 MyBitset 的 insert 方法
+                    candidates[u].insert(v);
                 }
             }
             if (candidates[u].empty()) return false;
-            sort(candidates[u].begin(), candidates[u].end());
+            // 修改处 4：由于 Bitset 天然有序，这里移除了原有的 std::sort 排序逻辑
         }
 
 #ifndef NDEBUG
         printf("candidates nums:\n");
         for (ui u = 0; u < qn; ++u) {
-            printf("u = %u: %zu candidates\n", u, candidates[u].size());
+            // size() 返回值转为 int 即可
+            printf("u = %u: %d candidates\n", u, candidates[u].size());
         }
 #endif
 
@@ -295,8 +305,9 @@ private:
 
                 // anchor size
                 ui current_anchor_sz = 0;
-                ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
-                for (ui i = 0; i < deg; ++i) if (visited[nbrs[i]]) current_anchor_sz++;
+                for (ui i = 0; i < qn; ++i) {
+                    if (q_matrix[u][i] && visited[i]) current_anchor_sz++;
+                }
 
                 if (current_anchor_sz == 0) continue;
 
@@ -313,7 +324,7 @@ private:
                         is_better = true;
                     }
                     else if (current_cand_sz == best_cand_sz) {
-                        if (current_anchor_sz > best_anchor_sz) { // modified
+                        if (current_anchor_sz > best_anchor_sz) {
                             is_better = true;
                         }
                         else if (current_anchor_sz == best_anchor_sz) {
@@ -363,7 +374,7 @@ private:
         vector<vector<ui>> components;
 
         for (ui i = 0; i < qn; ++i) {
-            if (!in_Mq[i] && !visited_unmapped[i] && unmapped_degrees[i] > 0) {
+            if (!in_Mq[i] && !visited_unmapped[i]) {
                 vector<ui> comp;
                 queue<ui> q;
                 q.push(i);
@@ -374,13 +385,13 @@ private:
                     q.pop();
                     comp.push_back(curr);
 
-                    ui deg; const ui *nbrs = query_graph->getVertexNeighbors(curr, deg);
-                    for (ui j = 0; j < deg; ++j) {
-                        ui nbr = nbrs[j];
-                        // 仅考虑未映射点之间的连通性
-                        if (!in_Mq[nbr] && !visited_unmapped[nbr]) {
-                            visited_unmapped[nbr] = true;
-                            q.push(nbr);
+                    for (ui nbr = 0; nbr < qn; ++nbr) {
+                        if (q_matrix[curr][nbr]) {
+                            // 仅考虑未映射点之间的连通性
+                            if (!in_Mq[nbr] && !visited_unmapped[nbr]) {
+                                visited_unmapped[nbr] = true;
+                                q.push(nbr);
+                            }
                         }
                     }
                 }
@@ -453,46 +464,13 @@ private:
 
         vector<ui> reEnabledP;
         if (u_new >= 0) {
-            ui deg; const ui *nbrs = query_graph->getVertexNeighbors((ui)u_new, deg);
-            for (ui i = 0; i < deg; ++i) {
-                ui w = nbrs[i];
-                if (in_P[w]) {
+            for (ui w = 0; w < qn; ++w) {
+                if (q_matrix[u_new][w] && in_P[w]) {
                     reEnabledP.push_back(w);
                     in_P[w] = 0;
                     updateFrontierStatus(w);
                 }
             }
-        }
-
-        // ====================================================================
-        // 动态 Kernel & Shell 判定
-        // 当所有未分配顶点的所有邻居都已被访问（即未映射度数均为 0）时，
-        // 说明它们互不相连构成绝对的独立集 (Shell)。此时拦截下来批量枚举。
-        // ====================================================================
-        bool all_shells = true;
-        vector<ui> local_shells;
-        for (ui u : _order) {
-            if (!in_Mq[u]) {
-                if (unmapped_degrees[u] == 0) {
-                    local_shells.push_back(u);
-                }
-                else {
-                    all_shells = false;
-                    break;
-                }
-            }
-        }
-
-        if (all_shells && !local_shells.empty()) {
-            Timer t_shell;
-            processShell(0, cost, local_shells);
-            stats.shell_time += t_shell.elapsed();
-
-            for (ui w : reEnabledP) {
-                in_P[w] = 1;
-                updateFrontierStatus(w);
-            }
-            return;
         }
 
         Timer t_frontier;
@@ -508,7 +486,8 @@ private:
         }
 
         vector<ui> U_frontier = getBestComponentFrontier();
-        // TODO
+        // TODO dynamic component-based frontier selection
+        // TODO choose best u
         sort(U_frontier.begin(), U_frontier.end(), [&](ui a, ui b) {
             return order_rank[a] < order_rank[b];
             });
@@ -521,88 +500,106 @@ private:
         ui current_cost = cost;
 
         for (ui u : U_frontier) {
-            ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
             vector<ui> U_anchor;
-            for (ui i = 0; i < deg; ++i) if (in_Mq[nbrs[i]]) U_anchor.push_back(nbrs[i]);
 
-            // --- matching u (Kernel 扩展) ---
-            for (ui v : candidates[u]) {
-                if (mapped_g[v] != -1) continue;
-
-                bool conflict = false;
-                bool connects = false;
-                ui delta = 0;
-
-                for (ui ua : U_anchor) {
-                    bool has_edge = data_graph->hasEdge(v, mapped_q[ua]);
-                    if (is_excluded[u][ua]) {
-                        if (has_edge) { conflict = true; break; }
-                    }
-                    else {
-                        if (has_edge) connects = true;
-                        else delta++;
-                    }
+            for (ui i = 0; i < qn; ++i) {
+                if (q_matrix[u][i] && in_Mq[i]) {
+                    U_anchor.push_back(i);
                 }
-
-                if (conflict || !connects || current_cost + delta > threshold) continue;
-
-                mapped_q[u] = v;
-                mapped_g[v] = u;
-                in_Mq[u] = 1;
-                matched_count++;
-                part_M.push_back({ u, v });
-
-                updateFrontierStatus(u);
-
-                for (ui i = 0; i < deg; ++i) {
-                    ui nbr = nbrs[i];
-                    unmapped_degrees[nbr]--;
-                    if (!is_excluded[nbr][u]) {
-                        anchor_count[nbr]++;
-                    }
-                    updateFrontierStatus(nbr);
-                }
-
-                Timer t_child;
-                dfs(current_cost + delta, (int)u);
-                child_dfs_time += t_child.elapsed();
-
-
-                for (ui i = 0; i < deg; ++i) {
-                    ui nbr = nbrs[i];
-                    unmapped_degrees[nbr]++;
-                    if (!is_excluded[nbr][u]) {
-                        anchor_count[nbr]--;
-                    }
-                    updateFrontierStatus(nbr);
-                }
-
-                part_M.pop_back();
-                matched_count--;
-                in_Mq[u] = 0;
-                mapped_g[v] = -1;
-                mapped_q[u] = -1;
-
-                updateFrontierStatus(u);
             }
 
-            // --- delay u ---
-            ui delta = 0;
-            for (ui ua : U_anchor) if (!is_excluded[u][ua]) if (++current_cost + delta > threshold) break;
+            bool threshold_exceeded = false;
 
+            // --- matching u 按 anchor 进行细分 ---
+            for (ui ua : U_anchor) {
+                if (is_excluded[u][ua]) continue;
+
+                ui deg; const ui *nbrs = data_graph->getVertexNeighbors(mapped_q[ua], deg);
+                for (ui j = 0; j < deg; ++j) {
+                    ui v = nbrs[j];
+                    if (mapped_g[v] != -1) continue;
+
+                    // 修改处 5：将 O(log C) 的二分查找替换为 O(1) 的 Bitset 查询
+                    if (!candidates[u].contains(v)) continue;
+
+                    bool conflict = false;
+                    ui delta = 0;
+
+                    for (ui other_ua : U_anchor) {
+                        if (other_ua == ua) continue;
+
+                        bool has_edge = data_graph->hasEdge(v, mapped_q[other_ua]);
+
+                        if (is_excluded[u][other_ua]) {
+                            if (has_edge) { conflict = true; break; }
+                        }
+                        else {
+                            if (!has_edge) delta++;
+                        }
+                    }
+
+                    if (conflict || current_cost + delta > threshold) continue;
+
+                    mapped_q[u] = v;
+                    mapped_g[v] = u;
+                    in_Mq[u] = 1;
+                    matched_count++;
+                    part_M.push_back({ u, v });
+
+                    updateFrontierStatus(u);
+
+                    for (ui i = 0; i < qn; ++i) {
+                        if (q_matrix[u][i]) {
+                            if (!is_excluded[i][u]) {
+                                anchor_count[i]++;
+                            }
+                            updateFrontierStatus(i);
+                        }
+                    }
+
+                    Timer t_child;
+                    dfs(current_cost + delta, (int)u);
+                    child_dfs_time += t_child.elapsed();
+
+                    for (ui i = 0; i < qn; ++i) {
+                        if (q_matrix[u][i]) {
+                            if (!is_excluded[i][u]) {
+                                anchor_count[i]--;
+                            }
+                            updateFrontierStatus(i);
+                        }
+                    }
+
+                    part_M.pop_back();
+                    matched_count--;
+                    in_Mq[u] = 0;
+                    mapped_g[v] = -1;
+                    mapped_q[u] = -1;
+
+                    updateFrontierStatus(u);
+                }
+
+                current_cost++;
+                is_excluded[u][ua] = 1;
+                is_excluded[ua][u] = 1;
+                anchor_count[u]--;
+                local_X.push_back({ u, ua });
+
+                if (current_cost > threshold) {
+                    threshold_exceeded = true;
+                    break;
+                }
+            }
+
+            // 如果还没能把 u 塞进 P 集合就已经超过阈值，整条线死路一条，直接 break 并回溯。
+            if (threshold_exceeded) {
+                break;
+            }
+
+            // 当所有 anchor 都断开（且容错尚未爆表），证明该 u 与当前任意锚点都没连通，延期 u
             in_P[u] = 1;
             local_P.push_back(u);
             updateFrontierStatus(u);
-
-            for (ui ua : U_anchor) {
-                if (!is_excluded[u][ua]) {
-                    is_excluded[u][ua] = 1;
-                    is_excluded[ua][u] = 1;
-                    local_X.push_back({ u, ua });
-
-                    anchor_count[u]--;
-                }
-            }
         }
 
         stats.branch_time += t_branch.elapsed() - child_dfs_time;
@@ -625,63 +622,6 @@ private:
         for (ui w : reEnabledP) {
             in_P[w] = 1;
             updateFrontierStatus(w);
-        }
-    }
-
-    // 独立集 (Shell) 批量枚举处理
-    // 注意：因为 Shell 之间无边，所以在此函数中不需要再维护 unmapped_degrees
-    void processShell(size_t idx, ui cost, const vector<ui> &shells)
-    {
-        stats.recursion_calls++;
-
-        if (idx == shells.size()) {
-            results_ptr->push_back(part_M);
-            return;
-        }
-
-        ui u = shells[idx];
-        ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
-
-        vector<ui> U_anchor;
-        for (ui i = 0; i < deg; ++i) {
-            // Shell 此时的定义保证了它的所有邻居必定均在 M_q 中
-            U_anchor.push_back(nbrs[i]);
-        }
-
-        for (ui v : candidates[u]) {
-            if (mapped_g[v] != -1) continue;
-
-            bool conflict = false;
-            bool connects = false;
-            ui delta = 0;
-
-            for (ui ua : U_anchor) {
-                bool has_edge = data_graph->hasEdge(v, mapped_q[ua]);
-                // Shell 节点之前可能由于 CDE 被置入排斥集合 X
-                if (is_excluded[u][ua]) {
-                    if (has_edge) { conflict = true; break; }
-                }
-                else {
-                    if (has_edge) connects = true;
-                    else delta++;
-                }
-            }
-
-            if (conflict || !connects || cost + delta > threshold) continue;
-
-            mapped_q[u] = v;
-            mapped_g[v] = u;
-            in_Mq[u] = 1;
-            matched_count++;
-            part_M.push_back({ u, v });
-
-            processShell(idx + 1, cost + delta, shells);
-
-            part_M.pop_back();
-            matched_count--;
-            in_Mq[u] = 0;
-            mapped_g[v] = -1;
-            mapped_q[u] = -1;
         }
     }
 };
@@ -716,7 +656,10 @@ public:
         initGlobalLabelCounts(query_graph, Lq_counts, Lq_degrees);
         initGlobalLabelCounts(data_graph, Lg_counts, Lg_degrees);
 
-        candidates.assign(qn, vector<ui>());
+        // 修改处 1：初始化 candidates 为 gn（数据图顶点数）范围的 MyBitset
+        candidates.clear();
+        candidates.assign(qn, MyBitset(gn));
+
         if (!calVerticesFilter()) {
             stats.init_time = t_init.elapsed();
             return false;
@@ -748,6 +691,7 @@ public:
 
         ui start_u = initial_seq.S[0];
 
+        // MyBitset 支持基于 Iterator 的 range-based for 循环
         for (ui v : candidates[start_u]) {
             mapped_q[start_u] = v;
             mapped_g[v] = start_u;
@@ -771,6 +715,7 @@ public:
         long long reorder_time = 0;     // Time spent finding replacements and re-running Prim
         long long recursion_calls = 0;
         long long reorder_calls = 0;    // How many times the tree structure was changed
+        long long has_edge_calls = 0;  // Count of data_graph->hasEdge calls
     } stats;
 
     void printStats() const
@@ -783,6 +728,7 @@ public:
         // Percentages below are relative to Search Time
         printf("- Verify Time:       %.4lf ms (%.2f%% of Search)\n", stats.verify_time / 1000.0, (stats.search_time > 0 ? (double)stats.verify_time / stats.search_time * 100 : 0));
         printf("- Reorder Time:      %.4lf ms (%.2f%% of Search)\n", stats.reorder_time / 1000.0, (stats.search_time > 0 ? (double)stats.reorder_time / stats.search_time * 100 : 0));
+        printf("- [hasEdge] Calls:   %lld\n", stats.has_edge_calls);
 
         printf("Recursion Calls:     %lld\n", stats.recursion_calls);
         printf("Reorder Ops:         %lld\n", stats.reorder_calls);
@@ -829,7 +775,9 @@ private:
     ui qn, gn;
     vector<vector<pair<ui, ui>>> *results_ptr;
 
-    vector<vector<ui>> candidates;
+    // 修改处 2：将 candidates 声明为 vector<MyBitset>
+    vector<MyBitset> candidates;
+
     vector<vector<ui>> Lq_counts, Lg_counts;
     vector<ui> Lq_degrees, Lg_degrees;
     vector<int> mapped_q;
@@ -870,14 +818,13 @@ private:
         // 获取父节点在数据图中的邻居作为候选
         ui deg_g; const ui *neighbors_g = data_graph->getVertexNeighbors(v_parent, deg_g);
 
-        // 优化: 先将 u_curr 的候选集放入 bloom filter 或 hash set 加速查找? 
-        // 这里直接使用 binary_search (前提: candidates 已排序)
-
         for (ui k = 0; k < deg_g; ++k) {
             ui v_curr = neighbors_g[k];
 
             if (mapped_g[v_curr] != -1) continue; // 必须未被匹配
-            if (!binary_search(candidates[u_curr].begin(), candidates[u_curr].end(), v_curr)) continue; // 必须是候选点
+
+            // 修改处 3：将 O(log C) 的二分查找替换为 O(1) 的 Bitset 查询
+            if (!candidates[u_curr].contains(v_curr)) continue;
 
             Timer t_check; // Measure verification overhead
             t_check.restart();
@@ -892,6 +839,7 @@ private:
                 ui v_target = mapped_q[u_target]; // u_target 在 S[0...h-1] 中，必定已匹配
 
                 bool edge_exists = data_graph->hasEdge(v_curr, v_target);
+                stats.has_edge_calls++;
 
                 // R check: 如果边在排除集 R 中，且在数据图中存在，则非法
                 // (根据论文定义，R 中的边不应被诱导出来，用于避免重复)
@@ -940,6 +888,7 @@ private:
         if (gamma < threshold) {
             Timer t_reorder; // Measure Reordering Overhead
             t_reorder.restart();
+
             // 尝试替换 sEdge[h]
             QEdge current_tree_edge = seq.sEdge[h];
             QEdge new_edge;
@@ -1226,11 +1175,12 @@ private:
             for (ui v = 0; v < gn; ++v) {
                 if (label_u != data_graph->getVertexLabel(v)) continue;
                 if (computeDelta(u, v) <= threshold) {
-                    candidates[u].push_back(v);
+                    // 修改处 4：使用 MyBitset 的 insert 方法
+                    candidates[u].insert(v);
                 }
             }
             if (candidates[u].empty()) return false;
-            sort(candidates[u].begin(), candidates[u].end());
+            // 修改处 5：由于 Bitset 天然有序，这里移除了原有的 std::sort 排序逻辑
         }
         return true;
     }
