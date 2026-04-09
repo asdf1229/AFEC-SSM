@@ -3,4 +3,5 @@ test/
 result/
 .*/
 com.txt
-compare.sh
+tmp/
+out.log

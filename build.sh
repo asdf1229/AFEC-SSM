@@ -1,42 +1,44 @@
 #!/bin/bash
 
-# build/
-#   ├── CMakeCache.txt
-#   ├── Makefile
-#   └── ssm_ged
-
 BUILD_DIR="build"
-ENABLE_V2="OFF"
-CLEAN_BUILD=true
-BUILD_DIR_SET_BY_USER=false
+GENERATOR=""
 
-# Parse command-line options and arguments
-for arg in "$@"
-do
-    case $arg in
+for arg in "$@"; do
+    case "$arg" in
         -h|--help)
             echo "Usage: ./build.sh [build_directory]"
             echo
             echo "Description:"
-            echo "  Build the project using CMake and Make."
+            echo "  Configure and build all algorithm executables."
             echo "  Default build directory is './build'."
             exit 0
             ;;
         *)
-            # If the argument does not begin with '-', assume it is the build directory name
-            if [[ ! $arg =~ ^- ]]; then
+            if [[ ! "$arg" =~ ^- ]]; then
                 BUILD_DIR="$arg"
             fi
             ;;
     esac
 done
 
+if command -v ninja >/dev/null 2>&1; then
+    GENERATOR="Ninja"
+elif command -v mingw32-make >/dev/null 2>&1; then
+    GENERATOR="MinGW Makefiles"
+elif command -v make >/dev/null 2>&1; then
+    GENERATOR="Unix Makefiles"
+fi
+
 echo "========================================"
 echo "Build Configuration:"
 echo "  Directory : $BUILD_DIR"
+if [ -n "$GENERATOR" ]; then
+    echo "  Generator : $GENERATOR"
+else
+    echo "  Generator : default"
+fi
 echo "========================================"
 
-# clean
 if [ -d "$BUILD_DIR" ]; then
     echo "Cleaning build directory '$BUILD_DIR'..."
     rm -rf "$BUILD_DIR"
@@ -45,20 +47,33 @@ fi
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR" || exit 1
 
-# Run CMake
 echo "Running CMake..."
-cmake ..
-
-# Run Make
-echo "Compiling..."
-make -j$(nproc)
-
-if [ $? -eq 0 ]; then
-    echo "========================================"
-    echo "Build successful!"
-    echo "Executable: $BUILD_DIR/ssm_ged"
-    echo "========================================"
+if [ -n "$GENERATOR" ]; then
+    cmake -G "$GENERATOR" ..
 else
-    echo "Error: Compilation failed."
+    cmake ..
+fi
+
+echo "Compiling..."
+cmake --build . --parallel
+
+shopt -s nullglob
+executables=()
+for candidate in ssm_ged_*; do
+    if [ -f "$candidate" ]; then
+        executables+=("$candidate")
+    fi
+done
+
+if [ ${#executables[@]} -eq 0 ]; then
+    echo "Error: no algorithm executables were produced."
     exit 1
 fi
+
+echo "========================================"
+echo "Build successful!"
+echo "Executables:"
+for exe in "${executables[@]}"; do
+    echo "  $BUILD_DIR/$exe"
+done
+echo "========================================"
