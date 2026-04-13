@@ -8,7 +8,7 @@
 using namespace std;
 
 // ============================================================================
-// MatchingSolver Implementation 
+// MatchingSolver Implementation
 // ============================================================================
 
 class MatchingSolver {

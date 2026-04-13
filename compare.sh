@@ -6,6 +6,7 @@ BUILD_DIR=./build
 SKIP_BUILD=false
 SELECTED_ALGOS=()
 ALGO_TIMEOUT_SECONDS=3600
+CURRENT_CHILD_PID=""
 
 usage() {
     cat <<'EOF'
@@ -22,12 +23,42 @@ EOF
 }
 
 on_interrupt() {
+    trap - INT TERM
     echo
     echo "Interrupted by user (Ctrl+C). Stopping compare.sh."
+    stop_current_child
     exit 130
 }
 
-trap on_interrupt INT
+stop_current_child() {
+    local pid="${CURRENT_CHILD_PID:-}"
+    if [ -z "$pid" ]; then
+        return 0
+    fi
+
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 1
+    kill -KILL -- "-$pid" 2>/dev/null || true
+    pkill -KILL -P "$pid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
+    CURRENT_CHILD_PID=""
+}
+
+run_with_timeout() {
+    local output_file="$1"
+    shift
+
+    timeout --kill-after=5s "${ALGO_TIMEOUT_SECONDS}s" "$@" > "$output_file" 2>&1 &
+    CURRENT_CHILD_PID=$!
+    wait "$CURRENT_CHILD_PID"
+    local rc=$?
+    CURRENT_CHILD_PID=""
+    return "$rc"
+}
+
+trap on_interrupt INT TERM
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -290,7 +321,7 @@ for folder in "${DATA_DIR}"/*/; do
                 TOTAL_ALGO_RUNS=$((TOTAL_ALGO_RUNS + 1))
 
                 set +e
-                timeout "${ALGO_TIMEOUT_SECONDS}s" "$exe" -d "$gfile" -q "$qfile" -t "$t" > "$out" 2>&1
+                run_with_timeout "$out" "$exe" -d "$gfile" -q "$qfile" -t "$t"
                 rc=$?
                 set -e
 
@@ -305,7 +336,7 @@ for folder in "${DATA_DIR}"/*/; do
                         exit 130
                     fi
                     case_failed=true
-                    if [ $rc -eq 124 ]; then
+                    if [ $rc -eq 124 ] || [ $rc -eq 137 ]; then
                         statuses["$algo"]="Timeout"
                         printf "%s\t%s\tt=%s\t%s\tTimeout(%ss)\t%s\n" \
                             "$dirname" "$qname" "$t" "$algo" "$ALGO_TIMEOUT_SECONDS" "$abs_out" >> "$FAIL_LIST"
