@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DATA_DIR=../SSM-DatasetGen/datasets
+DATA_DIR=./test/datasets
 BUILD_DIR=./build
 SKIP_BUILD=false
 SELECTED_ALGOS=()
@@ -16,8 +16,8 @@ Options:
   -a, --algorithms a,b,c   Only compare the specified algorithm keys.
                            Example: --algorithms cde_match,treespan
   -b, --build-dir DIR      Build directory. Default: ./build
-  -d, --data-dir DIR       Dataset root. Default: ../SSM-DatasetGen/datasets
-                           The script scans synthetic/ and raw/real_graphs/ under this root.
+  -d, --data-dir DIR       Dataset root. Default: ./test/datasets
+                           The script scans synthetic/ and real_graphs/ under this root.
       --skip-build         Reuse existing binaries in the build directory.
   -h, --help              Show this help message.
 EOF
@@ -261,8 +261,8 @@ discover_dataset_dirs() {
     if [ -d "${data_dir}/synthetic" ]; then
         roots+=("synthetic	${data_dir}/synthetic")
     fi
-    if [ -d "${data_dir}/raw/real_graphs" ]; then
-        roots+=("real	${data_dir}/raw/real_graphs")
+    if [ -d "${data_dir}/real_graphs" ]; then
+        roots+=("real	${data_dir}/real_graphs")
     fi
 
     if [ ${#roots[@]} -eq 0 ]; then
@@ -353,7 +353,7 @@ shopt -s nullglob
 mapfile -t DATASET_DIRS < <(discover_dataset_dirs "$DATA_DIR")
 
 if [ ${#DATASET_DIRS[@]} -eq 0 ]; then
-    echo "Error: no graph_g.txt datasets found under ${DATA_DIR}/synthetic or ${DATA_DIR}/raw/real_graphs" >&2
+    echo "Error: no graph_g.txt datasets found under ${DATA_DIR}/synthetic or ${DATA_DIR}/real_graphs" >&2
     exit 1
 fi
 
