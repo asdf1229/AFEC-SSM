@@ -1,11 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-DATA_DIR=./test/dataset
+DATA_DIR=../SSM-DatasetGen/datasets
 BUILD_DIR=./build
 SKIP_BUILD=false
 SELECTED_ALGOS=()
-ALGO_TIMEOUT_SECONDS=3600
+ALGO_TIMEOUT_SECONDS=30
 CURRENT_CHILD_PID=""
 
 usage() {
@@ -16,7 +16,8 @@ Options:
   -a, --algorithms a,b,c   Only compare the specified algorithm keys.
                            Example: --algorithms cde_match,treespan
   -b, --build-dir DIR      Build directory. Default: ./build
-  -d, --data-dir DIR       Dataset directory. Default: ./test/dataset
+  -d, --data-dir DIR       Dataset root. Default: ../SSM-DatasetGen/datasets
+                           The script scans synthetic/ and raw/real_graphs/ under this root.
       --skip-build         Reuse existing binaries in the build directory.
   -h, --help              Show this help message.
 EOF
@@ -95,7 +96,7 @@ RESULT_DIR="./result/${timestamp}"
 mkdir -p "${RESULT_DIR}"
 
 OUT_LOG="${RESULT_DIR}/out.log"
-echo "out.log will be saved to: $(realpath "$OUT_LOG")"
+echo "out.log will be saved to: ${PWD}/${OUT_LOG#./}"
 exec > "$OUT_LOG" 2>&1
 
 echo "===== RESULTS WILL BE SAVED TO: ${RESULT_DIR} ====="
@@ -189,7 +190,9 @@ discover_queries() {
                 size_key = 2147483647
                 index_key = 2147483647
 
-                if (match(name, /^query_[0-9]+_[0-9]+$/)) {
+                if (match(name, /^[0-9]+$/)) {
+                    index_key = name + 0
+                } else if (match(name, /^query_[0-9]+_[0-9]+$/)) {
                     split(name, fields, "_")
                     size_key = fields[2] + 0
                     index_key = fields[3] + 0
@@ -198,6 +201,82 @@ discover_queries() {
                 printf "%d\t%d\t%s\t%s\n", size_key, index_key, name, $0
             }
         ' | sort -t $'\t' -k1,1n -k2,2n -k3,3 | cut -f4-
+}
+
+discover_query_groups() {
+    local qdir="$1"
+    shopt -s nullglob
+
+    local groups=()
+    local direct_queries=("${qdir}"/*.txt)
+    if [ ${#direct_queries[@]} -gt 0 ]; then
+        groups+=(".	${qdir}")
+    fi
+
+    local group_dir group_name group_queries
+    for group_dir in "${qdir}"/*/; do
+        group_queries=("${group_dir}"/*.txt)
+        if [ ${#group_queries[@]} -eq 0 ]; then
+            continue
+        fi
+
+        group_name="$(basename "$group_dir")"
+        groups+=("${group_name}	${group_dir%/}")
+    done
+
+    if [ ${#groups[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    printf '%s\n' "${groups[@]}" | \
+        awk -F '\t' '
+            {
+                name = $1
+                rank = 100
+                value = 2147483647
+
+                if (name == "." || name == "baseline") {
+                    rank = 0
+                    value = 0
+                } else if (match(name, /^vertices_num_[0-9]+$/)) {
+                    rank = 10
+                    value = substr(name, 14) + 0
+                } else if (match(name, /^avg_degree_[0-9]+$/)) {
+                    rank = 20
+                    value = substr(name, 12) + 0
+                } else if (match(name, /^missing_edge_threshold_[0-9]+$/)) {
+                    rank = 30
+                    value = substr(name, 24) + 0
+                }
+
+                printf "%d\t%d\t%s\t%s\n", rank, value, name, $0
+            }
+        ' | sort -t $'\t' -k1,1n -k2,2n -k3,3 | cut -f4-
+}
+
+discover_dataset_dirs() {
+    local data_dir="$1"
+    local roots=()
+
+    if [ -d "${data_dir}/synthetic" ]; then
+        roots+=("synthetic	${data_dir}/synthetic")
+    fi
+    if [ -d "${data_dir}/raw/real_graphs" ]; then
+        roots+=("real	${data_dir}/raw/real_graphs")
+    fi
+
+    if [ ${#roots[@]} -eq 0 ]; then
+        roots+=("custom	${data_dir}")
+    fi
+
+    local root_entry dataset_group search_root
+    for root_entry in "${roots[@]}"; do
+        dataset_group="${root_entry%%$'\t'*}"
+        search_root="${root_entry#*$'\t'}"
+
+        find "$search_root" -name graph_g.txt -not -path '*/query_graph/*' -exec dirname {} \; | \
+            awk -v group="$dataset_group" '{ printf "%s\t%s\n", group, $0 }'
+    done | sort -t $'\t' -k1,1 -k2,2
 }
 
 parse_summary_line() {
@@ -259,7 +338,7 @@ SUMMARY_FILE="${RESULT_DIR}/summary.tsv"
 FAIL_LIST="${RESULT_DIR}/failures.txt"
 : > "$FAIL_LIST"
 
-summary_header=(dataset query threshold status expected_count)
+summary_header=(dataset_group dataset query_group query threshold status expected_count)
 for algo in "${ALGO_KEYS[@]}"; do
     summary_header+=("${algo}_count" "${algo}_run_ms" "${algo}_recursion_calls" "${algo}_output")
 done
@@ -271,146 +350,172 @@ FAIL=0
 
 shopt -s nullglob
 
-for folder in "${DATA_DIR}"/*/; do
+mapfile -t DATASET_DIRS < <(discover_dataset_dirs "$DATA_DIR")
+
+if [ ${#DATASET_DIRS[@]} -eq 0 ]; then
+    echo "Error: no graph_g.txt datasets found under ${DATA_DIR}/synthetic or ${DATA_DIR}/raw/real_graphs" >&2
+    exit 1
+fi
+
+for dataset_entry in "${DATASET_DIRS[@]}"; do
+    dataset_group="${dataset_entry%%$'\t'*}"
+    folder="${dataset_entry#*$'\t'}"
     dirname=$(basename "$folder")
     gfile="${folder}/graph_g.txt"
     qdir="${folder}/query_graph"
 
     if [ ! -f "$gfile" ]; then
-        echo "[Skip] $dirname: graph_g.txt not found"
+        echo "[Skip] ${dataset_group}/${dirname}: graph_g.txt not found"
         continue
     fi
 
     if [ ! -d "$qdir" ]; then
-        echo "[Skip] $dirname: query_graph/ not found"
+        echo "[Skip] ${dataset_group}/${dirname}: query_graph/ not found"
         continue
     fi
 
-    echo "Dataset: $dirname"
-    mkdir -p "${RESULT_DIR}/${dirname}"
+    echo "Dataset: ${dataset_group}/${dirname}"
+    mkdir -p "${RESULT_DIR}/${dataset_group}/${dirname}"
 
-    mapfile -t QUERY_FILES < <(discover_queries "$qdir")
-    for qfile in "${QUERY_FILES[@]}"; do
-        qname=$(basename "$qfile" .txt)
-        echo "  Query: $qname"
+    mapfile -t QUERY_GROUPS < <(discover_query_groups "$qdir")
+    if [ ${#QUERY_GROUPS[@]} -eq 0 ]; then
+        echo "[Skip] ${dataset_group}/${dirname}: no query .txt files found under query_graph/"
+        continue
+    fi
 
-        for t in {0..3}; do
-            TOTAL_CASES=$((TOTAL_CASES + 1))
+    for query_group_entry in "${QUERY_GROUPS[@]}"; do
+        query_group="${query_group_entry%%$'\t'*}"
+        query_group_dir="${query_group_entry#*$'\t'}"
+        query_group_label="$query_group"
+        if [ "$query_group_label" = "." ]; then
+            query_group_label="legacy"
+        fi
 
-            declare -A counts=()
-            declare -A run_ms=()
-            declare -A outputs=()
-            declare -A statuses=()
-            declare -A display_names=()
-            declare -A recursion_calls=()
+        echo "  Query group: $query_group_label"
 
-            case_failed=false
-            case_reason=""
+        mapfile -t QUERY_FILES < <(discover_queries "$query_group_dir")
+        for qfile in "${QUERY_FILES[@]}"; do
+            qname=$(basename "$qfile" .txt)
+            echo "    Query: $qname"
 
-            for idx in "${!ALGO_EXECUTABLES[@]}"; do
-                exe="${ALGO_EXECUTABLES[$idx]}"
-                algo="${ALGO_KEYS[$idx]}"
-                algo_result_dir="${RESULT_DIR}/${dirname}/${algo}"
-                mkdir -p "${algo_result_dir}"
-                out="${algo_result_dir}/${qname}_t=${t}.txt"
-                abs_out="$(realpath "$out")"
-                outputs["$algo"]="$abs_out"
-                display_names["$algo"]="$algo"
-                recursion_calls["$algo"]="NA"
+            for t in {0..3}; do
+                TOTAL_CASES=$((TOTAL_CASES + 1))
 
-                TOTAL_ALGO_RUNS=$((TOTAL_ALGO_RUNS + 1))
+                declare -A counts=()
+                declare -A run_ms=()
+                declare -A outputs=()
+                declare -A statuses=()
+                declare -A display_names=()
+                declare -A recursion_calls=()
 
-                set +e
-                run_with_timeout "$out" "$exe" -d "$gfile" -q "$qfile" -t "$t"
-                rc=$?
-                set -e
+                case_failed=false
+                case_reason=""
 
-                parse_output_metadata "$out" "$algo"
-                display_names["$algo"]="$OUTPUT_LABEL"
-                recursion_calls["$algo"]="$OUTPUT_RECURSION_CALLS"
+                for idx in "${!ALGO_EXECUTABLES[@]}"; do
+                    exe="${ALGO_EXECUTABLES[$idx]}"
+                    algo="${ALGO_KEYS[$idx]}"
+                    algo_result_dir="${RESULT_DIR}/${dataset_group}/${dirname}/${query_group_label}/${algo}"
+                    mkdir -p "${algo_result_dir}"
+                    out="${algo_result_dir}/${qname}_t=${t}.txt"
+                    abs_out="${PWD}/${out#./}"
+                    outputs["$algo"]="$abs_out"
+                    display_names["$algo"]="$algo"
+                    recursion_calls["$algo"]="NA"
 
-                if [ $rc -ne 0 ]; then
-                    if [ $rc -eq 130 ]; then
-                        echo
-                        echo "Interrupted by user (Ctrl+C). Stopping compare.sh."
-                        exit 130
+                    TOTAL_ALGO_RUNS=$((TOTAL_ALGO_RUNS + 1))
+
+                    set +e
+                    run_with_timeout "$out" "$exe" -d "$gfile" -q "$qfile" -t "$t"
+                    rc=$?
+                    set -e
+
+                    parse_output_metadata "$out" "$algo"
+                    display_names["$algo"]="$OUTPUT_LABEL"
+                    recursion_calls["$algo"]="$OUTPUT_RECURSION_CALLS"
+
+                    if [ $rc -ne 0 ]; then
+                        if [ $rc -eq 130 ]; then
+                            echo
+                            echo "Interrupted by user (Ctrl+C). Stopping compare.sh."
+                            exit 130
+                        fi
+                        case_failed=true
+                        if [ $rc -eq 124 ] || [ $rc -eq 137 ]; then
+                            statuses["$algo"]="Timeout"
+                            printf "%s\t%s\t%s\t%s\tt=%s\t%s\tTimeout(%ss)\t%s\n" \
+                                "$dataset_group" "$dirname" "$query_group_label" "$qname" "$t" "$algo" "$ALGO_TIMEOUT_SECONDS" "$abs_out" >> "$FAIL_LIST"
+                        else
+                            statuses["$algo"]="RunError"
+                            printf "%s\t%s\t%s\t%s\tt=%s\t%s\tRunError\t%s\n" \
+                                "$dataset_group" "$dirname" "$query_group_label" "$qname" "$t" "$algo" "$abs_out" >> "$FAIL_LIST"
+                        fi
+                        continue
                     fi
-                    case_failed=true
-                    if [ $rc -eq 124 ] || [ $rc -eq 137 ]; then
-                        statuses["$algo"]="Timeout"
-                        printf "%s\t%s\tt=%s\t%s\tTimeout(%ss)\t%s\n" \
-                            "$dirname" "$qname" "$t" "$algo" "$ALGO_TIMEOUT_SECONDS" "$abs_out" >> "$FAIL_LIST"
-                    else
-                        statuses["$algo"]="RunError"
-                        printf "%s\t%s\tt=%s\t%s\tRunError\t%s\n" \
-                            "$dirname" "$qname" "$t" "$algo" "$abs_out" >> "$FAIL_LIST"
+
+                    summary_line=$(grep '^SSM_GED_SUMMARY ' "$out" | tail -n 1 || true)
+                    if ! parse_summary_line "$summary_line"; then
+                        case_failed=true
+                        statuses["$algo"]="ParseError"
+                        printf "%s\t%s\t%s\t%s\tt=%s\t%s\tParseError\t%s\n" \
+                            "$dataset_group" "$dirname" "$query_group_label" "$qname" "$t" "$algo" "$abs_out" >> "$FAIL_LIST"
+                        continue
                     fi
-                    continue
+
+                    counts["$algo"]="$SUMMARY_COUNT"
+                    run_ms["$algo"]="$SUMMARY_RUN_MS"
+                    statuses["$algo"]="OK"
+                done
+
+                expected_count=""
+                if [ "$case_failed" = false ]; then
+                    baseline_algo="${ALGO_KEYS[0]}"
+                    expected_count="${counts[$baseline_algo]}"
+
+                    for algo in "${ALGO_KEYS[@]}"; do
+                        if [ "${counts[$algo]}" != "$expected_count" ]; then
+                            case_failed=true
+                            case_reason="CountMismatch ${baseline_algo}=${expected_count}, ${algo}=${counts[$algo]}"
+                            printf "%s\t%s\t%s\t%s\tt=%s\t%s\tVerifyError\t%s\n" \
+                                "$dataset_group" "$dirname" "$query_group_label" "$qname" "$t" "$algo" "${outputs[$algo]}" >> "$FAIL_LIST"
+                        fi
+                    done
                 fi
 
-                summary_line=$(grep '^SSM_GED_SUMMARY ' "$out" | tail -n 1 || true)
-                if ! parse_summary_line "$summary_line"; then
-                    case_failed=true
-                    statuses["$algo"]="ParseError"
-                    printf "%s\t%s\tt=%s\t%s\tParseError\t%s\n" \
-                        "$dirname" "$qname" "$t" "$algo" "$abs_out" >> "$FAIL_LIST"
-                    continue
+                row=("$dataset_group" "$dirname" "$query_group_label" "$qname" "$t")
+                if [ "$case_failed" = true ]; then
+                    FAIL=$((FAIL + 1))
+                    if [ -z "$case_reason" ]; then
+                        case_reason="RuntimeOrParseError"
+                    fi
+                    echo "      [FAIL] t=$t"
+                    echo "             Reason: $case_reason"
+                    row+=("FAIL" "$expected_count")
+                else
+                    echo "      [DONE] t=$t"
+                    row+=("OK" "$expected_count")
                 fi
-
-                counts["$algo"]="$SUMMARY_COUNT"
-                run_ms["$algo"]="$SUMMARY_RUN_MS"
-                statuses["$algo"]="OK"
-            done
-
-            expected_count=""
-            if [ "$case_failed" = false ]; then
-                baseline_algo="${ALGO_KEYS[0]}"
-                expected_count="${counts[$baseline_algo]}"
 
                 for algo in "${ALGO_KEYS[@]}"; do
-                    if [ "${counts[$algo]}" != "$expected_count" ]; then
-                        case_failed=true
-                        case_reason="CountMismatch ${baseline_algo}=${expected_count}, ${algo}=${counts[$algo]}"
-                        printf "%s\t%s\tt=%s\t%s\tVerifyError\t%s\n" \
-                            "$dirname" "$qname" "$t" "$algo" "${outputs[$algo]}" >> "$FAIL_LIST"
+                    algo_label="${display_names[$algo]:-$algo}"
+                    algo_status="${statuses[$algo]:-NA}"
+                    algo_output="${outputs[$algo]:-NA}"
+                    algo_run="${run_ms[$algo]:-NA}"
+                    algo_recursion="${recursion_calls[$algo]:-NA}"
+
+                    if [ "$algo_status" = "OK" ]; then
+                        echo "             ${algo_label}: ${algo_run} ms, Recursion Calls: ${algo_recursion}, Output: ${algo_output}"
+                    elif [ "$algo_status" = "Timeout" ]; then
+                        echo "             ${algo_label}: TIMEOUT(${ALGO_TIMEOUT_SECONDS}s), Recursion Calls: ${algo_recursion}, Output: ${algo_output}"
+                    else
+                        echo "             ${algo_label}: ${algo_status}, Recursion Calls: ${algo_recursion}, Output: ${algo_output}"
                     fi
                 done
-            fi
 
-            row=("$dirname" "$qname" "$t")
-            if [ "$case_failed" = true ]; then
-                FAIL=$((FAIL + 1))
-                if [ -z "$case_reason" ]; then
-                    case_reason="RuntimeOrParseError"
-                fi
-                echo "    [FAIL] t=$t"
-                echo "           Reason: $case_reason"
-                row+=("FAIL" "$expected_count")
-            else
-                echo "    [DONE] t=$t"
-                row+=("OK" "$expected_count")
-            fi
-
-            for algo in "${ALGO_KEYS[@]}"; do
-                algo_label="${display_names[$algo]:-$algo}"
-                algo_status="${statuses[$algo]:-NA}"
-                algo_output="${outputs[$algo]:-NA}"
-                algo_run="${run_ms[$algo]:-NA}"
-                algo_recursion="${recursion_calls[$algo]:-NA}"
-
-                if [ "$algo_status" = "OK" ]; then
-                    echo "           ${algo_label}: ${algo_run} ms, Recursion Calls: ${algo_recursion}, Output: ${algo_output}"
-                elif [ "$algo_status" = "Timeout" ]; then
-                    echo "           ${algo_label}: TIMEOUT(${ALGO_TIMEOUT_SECONDS}s), Recursion Calls: ${algo_recursion}, Output: ${algo_output}"
-                else
-                    echo "           ${algo_label}: ${algo_status}, Recursion Calls: ${algo_recursion}, Output: ${algo_output}"
-                fi
+                for algo in "${ALGO_KEYS[@]}"; do
+                    row+=("${counts[$algo]:-NA}" "${run_ms[$algo]:-NA}" "${recursion_calls[$algo]:-NA}" "${outputs[$algo]:-NA}")
+                done
+                printf '%s\n' "$(IFS=$'\t'; echo "${row[*]}")" >> "$SUMMARY_FILE"
             done
-
-            for algo in "${ALGO_KEYS[@]}"; do
-                row+=("${counts[$algo]:-NA}" "${run_ms[$algo]:-NA}" "${recursion_calls[$algo]:-NA}" "${outputs[$algo]:-NA}")
-            done
-            printf '%s\n' "$(IFS=$'\t'; echo "${row[*]}")" >> "$SUMMARY_FILE"
         done
     done
 done

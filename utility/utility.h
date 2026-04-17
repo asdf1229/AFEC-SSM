@@ -57,8 +57,8 @@ public:
 		char buf[5];
 		std::string res;
 		for (ui i = sequence.size(); i > 0; i--) {
-			if (i == sequence.size()) sprintf(buf, "%u", sequence[i - 1]);
-			else sprintf(buf, ",%03u", sequence[i - 1]);
+			if (i == sequence.size()) snprintf(buf, sizeof(buf), "%u", sequence[i - 1]);
+			else snprintf(buf, sizeof(buf), ",%03u", sequence[i - 1]);
 			res += std::string(buf);
 		}
 		return res;
