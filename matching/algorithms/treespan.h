@@ -7,20 +7,6 @@
 
 using namespace std;
 
-// ============================================================================
-// TreeSpanSolver
-//
-// This implementation follows the paper structure more closely than the earlier
-// on-demand sketch:
-//   1. build a globally ordered query edge list,
-//   2. build the first TreeSpan spanning tree,
-//   3. run SimSearch with on-demand replacement/reordering of QISequences,
-//   4. deduplicate vertex mappings.
-//
-// The surrounding benchmark framework stores only vertex mappings, so the final
-// output is the mapping part of the paper's similarity maximal matches.
-// ============================================================================
-
 class TreeSpanSolver {
 public:
     TreeSpanSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr) {}
@@ -48,7 +34,7 @@ public:
         mapped_g.assign(gn, -1);
         candidates.assign(qn, MyBitset(gn));
 
-        buildQueryTopology();
+        buildQueryMatrix();
         initGlobalLabelCounts(query_graph, Lq_counts, Lq_degrees);
         initGlobalLabelCounts(data_graph, Lg_counts, Lg_degrees);
 
@@ -246,7 +232,7 @@ private:
         result_keys.clear();
     }
 
-    void buildQueryTopology()
+    void buildQueryMatrix()
     {
         q_matrix.assign(qn, vector<char>(qn, 0));
         q_edge_id.assign(qn, vector<int>(qn, -1));
@@ -358,7 +344,7 @@ private:
         state.R.clear();
 
         if (qn == 1) return true;
-        if (all_q_edges.empty()) return false;
+        assert(!all_q_edges.empty());
 
         vector<char> visited(qn, 0);
         visited[root] = 1;

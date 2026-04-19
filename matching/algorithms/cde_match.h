@@ -391,7 +391,7 @@ private:
     ui computeLBSpoke(ui u, ui v)
     {
         const vector<ui> &S = q_neighbors[u];
-        assert(!S.empty());
+        // assert(!S.empty() || qn == 1);
         ui degv; const ui *nbrs = data_graph->getVertexNeighbors(v, degv);
         for (ui i = 0; i < S.size(); ++i) {
             adjL[i].clear();

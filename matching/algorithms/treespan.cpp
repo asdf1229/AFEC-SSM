@@ -1,6 +1,8 @@
 #include "matching/run_matching.h"
 #include "matching/algorithms/treespan.h"
 
+const ui TreeSpanSolver::INVALID_EDGE;
+
 namespace ssm_ged {
 
     namespace {

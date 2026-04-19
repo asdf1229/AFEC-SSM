@@ -49,13 +49,13 @@ cd "$BUILD_DIR" || exit 1
 
 echo "Running CMake..."
 if [ -n "$GENERATOR" ]; then
-    cmake -G "$GENERATOR" ..
+    cmake -G "$GENERATOR" .. || exit 1
 else
-    cmake ..
+    cmake .. || exit 1
 fi
 
 echo "Compiling..."
-cmake --build . --parallel
+cmake --build . --parallel || exit 1
 
 shopt -s nullglob
 executables=()
