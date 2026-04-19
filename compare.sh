@@ -7,6 +7,16 @@ SKIP_BUILD=false
 SELECTED_ALGOS=()
 ALGO_TIMEOUT_SECONDS=30
 CURRENT_CHILD_PID=""
+DEFAULT_THRESHOLDS=(0 1 2 3 4 5 6)
+MISSING_EDGE_TEST_GROUPS=(
+    "missing_edge_threshold_0:0"
+    "missing_edge_threshold_1:1"
+    "missing_edge_threshold_2:2"
+    "missing_edge_threshold_3:3"
+    "missing_edge_threshold_4:4"
+    "missing_edge_threshold_5:5"
+    "missing_edge_threshold_6:6"
+)
 
 usage() {
     cat <<'EOF'
@@ -279,6 +289,23 @@ discover_dataset_dirs() {
     done | sort -t $'\t' -k1,1 -k2,2
 }
 
+thresholds_for_query_group() {
+    local query_group="$1"
+    local entry group threshold
+
+    for entry in "${MISSING_EDGE_TEST_GROUPS[@]}"; do
+        group="${entry%%:*}"
+        threshold="${entry#*:}"
+
+        if [ "$query_group" = "$group" ]; then
+            printf '%s\n' "$threshold"
+            return 0
+        fi
+    done
+
+    printf '%s\n' "${DEFAULT_THRESHOLDS[@]}"
+}
+
 parse_summary_line() {
     local line="$1"
     SUMMARY_ALGO=""
@@ -394,11 +421,12 @@ for dataset_entry in "${DATASET_DIRS[@]}"; do
         echo "  Query group: $query_group_label"
 
         mapfile -t QUERY_FILES < <(discover_queries "$query_group_dir")
+        mapfile -t THRESHOLDS < <(thresholds_for_query_group "$query_group")
         for qfile in "${QUERY_FILES[@]}"; do
             qname=$(basename "$qfile" .txt)
             echo "    Query: $qname"
 
-            for t in {0..3}; do
+            for t in "${THRESHOLDS[@]}"; do
                 TOTAL_CASES=$((TOTAL_CASES + 1))
 
                 declare -A counts=()
