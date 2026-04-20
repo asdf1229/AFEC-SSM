@@ -26,7 +26,6 @@ public:
         qn = query_graph->getVerticesCount();
         gn = data_graph->getVerticesCount();
 
-        // 获取最大数据图度数，用于预分配内存
         max_g_deg = 0;
         for (ui i = 0; i < gn; ++i) {
             ui d; data_graph->getVertexNeighbors(i, d);
@@ -35,7 +34,6 @@ public:
 
         resetState();
 
-        // 预处理 q_matrix 和 q_neighbors
         q_matrix.assign(qn, vector<bool>(qn, false));
         for (ui u = 0; u < qn; ++u) {
             ui deg; const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
@@ -270,24 +268,12 @@ private:
         }
     }
 
-    ui computeNLF(ui u, ui v)
-    {
-        ui diff = 0;
-        size_t sz = Lq_counts[u].size();
-        for (size_t i = 0; i < sz; ++i) {
-            if (Lq_counts[u][i] > Lg_counts[v][i]) {
-                diff += (Lq_counts[u][i] - Lg_counts[v][i]);
-            }
-        }
-        return diff;
-    }
-
     // ========================================================================
-    // 过滤模块重构：三段式过滤
+    // Filtering
     // ========================================================================
     bool calVerticesFilter()
     {
-        // Step 0: coarse filter
+        // Step 0: LB_NLF
         if (!filterNLF()) return false;
 
         // Step 1: LB_spoke
@@ -347,6 +333,18 @@ private:
         return true;
     }
 
+    ui computeNLF(ui u, ui v)
+    {
+        ui diff = 0;
+        size_t sz = Lq_counts[u].size();
+        for (size_t i = 0; i < sz; ++i) {
+            if (Lq_counts[u][i] > Lg_counts[v][i]) {
+                diff += (Lq_counts[u][i] - Lg_counts[v][i]);
+            }
+        }
+        return diff;
+    }
+
     // --- NLF filter ---
     bool filterNLF()
     {
@@ -391,10 +389,9 @@ private:
     ui computeLBSpoke(ui u, ui v)
     {
         const vector<ui> &S = q_neighbors[u];
-        // assert(!S.empty() || qn == 1);
         ui degv; const ui *nbrs = data_graph->getVertexNeighbors(v, degv);
         for (ui i = 0; i < S.size(); ++i) {
-            adjL[i].clear();
+            adjL[i].clear(); // adjL: bipartite graph
             ui u1 = S[i];
             for (ui j = 0; j < degv; ++j) {
                 ui v1 = nbrs[j];
@@ -407,21 +404,32 @@ private:
 
     bool filterSpoke()
     {
-        bool changed = true;
-        while (changed) {
-            changed = false;
-            for (ui u = 0; u < qn; ++u) {
-                vector<ui> to_remove;
-                for (ui v : candidates[u]) {
-                    ui lb = computeLBSpoke(u, v);
-                    spoke_lb[u][v] = lb;
-                    if (lb > threshold) to_remove.push_back(v);
+        queue<ui> q;
+        vector<char> in_q(qn, 1);
+
+        for (ui u = 0; u < qn; ++u) q.push(u);
+
+        while (!q.empty()) {
+            ui u = q.front(); q.pop();
+            in_q[u] = 0;
+
+            vector<ui> to_remove;
+            for (ui v : candidates[u]) {
+                ui lb = computeLBSpoke(u, v);
+                spoke_lb[u][v] = lb;
+                if (lb > threshold) to_remove.push_back(v);
+            }
+
+            if (to_remove.empty()) continue;
+
+            for (ui v : to_remove) candidates[u].remove(v);
+            if (candidates[u].empty()) return false;
+
+            for (ui v : q_neighbors[u]) {
+                if (!in_q[v]) {
+                    q.push(v);
+                    in_q[v] = 1;
                 }
-                if (!to_remove.empty()) {
-                    for (ui v : to_remove) candidates[u].remove(v);
-                    changed = true;
-                }
-                if (candidates[u].empty()) return false;
             }
         }
         return true;
