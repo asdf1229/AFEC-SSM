@@ -36,11 +36,23 @@ public:
         max_g_deg = data_graph->getMaxDegree();
 
         resetState();
-        buildQueryStructures();
+
+        q_matrix.assign(qn, vector<char>(qn, 0));
+        q_neighbors.assign(qn, vector<ui>());
+
+        for (ui u = 0; u < qn; ++u) {
+            ui deg = 0;
+            const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
+            q_neighbors[u].reserve(deg);
+            for (ui i = 0; i < deg; ++i) {
+                ui nbr = nbrs[i];
+                q_matrix[u][nbr] = 1;
+                q_neighbors[u].push_back(nbr);
+            }
+        }
 
         initGlobalLabelCounts(query_graph, Lq_counts, Lq_degrees);
         initGlobalLabelCounts(data_graph, Lg_counts, Lg_degrees);
-        buildQueryNeighborLabelSupport();
 
         Timer t_filter;
         bool res = calVerticesFilter();
@@ -72,11 +84,9 @@ public:
             part_M.push_back({ root, v0 });
 
             onVertexMatchStateChanged(root, true);
-            onDataVertexMatchStateChanged(v0, true);
 
             dfs(0, (int)root);
 
-            onDataVertexMatchStateChanged(v0, false);
             onVertexMatchStateChanged(root, false);
 
             mapped_q[root] = -1;
@@ -136,7 +146,6 @@ private:
 
     vector<vector<char>> q_matrix;
     vector<vector<ui>> q_neighbors;
-    vector<vector<ui>> q_neighbor_labels;
 
     vector<MyBitset> candidates;
     vector<MyBitset> x_cand;
@@ -144,7 +153,7 @@ private:
     vector<vector<ui>> Lq_counts, Lg_counts;
     vector<ui> Lq_degrees, Lg_degrees;
 
-    // --- 过滤用辅助存储 ---
+    // --- filter ---
     vector<vector<ui>> spoke_lb;
     vector<vector<ui>> adjL;       // 用于二分图匹配
     vector<int> match_arr;
@@ -162,15 +171,12 @@ private:
     vector<ui> anchor_count;
     vector<int> frontier_pos;
     vector<ui> active_frontier;
-    vector<vector<ui>> q_matched_label_counts;
-    vector<vector<ui>> g_matched_label_counts;
     vector<int> lb_match_right;
     vector<ui> lb_seen_right;
     ui lb_seen_token;
     vector<ui> lb_data_frontier_mark;
     ui lb_data_frontier_token;
 
-    // O(1) 增量更新顶点 u 的 Frontier 状态
     inline void updateFrontierStatus(ui u)
     {
         bool should_be = (!in_Mq[u] && !in_P[u] && anchor_count[u] > 0);
@@ -190,36 +196,6 @@ private:
         }
     }
 
-    void buildQueryStructures()
-    {
-        q_matrix.assign(qn, vector<char>(qn, 0));
-        q_neighbors.assign(qn, vector<ui>());
-
-        for (ui u = 0; u < qn; ++u) {
-            ui deg = 0;
-            const ui *nbrs = query_graph->getVertexNeighbors(u, deg);
-            q_neighbors[u].reserve(deg);
-            for (ui i = 0; i < deg; ++i) {
-                ui nbr = nbrs[i];
-                q_matrix[u][nbr] = 1;
-                q_neighbors[u].push_back(nbr);
-            }
-        }
-    }
-
-    void buildQueryNeighborLabelSupport()
-    {
-        q_neighbor_labels.assign(qn, vector<ui>());
-
-        for (ui u = 0; u < qn; ++u) {
-            for (ui label = 0; label < label_count; ++label) {
-                if (Lq_counts[u][label] > 0) {
-                    q_neighbor_labels[u].push_back(label);
-                }
-            }
-        }
-    }
-
     void onVertexMatchStateChanged(ui u, bool matched)
     {
         ui label_u = (ui)query_graph->getVertexLabel(u);
@@ -228,13 +204,6 @@ private:
         }
 
         for (ui nbr : q_neighbors[u]) {
-            if (matched) {
-                q_matched_label_counts[nbr][label_u]++;
-            }
-            else {
-                q_matched_label_counts[nbr][label_u]--;
-            }
-
             if (!is_excluded[nbr][u]) {
                 if (matched) {
                     anchor_count[nbr]++;
@@ -248,33 +217,6 @@ private:
 
         if (!matched) {
             updateFrontierStatus(u);
-        }
-    }
-
-    void onDataVertexMatchStateChanged(ui v, bool matched)
-    {
-        ui label_v = (ui)data_graph->getVertexLabel(v);
-        ui deg = 0;
-        const ui *nbrs = data_graph->getVertexNeighbors(v, deg);
-
-        for (ui i = 0; i < deg; ++i) {
-            ui nbr = nbrs[i];
-            if (matched) {
-                g_matched_label_counts[nbr][label_v]++;
-            }
-            else {
-                g_matched_label_counts[nbr][label_v]--;
-            }
-        }
-    }
-
-    void collectMappedAnchors(ui u, vector<ui> &anchors) const
-    {
-        anchors.clear();
-        for (ui nbr : q_neighbors[u]) {
-            if (in_Mq[nbr]) {
-                anchors.push_back(nbr);
-            }
         }
     }
 
@@ -297,7 +239,6 @@ private:
 
         q_matrix.clear();
         q_neighbors.clear();
-        q_neighbor_labels.clear();
         spoke_lb.assign(qn, vector<ui>(gn, 0));
         adjL.assign(qn, vector<ui>());
         match_arr.assign(max_g_deg, -1);
@@ -307,8 +248,6 @@ private:
         anchor_count.assign(qn, 0);
         frontier_pos.assign(qn, -1);
         active_frontier.clear();
-        q_matched_label_counts.assign(qn, vector<ui>(label_count, 0));
-        g_matched_label_counts.assign(gn, vector<ui>(label_count, 0));
         lb_match_right.assign(gn, -1);
         lb_seen_right.assign(gn, 0);
         lb_seen_token = 1;
@@ -523,11 +462,9 @@ private:
         iota(ord.begin(), ord.end(), 0);
 
         sort(ord.begin(), ord.end(), [&](ui a, ui b) {
-            // inside 域小的优先
             if (S_cand[a].size() != S_cand[b].size()) {
                 return S_cand[a].size() < S_cand[b].size();
             }
-            // 按邻居子图度数高的优先
             ui deg_a = 0, deg_b = 0;
             for (ui z : S) {
                 if (q_matrix[S[a]][z]) deg_a++;
@@ -540,8 +477,6 @@ private:
 
     ui residualSpokeLB(ui pos, const vector<ui> &ord, const vector<vector<ui>> &S_cand)
     {
-        // 简单安全的剩余代价下界：如果后续点所有可能的 S_cand 元素都被 used，
-        // 或者 S_cand 本来就为空，则必定走 OUT 分支，必定产生缺失。
         ui rem = 0;
         for (ui k = pos; k < ord.size(); ++k) {
             ui i = ord[k];
@@ -628,7 +563,7 @@ private:
         }
 
         vector<ui> ord = orderDfsOneHop(S, S_cand);
-        vector<int> part_S(S.size(), -2); // -2=未处理, -1=OUT, >=0 表示数据点
+        vector<int> part_S(S.size(), -2); // -2=unprocessed, -1=OUT, (>=0)->data vertex
 
         return dfsOneHop(0, S, S_cand, part_S, ord, 0);
     }
@@ -662,27 +597,102 @@ private:
 
     ui getInitialRoot()
     {
+        auto betterRoot = [&](ui a, ui b) -> bool {
+            ui cand_a = candidates[a].size();
+            ui cand_b = candidates[b].size();
+            if (cand_a != cand_b) {
+                return cand_a < cand_b;
+            }
+
+            ui deg_a = q_neighbors[a].size();
+            ui deg_b = q_neighbors[b].size();
+            if (deg_a != deg_b) {
+                return deg_a > deg_b;
+            }
+
+            ui inner_a = countInnerEdgesAmongNeighbors(a);
+            ui inner_b = countInnerEdgesAmongNeighbors(b);
+            if (inner_a != inner_b) {
+                return inner_a > inner_b;
+            }
+
+            return a < b;
+            };
+
         ui root = 0;
-        int min_cand = candidates[0].size();
         for (ui u = 1; u < qn; ++u) {
-            if (candidates[u].size() < min_cand) {
-                min_cand = candidates[u].size();
+            if (betterRoot(u, root)) {
                 root = u;
             }
         }
         return root;
     }
 
-    void collectActiveAnchors(ui u, vector<ui> &anchors) const
+    vector<ui> getBestComponentFrontier()
     {
-        anchors.clear();
-        for (ui nbr : q_neighbors[u]) {
-            if (in_Mq[nbr] && !is_excluded[u][nbr]) {
-                anchors.push_back(nbr);
+        // 1. 遍历一遍，判断当前查询图被 Mq 分割为了几个不相连的部分
+        vector<bool> visited_unmapped(qn, false);
+        vector<vector<ui>> components;
+
+        for (ui i = 0; i < qn; ++i) {
+            if (!in_Mq[i] && !visited_unmapped[i]) {
+                vector<ui> comp;
+                queue<ui> q;
+                q.push(i);
+                visited_unmapped[i] = true;
+
+                while (!q.empty()) {
+                    ui curr = q.front();
+                    q.pop();
+                    comp.push_back(curr);
+
+                    for (ui nbr : q_neighbors[curr]) {
+                        if (!in_Mq[nbr] && !visited_unmapped[nbr]) {
+                            visited_unmapped[nbr] = true;
+                            q.push(nbr);
+                        }
+                    }
+                }
+                components.push_back(comp);
             }
         }
+
+        // 2. 选择其中（点数 * 每个点的待选集）最少的部分，以及对应部分的 U_frontier
+        vector<ui> best_U_frontier;
+
+        // 使用 double 替代 unsigned long long 来存储代价，彻底避免乘法溢出风险
+        // 注意：需要包含头文件 <limits>
+        double min_cost = std::numeric_limits<double>::max();
+
+        for (const auto &comp : components) {
+            vector<ui> comp_frontier;
+            double sum_cand = 1.0;
+
+            for (ui v : comp) {
+                sum_cand *= candidates[v].size();
+                // 检查 v 是否属于当前的 active_frontier (O(1)判断)
+                if (frontier_pos[v] != -1) {
+                    comp_frontier.push_back(v);
+                }
+            }
+
+            // 仅对具有合法 Frontier 的连通分量进行代价评估
+            assert(!comp_frontier.empty());
+            if (!comp_frontier.empty()) {
+                if (sum_cand < min_cost) {
+                    min_cost = sum_cand;
+                    best_U_frontier = comp_frontier;
+                }
+            }
+        }
+
+        // 3. 返回找到的最优 U_frontier
+        return best_U_frontier;
     }
 
+    // ========================================================================
+    // Lower Bound based Pruning
+    // ========================================================================
     ui computeCrossDelta(ui v, const vector<ui> &anchors) const
     {
         ui delta = 0;
@@ -799,7 +809,12 @@ private:
         for (ui i = 0; i < frontier_size; ++i) {
             ui u = U_frontier[i];
             vector<ui> &anchors = anchors_by_idx[i];
-            collectActiveAnchors(u, anchors);
+            anchors.clear();
+            for (ui nbr : q_neighbors[u]) {
+                if (in_Mq[nbr] && !is_excluded[u][nbr]) {
+                    anchors.push_back(nbr);
+                }
+            }
 
             ui best_boundary = threshold + 1;
 
@@ -816,7 +831,6 @@ private:
                 return true;
             }
 
-#ifndef CDE_LB_DISABLE_BOUNDARY_SUM
             // Search-time lower bounds must be residual to the current partial match.
             // The static spoke_lb(u, v) is computed before DFS and still accounts for
             // incident query edges that may already have been paid via exclusions in
@@ -826,85 +840,18 @@ private:
             if (sum_lb > threshold) {
                 return true;
             }
-#endif
         }
 
-#ifndef CDE_LB_DISABLE_COMPETITION
         ui competition_lb = computeBudgetLayerDeficit(U_frontier, anchors_by_idx, remaining_budget);
         return current_miss + competition_lb > threshold;
-#else
-        return false;
-#endif
     }
-
-    vector<ui> getBestComponentFrontier()
-    {
-        // 1. 遍历一遍，判断当前查询图被 Mq 分割为了几个不相连的部分
-        vector<bool> visited_unmapped(qn, false);
-        vector<vector<ui>> components;
-
-        for (ui i = 0; i < qn; ++i) {
-            if (!in_Mq[i] && !visited_unmapped[i]) {
-                vector<ui> comp;
-                queue<ui> q;
-                q.push(i);
-                visited_unmapped[i] = true;
-
-                while (!q.empty()) {
-                    ui curr = q.front();
-                    q.pop();
-                    comp.push_back(curr);
-
-                    for (ui nbr : q_neighbors[curr]) {
-                        if (!in_Mq[nbr] && !visited_unmapped[nbr]) {
-                            visited_unmapped[nbr] = true;
-                            q.push(nbr);
-                        }
-                    }
-                }
-                components.push_back(comp);
-            }
-        }
-
-        // 2. 选择其中（点数 * 每个点的待选集）最少的部分，以及对应部分的 U_frontier
-        vector<ui> best_U_frontier;
-
-        // 使用 double 替代 unsigned long long 来存储代价，彻底避免乘法溢出风险
-        // 注意：需要包含头文件 <limits>
-        double min_cost = std::numeric_limits<double>::max();
-
-        for (const auto &comp : components) {
-            vector<ui> comp_frontier;
-            double sum_cand = 1.0;
-
-            for (ui v : comp) {
-                sum_cand *= candidates[v].size();
-                // 检查 v 是否属于当前的 active_frontier (O(1)判断)
-                if (frontier_pos[v] != -1) {
-                    comp_frontier.push_back(v);
-                }
-            }
-
-            // 仅对具有合法 Frontier 的连通分量进行代价评估
-            assert(!comp_frontier.empty());
-            if (!comp_frontier.empty()) {
-                if (sum_cand < min_cost) {
-                    min_cost = sum_cand;
-                    best_U_frontier = comp_frontier;
-                }
-            }
-        }
-
-        // 3. 返回找到的最优 U_frontier
-        return best_U_frontier;
-    }
+    // ========================================================================
 
     // =====================================================
-    // DFS 搜索过程
-    // 对应伪代码: Procedure DFS(M_part, cost, X, P, u_new)
+    // Procedure DFS(M_part, cost, X, P, u_new)
     //
-    // cost:  当前部分映射中已确认缺失的查询边数量
-    // u_new: 最近一次新加入映射的查询顶点 (-1 表示 undefined)
+    // cost:  current cost of partial match M_part
+    // u_new: the most recently mapped query vertex (-1 means undefined)
     // =====================================================
     void dfs(ui cost, int u_new)
     {
@@ -933,7 +880,6 @@ private:
 
         Timer t_frontier;
 
-        // 提前拦截：如果当前没有任何 Frontier 点，则直接剪枝回溯
         if (active_frontier.empty()) {
             // stats.prun_calls++;
             for (ui w : reEnabledP) {
@@ -965,15 +911,18 @@ private:
         long long child_dfs_time = 0;
         vector<ui> local_P;
         vector<pair<ui, ui>> local_X;
-
-        // 用于在当前 DFS 状态结束时回溯 x_cand 排除集
         vector<pair<ui, ui>> local_x_cand;
 
         ui current_cost = cost;
 
         for (ui u : U_frontier) {
             vector<ui> U_anchor;
-            collectMappedAnchors(u, U_anchor);
+            U_anchor.clear();
+            for (ui nbr : q_neighbors[u]) {
+                if (in_Mq[nbr]) {
+                    U_anchor.push_back(nbr);
+                }
+            }
 
             bool threshold_exceeded = false;
 
@@ -981,20 +930,15 @@ private:
             for (ui ua : U_anchor) {
                 if (is_excluded[u][ua]) continue;
 
-                // 第一阶段：精准收集所有与该 anchor 连通的候选点
+                // branch 1: matching u by (u, ua) edge
                 vector<ui> anchor_v_list;
                 ui deg; const ui *nbrs = data_graph->getVertexNeighbors(mapped_q[ua], deg);
                 for (ui j = 0; j < deg; ++j) {
                     ui v = nbrs[j];
-                    // O(1) 利用 Bitset 检查 v 是否为 u 的候选集
-                    if (candidates[u].contains(v)) {
-                        anchor_v_list.push_back(v);
-                    }
+                    if (candidates[u].contains(v)) anchor_v_list.push_back(v);
                 }
 
-                // 第二阶段：第一分支 - 从这些候选点中尝试扩展
                 for (ui v : anchor_v_list) {
-                    // 如果已经被映射过，或者已经进入了全局/分支排除集，则直接跳过
                     if (mapped_g[v] != -1) continue;
                     if (x_cand[u].contains(v)) continue;
 
@@ -1018,13 +962,11 @@ private:
                     part_M.push_back({ u, v });
 
                     onVertexMatchStateChanged(u, true);
-                    onDataVertexMatchStateChanged(v, true);
 
                     Timer t_child;
                     dfs(current_cost + delta, (int)u);
                     child_dfs_time += t_child.elapsed();
 
-                    onDataVertexMatchStateChanged(v, false);
                     onVertexMatchStateChanged(u, false);
 
                     part_M.pop_back();
@@ -1034,7 +976,7 @@ private:
                     mapped_q[u] = -1;
                 }
 
-                // 第三阶段：第二分支 - 排斥该边 (u, ua)
+                // branch 2 : excluding (u, ua)
                 current_cost++;
                 is_excluded[u][ua] = 1;
                 is_excluded[ua][u] = 1;
@@ -1095,6 +1037,7 @@ private:
             updateFrontierStatus(w);
         }
     }
+    // ========================================================================
 };
 
 // ============================================================
