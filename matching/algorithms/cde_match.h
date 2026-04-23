@@ -164,6 +164,9 @@ private:
     vector<ui> active_frontier;
     vector<vector<ui>> q_matched_label_counts;
     vector<vector<ui>> g_matched_label_counts;
+    vector<int> lb_match_right;
+    vector<ui> lb_seen_right;
+    ui lb_seen_token;
     vector<ui> lb_data_frontier_mark;
     ui lb_data_frontier_token;
 
@@ -306,6 +309,9 @@ private:
         active_frontier.clear();
         q_matched_label_counts.assign(qn, vector<ui>(label_count, 0));
         g_matched_label_counts.assign(gn, vector<ui>(label_count, 0));
+        lb_match_right.assign(gn, -1);
+        lb_seen_right.assign(gn, 0);
+        lb_seen_token = 1;
         lb_data_frontier_mark.assign(gn, 0);
         lb_data_frontier_token = 1;
 
@@ -667,17 +673,6 @@ private:
         return root;
     }
 
-    inline ui lowerBoundLimit2() const
-    {
-        return threshold * 2 + 1;
-    }
-
-    inline ui clampLowerBound2(unsigned long long value) const
-    {
-        ui limit2 = lowerBoundLimit2();
-        return value >= limit2 ? limit2 : (ui)value;
-    }
-
     void collectActiveAnchors(ui u, vector<ui> &anchors) const
     {
         anchors.clear();
@@ -700,231 +695,146 @@ private:
         return delta;
     }
 
-    ui computeUnmatchedDelta2(ui u, ui v)
+    bool findBudgetFeasibleAugment(ui left_idx, const vector<vector<ui>> &adj)
     {
-        ui deficit = 0;
-        for (ui label : q_neighbor_labels[u]) {
-            ui need = Lq_counts[u][label] - q_matched_label_counts[u][label];
-            if (need == 0) {
+        for (ui v : adj[left_idx]) {
+            if (lb_seen_right[v] == lb_seen_token) {
                 continue;
             }
+            lb_seen_right[v] = lb_seen_token;
 
-            ui have = Lg_counts[v][label] - g_matched_label_counts[v][label];
-            if (need > have) {
-                deficit += need - have;
+            if (lb_match_right[v] < 0 || findBudgetFeasibleAugment((ui)lb_match_right[v], adj)) {
+                lb_match_right[v] = (int)left_idx;
+                return true;
             }
         }
-
-        return deficit;
+        return false;
     }
 
-    void collectCurrentDataFrontier(vector<ui> &data_frontier,
-        const vector<vector<ui>> &anchors_by_vertex)
+    ui computeBudgetLayerDeficit(const vector<ui> &U_frontier,
+        const vector<vector<ui>> &anchors_by_idx,
+        ui remaining_budget)
     {
-        data_frontier.clear();
+        ui frontier_size = (ui)U_frontier.size();
+        if (frontier_size <= 1 || remaining_budget == 0) {
+            return 0;
+        }
+
+        vector<vector<vector<ui>>> exact_adj(frontier_size, vector<vector<ui>>(remaining_budget));
+        vector<ui> right_vertices;
 
         if (++lb_data_frontier_token == 0) {
             std::fill(lb_data_frontier_mark.begin(), lb_data_frontier_mark.end(), 0);
             lb_data_frontier_token = 1;
         }
 
-        for (ui u : active_frontier) {
-            for (ui a : anchors_by_vertex[u]) {
-                assert(mapped_q[a] >= 0);
-                ui mapped_v = (ui)mapped_q[a];
-                ui deg = 0;
-                const ui *nbrs = data_graph->getVertexNeighbors(mapped_v, deg);
+        for (ui i = 0; i < frontier_size; ++i) {
+            ui u = U_frontier[i];
+            const vector<ui> &anchors = anchors_by_idx[i];
 
-                for (ui i = 0; i < deg; ++i) {
-                    ui v = nbrs[i];
-                    if (mapped_g[v] != -1) {
-                        continue;
-                    }
-                    if (lb_data_frontier_mark[v] == lb_data_frontier_token) {
-                        continue;
-                    }
-
-                    lb_data_frontier_mark[v] = lb_data_frontier_token;
-                    data_frontier.push_back(v);
-                }
-            }
-        }
-    }
-
-    ui minCostAssignment(const vector<vector<ui>> &cost, ui limit2) const
-    {
-        ui n = (ui)cost.size();
-        if (n == 0) {
-            return 0;
-        }
-
-        ui m = (ui)cost[0].size();
-        assert(m >= n);
-
-        const long long INF64 = std::numeric_limits<long long>::max() / 4;
-        vector<long long> u(n + 1, 0), v(m + 1, 0), minv(m + 1, INF64);
-        vector<int> p(m + 1, 0), way(m + 1, 0);
-        vector<char> used(m + 1, 0);
-
-        for (ui i = 1; i <= n; ++i) {
-            std::fill(minv.begin(), minv.end(), INF64);
-            std::fill(used.begin(), used.end(), 0);
-            p[0] = (int)i;
-
-            ui j0 = 0;
-            do {
-                used[j0] = 1;
-                ui i0 = (ui)p[j0];
-                long long delta = INF64;
-                ui j1 = 0;
-
-                for (ui j = 1; j <= m; ++j) {
-                    if (used[j]) {
-                        continue;
-                    }
-
-                    long long cur = (long long)cost[i0 - 1][j - 1] - u[i0] - v[j];
-                    if (cur < minv[j]) {
-                        minv[j] = cur;
-                        way[j] = (int)j0;
-                    }
-                    if (minv[j] < delta) {
-                        delta = minv[j];
-                        j1 = j;
-                    }
-                }
-
-                for (ui j = 0; j <= m; ++j) {
-                    if (used[j]) {
-                        u[(ui)p[j]] += delta;
-                        v[j] -= delta;
-                    }
-                    else {
-                        minv[j] -= delta;
-                    }
-                }
-                j0 = j1;
-            } while (p[j0] != 0);
-
-            do {
-                ui j1 = (ui)way[j0];
-                p[j0] = p[j1];
-                j0 = j1;
-            } while (j0 != 0);
-        }
-
-        unsigned long long total = 0;
-        for (ui j = 1; j <= m; ++j) {
-            if (p[j] != 0) {
-                total += cost[(ui)p[j] - 1][j - 1];
-            }
-        }
-        return clampLowerBound2(total);
-    }
-
-    double computeLowerBound(ui current_miss)
-    {
-        ui limit2 = lowerBoundLimit2();
-        ui total2 = clampLowerBound2(2ULL * current_miss);
-
-        vector<vector<ui>> anchors_by_vertex(qn);
-        vector<vector<ui>> frontier_by_label(label_count);
-        for (ui u : active_frontier) {
-            collectActiveAnchors(u, anchors_by_vertex[u]);
-            if (anchors_by_vertex[u].empty()) {
-                continue;
-            }
-
-            LabelID lbl = query_graph->getVertexLabel(u);
-            if (lbl >= 0 && (ui)lbl < label_count) {
-                frontier_by_label[(ui)lbl].push_back(u);
-            }
-        }
-
-        vector<ui> data_frontier;
-        collectCurrentDataFrontier(data_frontier, anchors_by_vertex);
-
-        vector<vector<ui>> data_frontier_by_label(label_count);
-        for (ui v : data_frontier) {
-            LabelID lbl = data_graph->getVertexLabel(v);
-            if (lbl >= 0 && (ui)lbl < label_count) {
-                data_frontier_by_label[(ui)lbl].push_back(v);
-            }
-        }
-
-        for (ui label = 0; label < label_count; ++label) {
-            const vector<ui> &left = frontier_by_label[label];
-            if (left.empty()) {
-                continue;
-            }
-
-            const vector<ui> &right_real = data_frontier_by_label[label];
-            ui n_left = (ui)left.size();
-            ui n_real = (ui)right_real.size();
-
-            vector<vector<ui>> cost(n_left, vector<ui>(n_real + n_left, limit2));
-
-            for (ui i = 0; i < n_left; ++i) {
-                ui u = left[i];
-                const vector<ui> &anchors = anchors_by_vertex[u];
-
-                ui best_external2 = limit2;
-                for (ui v : candidates[u]) {
-                    if (mapped_g[v] != -1 || x_cand[u].contains(v)) {
-                        continue;
-                    }
-                    if (lb_data_frontier_mark[v] == lb_data_frontier_token) {
-                        continue;
-                    }
-
-                    ui unmatched2 = computeUnmatchedDelta2(u, v);
-                    best_external2 = std::min(best_external2,
-                        clampLowerBound2(2ULL * anchors.size() + unmatched2));
-                }
-
-                for (ui j = 0; j < n_real; ++j) {
-                    ui v = right_real[j];
-                    if (!candidates[u].contains(v) || x_cand[u].contains(v)) {
-                        continue;
-                    }
-
-                    ui cross = computeCrossDelta(v, anchors);
-                    ui unmatched2 = computeUnmatchedDelta2(u, v);
-                    cost[i][j] = clampLowerBound2(2ULL * cross + unmatched2);
-                }
-
-                for (ui j = 0; j < n_left; ++j) {
-                    cost[i][n_real + j] = best_external2;
-                }
-            }
-
-            total2 = clampLowerBound2((unsigned long long)total2 + minCostAssignment(cost, limit2));
-            if (total2 > 2 * threshold) {
-                return threshold + 0.5;
-            }
-        }
-
-        for (ui u = 0; u < qn; ++u) {
-            if (in_Mq[u] || anchor_count[u] > 0) {
-                continue;
-            }
-
-            ui best2 = limit2;
             for (ui v : candidates[u]) {
                 if (mapped_g[v] != -1 || x_cand[u].contains(v)) {
                     continue;
                 }
 
-                best2 = std::min(best2, computeUnmatchedDelta2(u, v));
-            }
+                ui alpha = computeCrossDelta(v, anchors);
+                if (alpha >= remaining_budget) {
+                    continue;
+                }
 
-            total2 = clampLowerBound2((unsigned long long)total2 + best2);
-            if (total2 > 2 * threshold) {
-                return threshold + 0.5;
+                exact_adj[i][alpha].push_back(v);
+                if (lb_data_frontier_mark[v] != lb_data_frontier_token) {
+                    lb_data_frontier_mark[v] = lb_data_frontier_token;
+                    right_vertices.push_back(v);
+                }
             }
         }
 
-        return total2 / 2.0;
+        vector<vector<ui>> cumulative_adj(frontier_size);
+        ui extra_lb = 0;
+
+        for (ui k = 0; k < remaining_budget; ++k) {
+            for (ui i = 0; i < frontier_size; ++i) {
+                const vector<ui> &delta = exact_adj[i][k];
+                cumulative_adj[i].insert(cumulative_adj[i].end(), delta.begin(), delta.end());
+            }
+
+            for (ui v : right_vertices) {
+                lb_match_right[v] = -1;
+            }
+
+            ui mu = 0;
+            for (ui i = 0; i < frontier_size; ++i) {
+                if (++lb_seen_token == 0) {
+                    std::fill(lb_seen_right.begin(), lb_seen_right.end(), 0);
+                    lb_seen_token = 1;
+                }
+
+                if (findBudgetFeasibleAugment(i, cumulative_adj)) {
+                    mu++;
+                }
+            }
+
+            ui deficit = frontier_size - mu;
+            extra_lb += deficit;
+            if (extra_lb > remaining_budget) {
+                return extra_lb;
+            }
+        }
+
+        return extra_lb;
+    }
+
+    bool shouldPruneByLowerBounds(ui current_miss, const vector<ui> &U_frontier)
+    {
+        ui remaining_budget = threshold - current_miss;
+        if (U_frontier.empty()) {
+            return false;
+        }
+
+        ui frontier_size = (ui)U_frontier.size();
+        vector<vector<ui>> anchors_by_idx(frontier_size);
+        ui sum_lb = current_miss;
+
+        for (ui i = 0; i < frontier_size; ++i) {
+            ui u = U_frontier[i];
+            vector<ui> &anchors = anchors_by_idx[i];
+            collectActiveAnchors(u, anchors);
+
+            ui best_boundary = threshold + 1;
+
+            for (ui v : candidates[u]) {
+                if (mapped_g[v] != -1 || x_cand[u].contains(v)) {
+                    continue;
+                }
+
+                ui alpha = computeCrossDelta(v, anchors);
+                best_boundary = std::min(best_boundary, alpha);
+            }
+
+            if (best_boundary == threshold + 1) {
+                return true;
+            }
+
+#ifndef CDE_LB_DISABLE_BOUNDARY_SUM
+            // Search-time lower bounds must be residual to the current partial match.
+            // The static spoke_lb(u, v) is computed before DFS and still accounts for
+            // incident query edges that may already have been paid via exclusions in
+            // current_miss. Using it directly here can double count those edges and
+            // prune valid solutions, so the cheap bound only uses the live anchor cut.
+            sum_lb += best_boundary;
+            if (sum_lb > threshold) {
+                return true;
+            }
+#endif
+        }
+
+#ifndef CDE_LB_DISABLE_COMPETITION
+        ui competition_lb = computeBudgetLayerDeficit(U_frontier, anchors_by_idx, remaining_budget);
+        return current_miss + competition_lb > threshold;
+#else
+        return false;
+#endif
     }
 
     vector<ui> getBestComponentFrontier()
@@ -1002,21 +912,13 @@ private:
         assert(matched_count <= qn);
         assert(cost <= threshold);
 
-        Timer t_lb;
-        double lb = computeLowerBound(cost);
-        stats.lb_time += t_lb.elapsed();
-
-        if (lb > (double)threshold) {
-            stats.prun_calls++;
+        if (matched_count == qn) {
+            stats.recursion_calls++;
+            results_ptr->push_back(part_M);
             return;
         }
 
         stats.recursion_calls++;
-
-        if (matched_count == qn) {
-            results_ptr->push_back(part_M);
-            return;
-        }
 
         vector<ui> reEnabledP;
         if (u_new >= 0) {
@@ -1033,7 +935,7 @@ private:
 
         // 提前拦截：如果当前没有任何 Frontier 点，则直接剪枝回溯
         if (active_frontier.empty()) {
-            stats.prun_calls++;
+            // stats.prun_calls++;
             for (ui w : reEnabledP) {
                 in_P[w] = 1;
                 updateFrontierStatus(w);
@@ -1043,6 +945,21 @@ private:
 
         vector<ui> U_frontier = getBestComponentFrontier();
         stats.frontier_time += t_frontier.elapsed();
+
+#ifdef LOWER_BOUND
+        Timer t_lb;
+        if (shouldPruneByLowerBounds(cost, U_frontier)) {
+            stats.lb_time += t_lb.elapsed();
+            stats.prun_calls++;
+
+            for (ui w : reEnabledP) {
+                in_P[w] = 1;
+                updateFrontierStatus(w);
+            }
+            return;
+        }
+        stats.lb_time += t_lb.elapsed();
+#endif
 
         Timer t_branch;
         long long child_dfs_time = 0;
