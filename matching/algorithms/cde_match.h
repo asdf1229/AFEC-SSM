@@ -597,31 +597,11 @@ private:
 
     ui getInitialRoot()
     {
-        auto betterRoot = [&](ui a, ui b) -> bool {
-            ui cand_a = candidates[a].size();
-            ui cand_b = candidates[b].size();
-            if (cand_a != cand_b) {
-                return cand_a < cand_b;
-            }
-
-            ui deg_a = q_neighbors[a].size();
-            ui deg_b = q_neighbors[b].size();
-            if (deg_a != deg_b) {
-                return deg_a > deg_b;
-            }
-
-            ui inner_a = countInnerEdgesAmongNeighbors(a);
-            ui inner_b = countInnerEdgesAmongNeighbors(b);
-            if (inner_a != inner_b) {
-                return inner_a > inner_b;
-            }
-
-            return a < b;
-            };
-
         ui root = 0;
         for (ui u = 1; u < qn; ++u) {
-            if (betterRoot(u, root)) {
+            if (candidates[u].size() < candidates[root].size() ||
+                (candidates[u].size() == candidates[root].size() &&
+                    q_neighbors[u].size() > q_neighbors[root].size())) {
                 root = u;
             }
         }
@@ -893,18 +873,18 @@ private:
         stats.frontier_time += t_frontier.elapsed();
 
 #ifdef LOWER_BOUND
-        Timer t_lb;
-        if (shouldPruneByLowerBounds(cost, U_frontier)) {
-            stats.lb_time += t_lb.elapsed();
-            stats.prun_calls++;
+        //         Timer t_lb;
+        //         if (shouldPruneByLowerBounds(cost, U_frontier)) {
+        //             stats.lb_time += t_lb.elapsed();
+        //             stats.prun_calls++;
 
-            for (ui w : reEnabledP) {
-                in_P[w] = 1;
-                updateFrontierStatus(w);
-            }
-            return;
-        }
-        stats.lb_time += t_lb.elapsed();
+        //             for (ui w : reEnabledP) {
+        //                 in_P[w] = 1;
+        //                 updateFrontierStatus(w);
+        //             }
+        //             return;
+        //         }
+        //         stats.lb_time += t_lb.elapsed();
 #endif
 
         Timer t_branch;
@@ -988,8 +968,6 @@ private:
                     break;
                 }
 
-                // 一旦该边被加入排斥集，意味着任何与 mapped_q[ua] 连通的候选点 v 都不可能作为 u 的映射。
-                // 我们将上面完整收集的 anchor_v_list 全部加入 x_cand 排斥集。
                 for (ui v : anchor_v_list) {
                     if (!x_cand[u].contains(v)) {
                         x_cand[u].insert(v);
@@ -998,12 +976,10 @@ private:
                 }
             }
 
-            // 如果还没能把 u 塞进 P 集合就已经超过阈值，整条线死路一条，直接 break 并回溯。
             if (threshold_exceeded) {
                 break;
             }
 
-            // 当所有 anchor 都断开（且容错尚未爆表），证明该 u 与当前任意锚点都没连通，延期 u
             in_P[u] = 1;
             local_P.push_back(u);
             updateFrontierStatus(u);
@@ -1027,7 +1003,6 @@ private:
             updateFrontierStatus(e.second);
         }
 
-        // 精准清空当前 DFS 分支中加入的排斥集候选点（基于局部回溯记录）
         for (auto &p : local_x_cand) {
             x_cand[p.first].remove(p.second);
         }
