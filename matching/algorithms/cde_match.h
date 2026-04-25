@@ -55,7 +55,7 @@ public:
         initGlobalLabelCounts(data_graph, Lg_counts, Lg_degrees);
 
         Timer t_filter;
-        bool res = calVerticesFilter();
+        bool res = runCandidateFiltering();
         stats.filter_time = t_filter.elapsed();
         if (!res) {
             stats.init_time = t_init.elapsed();
@@ -74,7 +74,8 @@ public:
         results_ptr = &results;
         results_ptr->clear();
 
-        ui root = getInitialRoot();
+        BranchSelector branch_selector(*this);
+        ui root = branch_selector.selectInitialRoot();
 
         for (ui v0 : candidates[root]) {
             mapped_q[root] = (int)v0;
@@ -85,7 +86,7 @@ public:
 
             onVertexMatchStateChanged(root, true);
 
-            dfs(0, (int)root);
+            dfs(0, (int)root, nullptr);
 
             onVertexMatchStateChanged(root, false);
 
@@ -153,13 +154,6 @@ private:
     vector<vector<ui>> Lq_counts, Lg_counts;
     vector<ui> Lq_degrees, Lg_degrees;
 
-    // --- filter ---
-    vector<vector<ui>> spoke_lb;
-    vector<vector<ui>> adjL;       // 用于二分图匹配
-    vector<int> match_arr;
-    vector<bool> vis_arr;
-    MyBitset used_1hop;
-
     vector<int> mapped_q;
     vector<int> mapped_g;
     vector<char> in_Mq;
@@ -171,6 +165,12 @@ private:
     vector<ui> anchor_count;
     vector<int> frontier_pos;
     vector<ui> active_frontier;
+    struct SearchFrontierState {
+        vector<ui> component_vertices;
+        vector<ui> component_frontier;
+    };
+    vector<ui> frontier_visit_mark;
+    ui frontier_visit_token;
     vector<int> lb_match_right;
     vector<ui> lb_seen_right;
     ui lb_seen_token;
@@ -198,7 +198,6 @@ private:
 
     void onVertexMatchStateChanged(ui u, bool matched)
     {
-        ui label_u = (ui)query_graph->getVertexLabel(u);
         if (matched) {
             updateFrontierStatus(u);
         }
@@ -239,15 +238,12 @@ private:
 
         q_matrix.clear();
         q_neighbors.clear();
-        spoke_lb.assign(qn, vector<ui>(gn, 0));
-        adjL.assign(qn, vector<ui>());
-        match_arr.assign(max_g_deg, -1);
-        vis_arr.assign(max_g_deg, false);
-        used_1hop = MyBitset(gn);
 
         anchor_count.assign(qn, 0);
         frontier_pos.assign(qn, -1);
         active_frontier.clear();
+        frontier_visit_mark.assign(qn, 0);
+        frontier_visit_token = 1;
         lb_match_right.assign(gn, -1);
         lb_seen_right.assign(gn, 0);
         lb_seen_token = 1;
@@ -279,552 +275,729 @@ private:
     // ========================================================================
     // Filtering
     // ========================================================================
-    bool calVerticesFilter()
-    {
-        // Step 0: LB_NLF
-        if (!filterNLF()) return false;
+    struct CandidateFilter {
+        MatchingSolver &solver;
+        vector<vector<ui>> spoke_adj_by_query_nbr;
+        vector<int> spoke_match_right;
+        vector<bool> spoke_seen_right;
+        MyBitset used_one_hop_vertices;
 
-        // Step 1: LB_spoke
-        if (!filterSpoke()) return false;
+        explicit CandidateFilter(MatchingSolver &solver)
+            : solver(solver), used_one_hop_vertices((int)solver.gn)
+        {
+            spoke_adj_by_query_nbr.assign(solver.qn, vector<ui>());
+            spoke_match_right.assign(solver.max_g_deg, -1);
+            spoke_seen_right.assign(solver.max_g_deg, false);
+        }
 
-        // Step 2: LB_1hop
-        if (!filterOneHop()) return false;
+        bool run()
+        {
+            if (!applyNeighborhoodLabelFilter()) return false;
+            if (!applySpokeFilter()) return false;
+            if (!applyOneHopFilter()) return false;
 
 #ifndef NDEBUG
-        // statistics
-        std::vector<ui> missing_edges_dist(threshold + 1, 0);
-        std::vector<std::vector<ui>> vertex_missing_edges_dist(qn, std::vector<ui>(threshold + 1, 0));
-        ui total_candidates_count = 0;
-
-        for (ui u = 0; u < qn; ++u) {
-            total_candidates_count += candidates[u].size();
-
-            for (ui v : candidates[u]) {
-                ui min_missing_edges = computeLBSpoke(u, v);
-
-                if (min_missing_edges <= threshold) {
-                    missing_edges_dist[min_missing_edges]++;
-                    vertex_missing_edges_dist[u][min_missing_edges]++;
-                }
-            }
-        }
-
-        printf("\n================ Candidate Missing Edges Statistics ================\n");
-        printf("Total valid candidates across all query vertices: %u\n", total_candidates_count);
-        for (ui i = 0; i <= threshold; ++i) {
-            double percent = (total_candidates_count == 0) ? 0.0 : (double)missing_edges_dist[i] / total_candidates_count * 100.0;
-            printf("Missing edges = %u: %6u candidates (%6.2f %%)\n", i, missing_edges_dist[i], percent);
-        }
-        printf("====================================================================\n\n");
-
-        printf("candidates nums and missing edges distribution:\n");
-        for (ui u = 0; u < qn; ++u) {
-            ui cand_size = candidates[u].size();
-            ui deg_u = q_neighbors[u].size();
-            ui max_miss_allowed = (deg_u > 0) ? std::min(threshold, deg_u - 1) : threshold;
-
-            printf("u = %u: %6d candidates", u, cand_size);
-
-            if (cand_size > 0) {
-                printf("  [ ");
-                for (ui i = 0; i <= max_miss_allowed; ++i) {
-                    double percent = (double)vertex_missing_edges_dist[u][i] / cand_size * 100.0;
-                    printf("%u-miss: %5.1f%%", i, percent);
-                    if (i < max_miss_allowed) printf(" | ");
-                }
-                printf(" ]");
-            }
-            printf("\n");
-        }
+            printCandidateStatistics();
 #endif
-
-        return true;
-    }
-
-    ui computeNLF(ui u, ui v)
-    {
-        ui diff = 0;
-        size_t sz = Lq_counts[u].size();
-        for (size_t i = 0; i < sz; ++i) {
-            if (Lq_counts[u][i] > Lg_counts[v][i]) {
-                diff += (Lq_counts[u][i] - Lg_counts[v][i]);
-            }
-        }
-        return diff;
-    }
-
-    // --- NLF filter ---
-    bool filterNLF()
-    {
-        for (ui u = 0; u < qn; ++u) {
-            LabelID lu = query_graph->getVertexLabel(u);
-            for (ui v = 0; v < gn; ++v) {
-                if (lu != data_graph->getVertexLabel(v)) continue;
-                if (Lq_degrees[u] > Lg_degrees[v] + threshold) continue;
-                if (computeNLF(u, v) > threshold) continue;
-                candidates[u].insert(v);
-            }
-            if (candidates[u].empty()) return false;
-        }
-        return true;
-    }
-
-    // --- Spoke filter ---
-    bool dfs_match(ui u, const vector<vector<ui>> &adj, vector<int> &match, vector<bool> &vis)
-    {
-        for (ui right_node : adj[u]) {
-            if (vis[right_node]) continue;
-            vis[right_node] = true;
-            if (match[right_node] < 0 || dfs_match((ui)match[right_node], adj, match, vis)) {
-                match[right_node] = (int)u;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    ui hungarian(const vector<vector<ui>> &adj, ui left_size, ui right_size)
-    {
-        ui mu = 0;
-        std::fill(match_arr.begin(), match_arr.begin() + right_size, -1);
-        for (ui i = 0; i < left_size; ++i) {
-            std::fill(vis_arr.begin(), vis_arr.begin() + right_size, false);
-            if (dfs_match(i, adj, match_arr, vis_arr)) mu++;
-        }
-        return mu;
-    }
-
-    ui computeLBSpoke(ui u, ui v)
-    {
-        const vector<ui> &S = q_neighbors[u];
-        ui degv; const ui *nbrs = data_graph->getVertexNeighbors(v, degv);
-        for (ui i = 0; i < S.size(); ++i) {
-            adjL[i].clear(); // adjL: bipartite graph
-            ui u1 = S[i];
-            for (ui j = 0; j < degv; ++j) {
-                ui v1 = nbrs[j];
-                if (candidates[u1].contains(v1)) adjL[i].push_back(j);
-            }
-        }
-        ui mu = hungarian(adjL, (ui)S.size(), degv);
-        return (ui)S.size() - mu;
-    }
-
-    bool filterSpoke()
-    {
-        queue<ui> q;
-        vector<char> in_q(qn, 1);
-
-        for (ui u = 0; u < qn; ++u) q.push(u);
-
-        while (!q.empty()) {
-            ui u = q.front(); q.pop();
-            in_q[u] = 0;
-
-            vector<ui> to_remove;
-            for (ui v : candidates[u]) {
-                ui lb = computeLBSpoke(u, v);
-                spoke_lb[u][v] = lb;
-                if (lb > threshold) to_remove.push_back(v);
-            }
-
-            if (to_remove.empty()) continue;
-
-            for (ui v : to_remove) candidates[u].remove(v);
-            if (candidates[u].empty()) return false;
-
-            for (ui v : q_neighbors[u]) {
-                if (!in_q[v]) {
-                    q.push(v);
-                    in_q[v] = 1;
-                }
-            }
-        }
-        return true;
-    }
-
-    // --- One-hop filter ---
-    ui countInnerEdgesAmongNeighbors(ui u)
-    {
-        ui count = 0;
-        const vector<ui> &S = q_neighbors[u];
-        for (ui i = 0; i < S.size(); ++i) {
-            for (ui j = i + 1; j < S.size(); ++j) {
-                if (q_matrix[S[i]][S[j]]) count++;
-            }
-        }
-        return count;
-    }
-
-    vector<ui> orderDfsOneHop(const vector<ui> &S, const vector<vector<ui>> &S_cand)
-    {
-        vector<ui> ord(S.size());
-        iota(ord.begin(), ord.end(), 0);
-
-        sort(ord.begin(), ord.end(), [&](ui a, ui b) {
-            if (S_cand[a].size() != S_cand[b].size()) {
-                return S_cand[a].size() < S_cand[b].size();
-            }
-            ui deg_a = 0, deg_b = 0;
-            for (ui z : S) {
-                if (q_matrix[S[a]][z]) deg_a++;
-                if (q_matrix[S[b]][z]) deg_b++;
-            }
-            return deg_a > deg_b;
-            });
-        return ord;
-    }
-
-    ui residualSpokeLB(ui pos, const vector<ui> &ord, const vector<vector<ui>> &S_cand)
-    {
-        ui rem = 0;
-        for (ui k = pos; k < ord.size(); ++k) {
-            ui i = ord[k];
-            bool has_free = false;
-            for (ui y : S_cand[i]) {
-                if (!used_1hop.contains(y)) {
-                    has_free = true;
-                    break;
-                }
-            }
-            if (!has_free) rem++;
-        }
-        return rem;
-    }
-
-    bool dfsOneHop(ui pos, const vector<ui> &S, const vector<vector<ui>> &S_cand, vector<int> &part_S, const vector<ui> &ord, ui current_cost)
-    {
-
-        if (current_cost > threshold) return false;
-        if (pos == ord.size()) return true;
-
-        ui rem_lb = residualSpokeLB(pos, ord, S_cand);
-        if (current_cost + rem_lb > threshold) return false;
-
-        ui i = ord[pos];
-        ui x = S[i];
-
-        // branch 1：x -> OUT
-        part_S[i] = -1;
-        if (dfsOneHop(pos + 1, S, S_cand, part_S, ord, current_cost + 1)) {
-            part_S[i] = -2;
             return true;
         }
 
-        // branch 2：x -> inside y
-        for (ui y : S_cand[i]) {
-            if (used_1hop.contains(y)) continue;
+    private:
+        ui computeNeighborhoodLabelGap(ui u, ui v) const
+        {
+            ui diff = 0;
+            size_t sz = solver.Lq_counts[u].size();
+            for (size_t i = 0; i < sz; ++i) {
+                if (solver.Lq_counts[u][i] > solver.Lg_counts[v][i]) {
+                    diff += (solver.Lq_counts[u][i] - solver.Lg_counts[v][i]);
+                }
+            }
+            return diff;
+        }
 
-            ui delta_inner = 0;
+        bool applyNeighborhoodLabelFilter()
+        {
+            for (ui u = 0; u < solver.qn; ++u) {
+                LabelID lu = solver.query_graph->getVertexLabel(u);
+                for (ui v = 0; v < solver.gn; ++v) {
+                    if (lu != solver.data_graph->getVertexLabel(v)) continue;
+                    if (solver.Lq_degrees[u] > solver.Lg_degrees[v] + solver.threshold) continue;
+                    if (computeNeighborhoodLabelGap(u, v) > solver.threshold) continue;
+                    solver.candidates[u].insert(v);
+                }
+                if (solver.candidates[u].empty()) return false;
+            }
+            return true;
+        }
 
-            for (ui j = 0; j < S.size(); ++j) {
-                if (part_S[j] < 0) continue;
-                ui z = S[j];
-                if (!q_matrix[x][z]) continue;
+        bool findSpokeAugmentPath(ui left_idx, const vector<vector<ui>> &adj)
+        {
+            for (ui right_idx : adj[left_idx]) {
+                if (spoke_seen_right[right_idx]) continue;
+                spoke_seen_right[right_idx] = true;
+                if (spoke_match_right[right_idx] < 0 ||
+                    findSpokeAugmentPath((ui)spoke_match_right[right_idx], adj)) {
+                    spoke_match_right[right_idx] = (int)left_idx;
+                    return true;
+                }
+            }
+            return false;
+        }
 
-                ui yz = (ui)part_S[j];
-                if (!data_graph->hasEdge(y, yz)) {
-                    delta_inner++;
+        ui computeMaximumSpokeMatching(const vector<vector<ui>> &adj, ui left_size, ui right_size)
+        {
+            ui mu = 0;
+            std::fill(spoke_match_right.begin(), spoke_match_right.begin() + right_size, -1);
+            for (ui i = 0; i < left_size; ++i) {
+                std::fill(spoke_seen_right.begin(), spoke_seen_right.begin() + right_size, false);
+                if (findSpokeAugmentPath(i, adj)) mu++;
+            }
+            return mu;
+        }
+
+        ui computeSpokeLowerBound(ui u, ui v)
+        {
+            const vector<ui> &query_neighbors = solver.q_neighbors[u];
+            ui data_deg = 0;
+            const ui *data_neighbors = solver.data_graph->getVertexNeighbors(v, data_deg);
+
+            for (ui i = 0; i < query_neighbors.size(); ++i) {
+                spoke_adj_by_query_nbr[i].clear();
+                ui query_nbr = query_neighbors[i];
+                for (ui j = 0; j < data_deg; ++j) {
+                    ui data_nbr = data_neighbors[j];
+                    if (solver.candidates[query_nbr].contains(data_nbr)) {
+                        spoke_adj_by_query_nbr[i].push_back(j);
+                    }
                 }
             }
 
-            if (current_cost + delta_inner > threshold) continue;
+            ui match_size = computeMaximumSpokeMatching(spoke_adj_by_query_nbr, (ui)query_neighbors.size(), data_deg);
+            return (ui)query_neighbors.size() - match_size;
+        }
 
-            used_1hop.insert(y);
-            part_S[i] = (int)y;
+        bool applySpokeFilter()
+        {
+            queue<ui> pending_vertices;
+            vector<char> in_queue(solver.qn, 1);
 
-            if (dfsOneHop(pos + 1, S, S_cand, part_S, ord, current_cost + delta_inner)) {
-                used_1hop.remove(y);
-                part_S[i] = -2;
+            for (ui u = 0; u < solver.qn; ++u) pending_vertices.push(u);
+
+            while (!pending_vertices.empty()) {
+                ui u = pending_vertices.front();
+                pending_vertices.pop();
+                in_queue[u] = 0;
+
+                vector<ui> to_remove;
+                for (ui v : solver.candidates[u]) {
+                    if (computeSpokeLowerBound(u, v) > solver.threshold) {
+                        to_remove.push_back(v);
+                    }
+                }
+
+                if (to_remove.empty()) continue;
+
+                for (ui v : to_remove) solver.candidates[u].remove(v);
+                if (solver.candidates[u].empty()) return false;
+
+                for (ui nbr : solver.q_neighbors[u]) {
+                    if (!in_queue[nbr]) {
+                        pending_vertices.push(nbr);
+                        in_queue[nbr] = 1;
+                    }
+                }
+            }
+            return true;
+        }
+
+        ui countNeighborInnerEdges(ui u) const
+        {
+            ui count = 0;
+            const vector<ui> &query_neighbors = solver.q_neighbors[u];
+            for (ui i = 0; i < query_neighbors.size(); ++i) {
+                for (ui j = i + 1; j < query_neighbors.size(); ++j) {
+                    if (solver.q_matrix[query_neighbors[i]][query_neighbors[j]]) count++;
+                }
+            }
+            return count;
+        }
+
+        vector<ui> buildOneHopSearchOrder(const vector<ui> &query_neighbors,
+            const vector<vector<ui>> &neighbor_candidates) const
+        {
+            vector<ui> ord(query_neighbors.size());
+            iota(ord.begin(), ord.end(), 0);
+
+            sort(ord.begin(), ord.end(), [&](ui a, ui b) {
+                if (neighbor_candidates[a].size() != neighbor_candidates[b].size()) {
+                    return neighbor_candidates[a].size() < neighbor_candidates[b].size();
+                }
+                ui deg_a = 0, deg_b = 0;
+                for (ui z : query_neighbors) {
+                    if (solver.q_matrix[query_neighbors[a]][z]) deg_a++;
+                    if (solver.q_matrix[query_neighbors[b]][z]) deg_b++;
+                }
+                return deg_a > deg_b;
+                });
+            return ord;
+        }
+
+        ui computeResidualOneHopLowerBound(ui pos, const vector<ui> &ord,
+            const vector<vector<ui>> &neighbor_candidates) const
+        {
+            ui rem = 0;
+            for (ui k = pos; k < ord.size(); ++k) {
+                ui i = ord[k];
+                bool has_free = false;
+                for (ui y : neighbor_candidates[i]) {
+                    if (!used_one_hop_vertices.contains(y)) {
+                        has_free = true;
+                        break;
+                    }
+                }
+                if (!has_free) rem++;
+            }
+            return rem;
+        }
+
+        bool searchOneHopAssignment(ui pos, const vector<ui> &query_neighbors,
+            const vector<vector<ui>> &neighbor_candidates,
+            vector<int> &partial_assignment,
+            const vector<ui> &ord,
+            ui current_cost)
+        {
+            if (current_cost > solver.threshold) return false;
+            if (pos == ord.size()) return true;
+
+            ui rem_lb = computeResidualOneHopLowerBound(pos, ord, neighbor_candidates);
+            if (current_cost + rem_lb > solver.threshold) return false;
+
+            ui i = ord[pos];
+            ui x = query_neighbors[i];
+
+            partial_assignment[i] = -1;
+            if (searchOneHopAssignment(pos + 1, query_neighbors, neighbor_candidates,
+                partial_assignment, ord, current_cost + 1)) {
+                partial_assignment[i] = -2;
                 return true;
             }
 
-            used_1hop.remove(y);
-            part_S[i] = -2;
+            for (ui y : neighbor_candidates[i]) {
+                if (used_one_hop_vertices.contains(y)) continue;
+
+                ui delta_inner = 0;
+                for (ui j = 0; j < query_neighbors.size(); ++j) {
+                    if (partial_assignment[j] < 0) continue;
+                    ui z = query_neighbors[j];
+                    if (!solver.q_matrix[x][z]) continue;
+
+                    ui yz = (ui)partial_assignment[j];
+                    if (!solver.data_graph->hasEdge(y, yz)) {
+                        delta_inner++;
+                    }
+                }
+
+                if (current_cost + delta_inner > solver.threshold) continue;
+
+                used_one_hop_vertices.insert(y);
+                partial_assignment[i] = (int)y;
+
+                if (searchOneHopAssignment(pos + 1, query_neighbors, neighbor_candidates,
+                    partial_assignment, ord, current_cost + delta_inner)) {
+                    used_one_hop_vertices.remove(y);
+                    partial_assignment[i] = -2;
+                    return true;
+                }
+
+                used_one_hop_vertices.remove(y);
+                partial_assignment[i] = -2;
+            }
+
+            partial_assignment[i] = -2;
+            return false;
         }
 
-        part_S[i] = -2;
-        return false;
-    }
+        bool passesOneHopFilter(ui u, ui v)
+        {
+            const vector<ui> &query_neighbors = solver.q_neighbors[u];
+            vector<vector<ui>> neighbor_candidates(query_neighbors.size());
 
-    bool checkLBOneHop(ui u, ui v)
-    {
-        const vector<ui> &S = q_neighbors[u];
+            ui data_deg = 0;
+            const ui *data_neighbors = solver.data_graph->getVertexNeighbors(v, data_deg);
+            for (ui i = 0; i < query_neighbors.size(); ++i) {
+                ui query_nbr = query_neighbors[i];
+                for (ui j = 0; j < data_deg; ++j) {
+                    ui y = data_neighbors[j];
+                    if (solver.candidates[query_nbr].contains(y)) {
+                        neighbor_candidates[i].push_back(y);
+                    }
+                }
+            }
 
-        vector<vector<ui>> S_cand(S.size());
-        ui degv; const ui *nbrs = data_graph->getVertexNeighbors(v, degv);
+            vector<ui> ord = buildOneHopSearchOrder(query_neighbors, neighbor_candidates);
+            vector<int> partial_assignment(query_neighbors.size(), -2);
+            return searchOneHopAssignment(0, query_neighbors, neighbor_candidates, partial_assignment, ord, 0);
+        }
 
-        for (ui i = 0; i < S.size(); ++i) {
-            ui u1 = S[i];
-            for (ui j = 0; j < degv; ++j) {
-                ui y = nbrs[j];
-                if (candidates[u1].contains(y)) S_cand[i].push_back(y);
+        bool applyOneHopFilter()
+        {
+            vector<pair<ui, ui>> to_delete;
+
+            for (ui u = 0; u < solver.qn; ++u) {
+                ui deg_u = solver.q_neighbors[u].size();
+                if (deg_u <= 1) continue;
+                if (countNeighborInnerEdges(u) == 0) continue;
+
+                for (ui v : solver.candidates[u]) {
+                    if (!passesOneHopFilter(u, v)) {
+                        to_delete.push_back({ u, v });
+                    }
+                }
+            }
+
+            for (auto p : to_delete) {
+                solver.candidates[p.first].remove(p.second);
+            }
+
+            for (ui u = 0; u < solver.qn; ++u) {
+                if (solver.candidates[u].empty()) return false;
+            }
+            return true;
+        }
+
+#ifndef NDEBUG
+        void printCandidateStatistics()
+        {
+            vector<ui> missing_edges_dist(solver.threshold + 1, 0);
+            vector<vector<ui>> vertex_missing_edges_dist(solver.qn, vector<ui>(solver.threshold + 1, 0));
+            ui total_candidates_count = 0;
+
+            for (ui u = 0; u < solver.qn; ++u) {
+                total_candidates_count += solver.candidates[u].size();
+
+                for (ui v : solver.candidates[u]) {
+                    ui min_missing_edges = computeSpokeLowerBound(u, v);
+                    if (min_missing_edges <= solver.threshold) {
+                        missing_edges_dist[min_missing_edges]++;
+                        vertex_missing_edges_dist[u][min_missing_edges]++;
+                    }
+                }
+            }
+
+            printf("\n================ Candidate Missing Edges Statistics ================\n");
+            printf("Total valid candidates across all query vertices: %u\n", total_candidates_count);
+            for (ui i = 0; i <= solver.threshold; ++i) {
+                double percent = (total_candidates_count == 0) ? 0.0 :
+                    (double)missing_edges_dist[i] / total_candidates_count * 100.0;
+                printf("Missing edges = %u: %6u candidates (%6.2f %%)\n", i, missing_edges_dist[i], percent);
+            }
+            printf("====================================================================\n\n");
+
+            printf("candidates nums and missing edges distribution:\n");
+            for (ui u = 0; u < solver.qn; ++u) {
+                ui cand_size = solver.candidates[u].size();
+                ui deg_u = solver.q_neighbors[u].size();
+                ui max_miss_allowed = (deg_u > 0) ? std::min(solver.threshold, deg_u - 1) : solver.threshold;
+
+                printf("u = %u: %6d candidates", u, cand_size);
+                if (cand_size > 0) {
+                    printf("  [ ");
+                    for (ui i = 0; i <= max_miss_allowed; ++i) {
+                        double percent = (double)vertex_missing_edges_dist[u][i] / cand_size * 100.0;
+                        printf("%u-miss: %5.1f%%", i, percent);
+                        if (i < max_miss_allowed) printf(" | ");
+                    }
+                    printf(" ]");
+                }
+                printf("\n");
             }
         }
+#endif
+    };
 
-        vector<ui> ord = orderDfsOneHop(S, S_cand);
-        vector<int> part_S(S.size(), -2); // -2=unprocessed, -1=OUT, (>=0)->data vertex
-
-        return dfsOneHop(0, S, S_cand, part_S, ord, 0);
-    }
-
-    bool filterOneHop()
+    bool runCandidateFiltering()
     {
-        vector<pair<ui, ui>> del;
+        return CandidateFilter(*this).run();
+    }
+    // ========================================================================
 
-        for (ui u = 0; u < qn; ++u) {
-            ui du = q_neighbors[u].size();
-            if (du <= 1) continue;
-            if (countInnerEdgesAmongNeighbors(u) == 0) continue;
+    struct BranchSelector {
+        MatchingSolver &solver;
 
-            for (ui v : candidates[u]) {
-                if (!checkLBOneHop(u, v)) {
-                    del.push_back({ u, v });
+        explicit BranchSelector(MatchingSolver &solver) : solver(solver) {}
+
+        ui selectInitialRoot() const
+        {
+            ui root = 0;
+            for (ui u = 1; u < solver.qn; ++u) {
+                if (solver.candidates[u].size() < solver.candidates[root].size() ||
+                    (solver.candidates[u].size() == solver.candidates[root].size() &&
+                        solver.q_neighbors[u].size() > solver.q_neighbors[root].size())) {
+                    root = u;
+                }
+            }
+            return root;
+        }
+
+        void collectLiveAnchors(ui u, vector<ui> &anchors) const
+        {
+            anchors.clear();
+            for (ui nbr : solver.q_neighbors[u]) {
+                if (solver.in_Mq[nbr] && !solver.is_excluded[u][nbr]) {
+                    anchors.push_back(nbr);
                 }
             }
         }
 
-        for (auto p : del) {
-            candidates[p.first].remove(p.second);
+        SearchFrontierState buildSearchFrontierState(const SearchFrontierState *parent_state)
+        {
+            SearchFrontierState state;
+            vector<ui> preferred_frontier;
+            collectPreferredDescendantFrontier(parent_state, preferred_frontier);
+
+            const vector<ui> &selection_pool =
+                preferred_frontier.empty() ? solver.active_frontier : preferred_frontier;
+            if (selection_pool.empty()) {
+                return state;
+            }
+
+            ui best_u = selectBestFrontierPoint(selection_pool);
+            collectComponentStateFromSeed(best_u, state);
+            return state;
         }
 
-        for (ui u = 0; u < qn; ++u) {
-            if (candidates[u].empty()) return false;
-        }
-        return true;
-    }
-    // ========================================================================
+    private:
+        struct FrontierPointScore {
+            ui best_anchor_support = std::numeric_limits<ui>::max();
+            ui live_candidate_count = std::numeric_limits<ui>::max();
+            ui live_anchor_count = 0;
+            ui query_degree = 0;
+        };
 
-    ui getInitialRoot()
-    {
-        ui root = 0;
-        for (ui u = 1; u < qn; ++u) {
-            if (candidates[u].size() < candidates[root].size() ||
-                (candidates[u].size() == candidates[root].size() &&
-                    q_neighbors[u].size() > q_neighbors[root].size())) {
-                root = u;
+        void advanceFrontierVisitToken()
+        {
+            if (++solver.frontier_visit_token == 0) {
+                std::fill(solver.frontier_visit_mark.begin(), solver.frontier_visit_mark.end(), 0);
+                solver.frontier_visit_token = 1;
             }
         }
-        return root;
-    }
 
-    vector<ui> getBestComponentFrontier()
-    {
-        // 1. 遍历一遍，判断当前查询图被 Mq 分割为了几个不相连的部分
-        vector<bool> visited_unmapped(qn, false);
-        vector<vector<ui>> components;
+        ui countLiveCandidates(ui u) const
+        {
+            ui cnt = 0;
+            for (ui v : solver.candidates[u]) {
+                if (solver.mapped_g[v] == -1 && !solver.x_cand[u].contains(v)) {
+                    cnt++;
+                }
+            }
+            return cnt;
+        }
 
-        for (ui i = 0; i < qn; ++i) {
-            if (!in_Mq[i] && !visited_unmapped[i]) {
-                vector<ui> comp;
-                queue<ui> q;
-                q.push(i);
-                visited_unmapped[i] = true;
+        ui countAnchorSupport(ui u, ui anchor) const
+        {
+            ui support = 0;
+            ui deg = 0;
+            const ui *nbrs = solver.data_graph->getVertexNeighbors((ui)solver.mapped_q[anchor], deg);
+            for (ui i = 0; i < deg; ++i) {
+                ui v = nbrs[i];
+                if (solver.mapped_g[v] != -1 || solver.x_cand[u].contains(v)) {
+                    continue;
+                }
+                if (solver.candidates[u].contains(v)) {
+                    support++;
+                }
+            }
+            return support;
+        }
+
+        FrontierPointScore evaluateFrontierPoint(ui u, vector<ui> &anchors_buf) const
+        {
+            FrontierPointScore score;
+            collectLiveAnchors(u, anchors_buf);
+
+            score.live_anchor_count = (ui)anchors_buf.size();
+            score.live_candidate_count = countLiveCandidates(u);
+            score.query_degree = (ui)solver.q_neighbors[u].size();
+
+            for (ui anchor : anchors_buf) {
+                score.best_anchor_support = std::min(score.best_anchor_support, countAnchorSupport(u, anchor));
+            }
+
+            if (score.best_anchor_support == std::numeric_limits<ui>::max()) {
+                score.best_anchor_support = score.live_candidate_count;
+            }
+
+            return score;
+        }
+
+        bool isBetterFrontierPoint(ui lhs_u, const FrontierPointScore &lhs,
+            ui rhs_u, const FrontierPointScore &rhs) const
+        {
+            if (lhs.best_anchor_support != rhs.best_anchor_support) {
+                return lhs.best_anchor_support < rhs.best_anchor_support;
+            }
+            if (lhs.live_candidate_count != rhs.live_candidate_count) {
+                return lhs.live_candidate_count < rhs.live_candidate_count;
+            }
+            if (lhs.live_anchor_count != rhs.live_anchor_count) {
+                return lhs.live_anchor_count > rhs.live_anchor_count;
+            }
+            if (lhs.query_degree != rhs.query_degree) {
+                return lhs.query_degree > rhs.query_degree;
+            }
+            return lhs_u < rhs_u;
+        }
+
+        ui selectBestFrontierPoint(const vector<ui> &frontier_points) const
+        {
+            assert(!frontier_points.empty());
+
+            vector<ui> anchors_buf;
+            ui best_u = frontier_points.front();
+            FrontierPointScore best_score = evaluateFrontierPoint(best_u, anchors_buf);
+
+            for (ui i = 1; i < frontier_points.size(); ++i) {
+                ui u = frontier_points[i];
+                FrontierPointScore score = evaluateFrontierPoint(u, anchors_buf);
+                if (isBetterFrontierPoint(u, score, best_u, best_score)) {
+                    best_u = u;
+                    best_score = score;
+                }
+            }
+
+            return best_u;
+        }
+
+        void collectComponentStateFromSeed(ui seed, SearchFrontierState &state)
+        {
+            state.component_vertices.clear();
+            state.component_frontier.clear();
+
+            if (solver.in_Mq[seed]) {
+                return;
+            }
+
+            advanceFrontierVisitToken();
+
+            queue<ui> q;
+            solver.frontier_visit_mark[seed] = solver.frontier_visit_token;
+            q.push(seed);
+
+            while (!q.empty()) {
+                ui curr = q.front();
+                q.pop();
+
+                state.component_vertices.push_back(curr);
+                if (solver.frontier_pos[curr] != -1) {
+                    state.component_frontier.push_back(curr);
+                }
+
+                for (ui nbr : solver.q_neighbors[curr]) {
+                    if (!solver.in_Mq[nbr] &&
+                        solver.frontier_visit_mark[nbr] != solver.frontier_visit_token) {
+                        solver.frontier_visit_mark[nbr] = solver.frontier_visit_token;
+                        q.push(nbr);
+                    }
+                }
+            }
+        }
+
+        void collectPreferredDescendantFrontier(const SearchFrontierState *parent_state,
+            vector<ui> &preferred_frontier)
+        {
+            preferred_frontier.clear();
+            if (parent_state == nullptr || parent_state->component_vertices.empty()) {
+                return;
+            }
+
+            advanceFrontierVisitToken();
+
+            queue<ui> q;
+            for (ui seed : parent_state->component_vertices) {
+                if (solver.in_Mq[seed] ||
+                    solver.frontier_visit_mark[seed] == solver.frontier_visit_token) {
+                    continue;
+                }
+
+                solver.frontier_visit_mark[seed] = solver.frontier_visit_token;
+                q.push(seed);
 
                 while (!q.empty()) {
                     ui curr = q.front();
                     q.pop();
-                    comp.push_back(curr);
 
-                    for (ui nbr : q_neighbors[curr]) {
-                        if (!in_Mq[nbr] && !visited_unmapped[nbr]) {
-                            visited_unmapped[nbr] = true;
+                    if (solver.frontier_pos[curr] != -1) {
+                        preferred_frontier.push_back(curr);
+                    }
+
+                    for (ui nbr : solver.q_neighbors[curr]) {
+                        if (!solver.in_Mq[nbr] &&
+                            solver.frontier_visit_mark[nbr] != solver.frontier_visit_token) {
+                            solver.frontier_visit_mark[nbr] = solver.frontier_visit_token;
                             q.push(nbr);
                         }
                     }
                 }
-                components.push_back(comp);
             }
         }
-
-        // 2. 选择其中（点数 * 每个点的待选集）最少的部分，以及对应部分的 U_frontier
-        vector<ui> best_U_frontier;
-
-        // 使用 double 替代 unsigned long long 来存储代价，彻底避免乘法溢出风险
-        // 注意：需要包含头文件 <limits>
-        double min_cost = std::numeric_limits<double>::max();
-
-        for (const auto &comp : components) {
-            vector<ui> comp_frontier;
-            double sum_cand = 1.0;
-
-            for (ui v : comp) {
-                sum_cand *= candidates[v].size();
-                // 检查 v 是否属于当前的 active_frontier (O(1)判断)
-                if (frontier_pos[v] != -1) {
-                    comp_frontier.push_back(v);
-                }
-            }
-
-            // 仅对具有合法 Frontier 的连通分量进行代价评估
-            assert(!comp_frontier.empty());
-            if (!comp_frontier.empty()) {
-                if (sum_cand < min_cost) {
-                    min_cost = sum_cand;
-                    best_U_frontier = comp_frontier;
-                }
-            }
-        }
-
-        // 3. 返回找到的最优 U_frontier
-        return best_U_frontier;
-    }
+    };
 
     // ========================================================================
     // Lower Bound based Pruning
     // ========================================================================
-    ui computeCrossDelta(ui v, const vector<ui> &anchors) const
-    {
-        ui delta = 0;
-        for (ui a : anchors) {
-            assert(mapped_q[a] >= 0);
-            if (!data_graph->hasEdge(v, (ui)mapped_q[a])) {
-                delta++;
+    struct LowerBoundPruner {
+        MatchingSolver &solver;
+
+        explicit LowerBoundPruner(MatchingSolver &solver) : solver(solver) {}
+
+        bool shouldPrune(ui current_miss, const vector<ui> &frontier_vertices)
+        {
+            ui remaining_budget = solver.threshold - current_miss;
+            if (frontier_vertices.empty()) {
+                return false;
             }
-        }
-        return delta;
-    }
 
-    bool findBudgetFeasibleAugment(ui left_idx, const vector<vector<ui>> &adj)
-    {
-        for (ui v : adj[left_idx]) {
-            if (lb_seen_right[v] == lb_seen_token) {
-                continue;
+            BranchSelector branch_selector(solver);
+            ui frontier_size = (ui)frontier_vertices.size();
+            vector<vector<ui>> anchors_by_frontier_idx(frontier_size);
+            ui sum_lb = current_miss;
+
+            for (ui i = 0; i < frontier_size; ++i) {
+                ui u = frontier_vertices[i];
+                vector<ui> &anchors = anchors_by_frontier_idx[i];
+                branch_selector.collectLiveAnchors(u, anchors);
+
+                ui best_anchor_cut = solver.threshold + 1;
+                for (ui v : solver.candidates[u]) {
+                    if (solver.mapped_g[v] != -1 || solver.x_cand[u].contains(v)) {
+                        continue;
+                    }
+
+                    ui alpha = computeAnchorCutDelta(v, anchors);
+                    best_anchor_cut = std::min(best_anchor_cut, alpha);
+                }
+
+                if (best_anchor_cut == solver.threshold + 1) {
+                    return true;
+                }
+
+                // Search-time lower bounds must stay residual to the current
+                // partial match, so the cheap bound only uses the live anchor cut.
+                sum_lb += best_anchor_cut;
+                if (sum_lb > solver.threshold) {
+                    return true;
+                }
             }
-            lb_seen_right[v] = lb_seen_token;
 
-            if (lb_match_right[v] < 0 || findBudgetFeasibleAugment((ui)lb_match_right[v], adj)) {
-                lb_match_right[v] = (int)left_idx;
-                return true;
+            ui competition_lb = computeBudgetCompetitionLowerBound(
+                frontier_vertices, anchors_by_frontier_idx, remaining_budget);
+            return current_miss + competition_lb > solver.threshold;
+        }
+
+    private:
+        ui computeAnchorCutDelta(ui v, const vector<ui> &anchors) const
+        {
+            ui delta = 0;
+            for (ui a : anchors) {
+                assert(solver.mapped_q[a] >= 0);
+                if (!solver.data_graph->hasEdge(v, (ui)solver.mapped_q[a])) {
+                    delta++;
+                }
             }
-        }
-        return false;
-    }
-
-    ui computeBudgetLayerDeficit(const vector<ui> &U_frontier,
-        const vector<vector<ui>> &anchors_by_idx,
-        ui remaining_budget)
-    {
-        ui frontier_size = (ui)U_frontier.size();
-        if (frontier_size <= 1 || remaining_budget == 0) {
-            return 0;
+            return delta;
         }
 
-        vector<vector<vector<ui>>> exact_adj(frontier_size, vector<vector<ui>>(remaining_budget));
-        vector<ui> right_vertices;
-
-        if (++lb_data_frontier_token == 0) {
-            std::fill(lb_data_frontier_mark.begin(), lb_data_frontier_mark.end(), 0);
-            lb_data_frontier_token = 1;
-        }
-
-        for (ui i = 0; i < frontier_size; ++i) {
-            ui u = U_frontier[i];
-            const vector<ui> &anchors = anchors_by_idx[i];
-
-            for (ui v : candidates[u]) {
-                if (mapped_g[v] != -1 || x_cand[u].contains(v)) {
+        bool findBudgetFeasibleAugment(ui left_idx, const vector<vector<ui>> &adj)
+        {
+            for (ui v : adj[left_idx]) {
+                if (solver.lb_seen_right[v] == solver.lb_seen_token) {
                     continue;
                 }
+                solver.lb_seen_right[v] = solver.lb_seen_token;
 
-                ui alpha = computeCrossDelta(v, anchors);
-                if (alpha >= remaining_budget) {
-                    continue;
-                }
-
-                exact_adj[i][alpha].push_back(v);
-                if (lb_data_frontier_mark[v] != lb_data_frontier_token) {
-                    lb_data_frontier_mark[v] = lb_data_frontier_token;
-                    right_vertices.push_back(v);
+                if (solver.lb_match_right[v] < 0 ||
+                    findBudgetFeasibleAugment((ui)solver.lb_match_right[v], adj)) {
+                    solver.lb_match_right[v] = (int)left_idx;
+                    return true;
                 }
             }
-        }
-
-        vector<vector<ui>> cumulative_adj(frontier_size);
-        ui extra_lb = 0;
-
-        for (ui k = 0; k < remaining_budget; ++k) {
-            for (ui i = 0; i < frontier_size; ++i) {
-                const vector<ui> &delta = exact_adj[i][k];
-                cumulative_adj[i].insert(cumulative_adj[i].end(), delta.begin(), delta.end());
-            }
-
-            for (ui v : right_vertices) {
-                lb_match_right[v] = -1;
-            }
-
-            ui mu = 0;
-            for (ui i = 0; i < frontier_size; ++i) {
-                if (++lb_seen_token == 0) {
-                    std::fill(lb_seen_right.begin(), lb_seen_right.end(), 0);
-                    lb_seen_token = 1;
-                }
-
-                if (findBudgetFeasibleAugment(i, cumulative_adj)) {
-                    mu++;
-                }
-            }
-
-            ui deficit = frontier_size - mu;
-            extra_lb += deficit;
-            if (extra_lb > remaining_budget) {
-                return extra_lb;
-            }
-        }
-
-        return extra_lb;
-    }
-
-    bool shouldPruneByLowerBounds(ui current_miss, const vector<ui> &U_frontier)
-    {
-        ui remaining_budget = threshold - current_miss;
-        if (U_frontier.empty()) {
             return false;
         }
 
-        ui frontier_size = (ui)U_frontier.size();
-        vector<vector<ui>> anchors_by_idx(frontier_size);
-        ui sum_lb = current_miss;
+        ui computeBudgetCompetitionLowerBound(const vector<ui> &frontier_vertices,
+            const vector<vector<ui>> &anchors_by_frontier_idx,
+            ui remaining_budget)
+        {
+            ui frontier_size = (ui)frontier_vertices.size();
+            if (frontier_size <= 1 || remaining_budget == 0) {
+                return 0;
+            }
 
-        for (ui i = 0; i < frontier_size; ++i) {
-            ui u = U_frontier[i];
-            vector<ui> &anchors = anchors_by_idx[i];
-            anchors.clear();
-            for (ui nbr : q_neighbors[u]) {
-                if (in_Mq[nbr] && !is_excluded[u][nbr]) {
-                    anchors.push_back(nbr);
+            vector<vector<vector<ui>>> exact_adj(frontier_size, vector<vector<ui>>(remaining_budget));
+            vector<ui> right_vertices;
+
+            if (++solver.lb_data_frontier_token == 0) {
+                std::fill(solver.lb_data_frontier_mark.begin(), solver.lb_data_frontier_mark.end(), 0);
+                solver.lb_data_frontier_token = 1;
+            }
+
+            for (ui i = 0; i < frontier_size; ++i) {
+                ui u = frontier_vertices[i];
+                const vector<ui> &anchors = anchors_by_frontier_idx[i];
+
+                for (ui v : solver.candidates[u]) {
+                    if (solver.mapped_g[v] != -1 || solver.x_cand[u].contains(v)) {
+                        continue;
+                    }
+
+                    ui alpha = computeAnchorCutDelta(v, anchors);
+                    if (alpha >= remaining_budget) {
+                        continue;
+                    }
+
+                    exact_adj[i][alpha].push_back(v);
+                    if (solver.lb_data_frontier_mark[v] != solver.lb_data_frontier_token) {
+                        solver.lb_data_frontier_mark[v] = solver.lb_data_frontier_token;
+                        right_vertices.push_back(v);
+                    }
                 }
             }
 
-            ui best_boundary = threshold + 1;
+            vector<vector<ui>> cumulative_adj(frontier_size);
+            ui extra_lb = 0;
 
-            for (ui v : candidates[u]) {
-                if (mapped_g[v] != -1 || x_cand[u].contains(v)) {
-                    continue;
+            for (ui k = 0; k < remaining_budget; ++k) {
+                for (ui i = 0; i < frontier_size; ++i) {
+                    const vector<ui> &delta = exact_adj[i][k];
+                    cumulative_adj[i].insert(cumulative_adj[i].end(), delta.begin(), delta.end());
                 }
 
-                ui alpha = computeCrossDelta(v, anchors);
-                best_boundary = std::min(best_boundary, alpha);
+                for (ui v : right_vertices) {
+                    solver.lb_match_right[v] = -1;
+                }
+
+                ui mu = 0;
+                for (ui i = 0; i < frontier_size; ++i) {
+                    if (++solver.lb_seen_token == 0) {
+                        std::fill(solver.lb_seen_right.begin(), solver.lb_seen_right.end(), 0);
+                        solver.lb_seen_token = 1;
+                    }
+
+                    if (findBudgetFeasibleAugment(i, cumulative_adj)) {
+                        mu++;
+                    }
+                }
+
+                ui deficit = frontier_size - mu;
+                extra_lb += deficit;
+                if (extra_lb > remaining_budget) {
+                    return extra_lb;
+                }
             }
 
-            if (best_boundary == threshold + 1) {
-                return true;
-            }
-
-            // Search-time lower bounds must be residual to the current partial match.
-            // The static spoke_lb(u, v) is computed before DFS and still accounts for
-            // incident query edges that may already have been paid via exclusions in
-            // current_miss. Using it directly here can double count those edges and
-            // prune valid solutions, so the cheap bound only uses the live anchor cut.
-            sum_lb += best_boundary;
-            if (sum_lb > threshold) {
-                return true;
-            }
+            return extra_lb;
         }
-
-        ui competition_lb = computeBudgetLayerDeficit(U_frontier, anchors_by_idx, remaining_budget);
-        return current_miss + competition_lb > threshold;
-    }
+    };
     // ========================================================================
 
     // =====================================================
@@ -833,7 +1006,7 @@ private:
     // cost:  current cost of partial match M_part
     // u_new: the most recently mapped query vertex (-1 means undefined)
     // =====================================================
-    void dfs(ui cost, int u_new)
+    void dfs(ui cost, int u_new, const SearchFrontierState *parent_state)
     {
         assert(matched_count > 0);
         assert(matched_count <= qn);
@@ -869,12 +1042,22 @@ private:
             return;
         }
 
-        vector<ui> U_frontier = getBestComponentFrontier();
+        BranchSelector branch_selector(*this);
+        SearchFrontierState current_state = branch_selector.buildSearchFrontierState(parent_state);
+        const vector<ui> &U_frontier = current_state.component_frontier;
         stats.frontier_time += t_frontier.elapsed();
+
+        if (U_frontier.empty()) {
+            for (ui w : reEnabledP) {
+                in_P[w] = 1;
+                updateFrontierStatus(w);
+            }
+            return;
+        }
 
 #ifdef LOWER_BOUND
         //         Timer t_lb;
-        //         if (shouldPruneByLowerBounds(cost, U_frontier)) {
+        //         if (LowerBoundPruner(*this).shouldPrune(cost, U_frontier)) {
         //             stats.lb_time += t_lb.elapsed();
         //             stats.prun_calls++;
 
@@ -897,12 +1080,7 @@ private:
 
         for (ui u : U_frontier) {
             vector<ui> U_anchor;
-            U_anchor.clear();
-            for (ui nbr : q_neighbors[u]) {
-                if (in_Mq[nbr]) {
-                    U_anchor.push_back(nbr);
-                }
-            }
+            branch_selector.collectLiveAnchors(u, U_anchor);
 
             bool threshold_exceeded = false;
 
@@ -944,7 +1122,7 @@ private:
                     onVertexMatchStateChanged(u, true);
 
                     Timer t_child;
-                    dfs(current_cost + delta, (int)u);
+                    dfs(current_cost + delta, (int)u, &current_state);
                     child_dfs_time += t_child.elapsed();
 
                     onVertexMatchStateChanged(u, false);
