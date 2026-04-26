@@ -1,6 +1,7 @@
 build*/
 test/
 result/
+.DS_Store
 .*/
 com.txt
 tmp/
