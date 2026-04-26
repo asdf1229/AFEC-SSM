@@ -105,7 +105,16 @@ public:
         // search breakdown
         long long dfs_time = 0;
         long long lb_time = 0;       // computeLowerBound
-        long long frontier_time = 0; // building U_frontier
+        long long frontier_time = 0; // building and ordering U_frontier
+        long long frontier_preferred_time = 0;
+        long long frontier_select_time = 0;
+        long long frontier_component_time = 0;
+        long long frontier_sort_time = 0;
+        long long frontier_score_time = 0;
+        long long frontier_score_live_anchor_time = 0;
+        long long frontier_score_live_candidate_time = 0;
+        long long frontier_score_query_degree_time = 0;
+        long long frontier_score_anchor_support_time = 0;
         long long branch_time = 0;   // candidate enumeration & matching in dfs
         // counters
         long long recursion_calls = 0;
@@ -125,6 +134,15 @@ public:
         printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, pct(stats.dfs_time, stats.total_time));
         printf("  - LowerBound Time: %.4lf ms (%.2f%% of Search)\n", stats.lb_time / 1000.0, pct(stats.lb_time, stats.dfs_time));
         printf("  - Frontier Time:   %.4lf ms (%.2f%% of Search)\n", stats.frontier_time / 1000.0, pct(stats.frontier_time, stats.dfs_time));
+        printf("    - Preferred:     %.4lf ms (%.2f%% of Frontier)\n", stats.frontier_preferred_time / 1000.0, pct(stats.frontier_preferred_time, stats.frontier_time));
+        printf("    - Select Best:   %.4lf ms (%.2f%% of Frontier)\n", stats.frontier_select_time / 1000.0, pct(stats.frontier_select_time, stats.frontier_time));
+        printf("    - Component:     %.4lf ms (%.2f%% of Frontier)\n", stats.frontier_component_time / 1000.0, pct(stats.frontier_component_time, stats.frontier_time));
+        printf("    - Sort Hook:     %.4lf ms (%.2f%% of Frontier)\n", stats.frontier_sort_time / 1000.0, pct(stats.frontier_sort_time, stats.frontier_time));
+        printf("    - Score Total:   %.4lf ms (%.2f%% of Select+Sort)\n", stats.frontier_score_time / 1000.0, pct(stats.frontier_score_time, stats.frontier_select_time + stats.frontier_sort_time));
+        printf("      - Live Anchors:   %.4lf ms (%.2f%% of Score)\n", stats.frontier_score_live_anchor_time / 1000.0, pct(stats.frontier_score_live_anchor_time, stats.frontier_score_time));
+        printf("      - Live Candidates:%.4lf ms (%.2f%% of Score)\n", stats.frontier_score_live_candidate_time / 1000.0, pct(stats.frontier_score_live_candidate_time, stats.frontier_score_time));
+        printf("      - Query Degree:   %.4lf ms (%.2f%% of Score)\n", stats.frontier_score_query_degree_time / 1000.0, pct(stats.frontier_score_query_degree_time, stats.frontier_score_time));
+        printf("      - Anchor Support: %.4lf ms (%.2f%% of Score)\n", stats.frontier_score_anchor_support_time / 1000.0, pct(stats.frontier_score_anchor_support_time, stats.frontier_score_time));
         printf("  - Branch Time:     %.4lf ms (%.2f%% of Search)\n", stats.branch_time / 1000.0, pct(stats.branch_time, stats.dfs_time));
         printf("Recursion Calls:     %lld\n", stats.recursion_calls);
         printf("Pruning Calls:       %lld\n", stats.prun_calls);
@@ -628,8 +646,29 @@ private:
     // ========================================================================
 
     struct BranchSelector {
-        MatchingSolver &solver;
+    private:
+        struct FrontierScore {
+            explicit FrontierScore(ui frontier_u = 0) : u(frontier_u) {}
 
+            ui u = 0;
+            vector<ui> live_anchors;
+            ui best_anchor_support = std::numeric_limits<ui>::max();
+            ui live_candidate_count = std::numeric_limits<ui>::max();
+            ui live_anchor_count = 0;
+            ui query_degree = 0;
+
+            bool live_anchors_ready = false;
+            bool best_anchor_support_ready = false;
+            bool live_candidate_count_ready = false;
+            bool query_degree_ready = false;
+        };
+
+        MatchingSolver &solver;
+        // Valid while this BranchSelector observes one unchanged DFS state.
+        mutable vector<FrontierScore> frontier_score_cache;
+        mutable vector<char> frontier_score_cached;
+
+    public:
         explicit BranchSelector(MatchingSolver &solver) : solver(solver) {}
 
         ui selectInitialRoot() const
@@ -659,23 +698,42 @@ private:
         {
             FrontierState state;
             vector<ui> preferred_frontier;
+
+            Timer t_preferred;
             collectPreferredFrontier(parent_state, preferred_frontier);
+            solver.stats.frontier_preferred_time += t_preferred.elapsed();
 
             const vector<ui> &frontier_candidates = preferred_frontier.empty() ? solver.active_frontier : preferred_frontier;
             assert(!frontier_candidates.empty());
 
+            Timer t_select;
             ui best_u = selectBestFrontierVertex(frontier_candidates);
+            solver.stats.frontier_select_time += t_select.elapsed();
+
+            Timer t_component;
             collectComponent(best_u, state);
+            solver.stats.frontier_component_time += t_component.elapsed();
+
+            Timer t_sort;
+            sortFrontier(state.component_frontier);
+            solver.stats.frontier_sort_time += t_sort.elapsed();
+
             return state;
         }
 
     private:
-        struct FrontierScore {
-            ui best_anchor_support = std::numeric_limits<ui>::max();
-            ui live_candidate_count = std::numeric_limits<ui>::max();
-            ui live_anchor_count = 0;
-            ui query_degree = 0;
-        };
+        void sortFrontier(vector<ui> &frontier) const
+        {
+            if (frontier.size() <= 1) {
+                return;
+            }
+
+            sort(frontier.begin(), frontier.end(), [&](ui lhs_u, ui rhs_u) {
+                FrontierScore &lhs = scoreFor(lhs_u);
+                FrontierScore &rhs = scoreFor(rhs_u);
+                return isBetterFrontier(lhs, rhs);
+            });
+        }
 
         // Move to the next BFS visit token
         void nextToken()
@@ -716,62 +774,140 @@ private:
             return support;
         }
 
-        FrontierScore scoreFrontier(ui u, vector<ui> &anchors_buf) const
+        // Returns the cached lazy frontier score for u in the current DFS state.
+        FrontierScore &scoreFor(ui u) const
         {
-            FrontierScore score;
-            collectLiveAnchors(u, anchors_buf);
+            assert(u < solver.qn);
+            if (frontier_score_cache.empty()) {
+                frontier_score_cache.resize(solver.qn);
+                frontier_score_cached.assign(solver.qn, 0);
+            }
+            if (!frontier_score_cached[u]) {
+                frontier_score_cache[u] = FrontierScore(u);
+                frontier_score_cached[u] = 1;
+            }
+            return frontier_score_cache[u];
+        }
 
-            score.live_anchor_count = (ui)anchors_buf.size();
-            score.live_candidate_count = countLiveCandidates(u);
-            score.query_degree = (ui)solver.q_neighbors[u].size();
-
-            for (ui anchor : anchors_buf) {
-                score.best_anchor_support = std::min(score.best_anchor_support, countAnchorSupport(u, anchor));
+        void collectAnchors(FrontierScore &score) const
+        {
+            if (score.live_anchors_ready) {
+                return;
             }
 
-            if (score.best_anchor_support == std::numeric_limits<ui>::max()) {
-                score.best_anchor_support = score.live_candidate_count;
+            Timer t;
+            collectLiveAnchors(score.u, score.live_anchors);
+            score.live_anchor_count = (ui)score.live_anchors.size();
+            score.live_anchors_ready = true;
+
+            long long elapsed = t.elapsed();
+            solver.stats.frontier_score_live_anchor_time += elapsed;
+            solver.stats.frontier_score_time += elapsed;
+        }
+
+        ui cachedBestAnchorSupportCount(FrontierScore &score) const
+        {
+            if (!score.best_anchor_support_ready) {
+                collectAnchors(score);
+
+                Timer t;
+                for (ui anchor : score.live_anchors) {
+                    score.best_anchor_support = std::min(score.best_anchor_support, countAnchorSupport(score.u, anchor));
+                }
+
+                long long elapsed = t.elapsed();
+                solver.stats.frontier_score_anchor_support_time += elapsed;
+                solver.stats.frontier_score_time += elapsed;
+
+                if (score.best_anchor_support == std::numeric_limits<ui>::max()) {
+                    score.best_anchor_support = cachedLiveCandidateCount(score);
+                }
+                score.best_anchor_support_ready = true;
             }
 
-            return score;
+            return score.best_anchor_support;
+        }
+
+        ui cachedLiveCandidateCount(FrontierScore &score) const
+        {
+            if (!score.live_candidate_count_ready) {
+                Timer t;
+                score.live_candidate_count = countLiveCandidates(score.u);
+                score.live_candidate_count_ready = true;
+
+                long long elapsed = t.elapsed();
+                solver.stats.frontier_score_live_candidate_time += elapsed;
+                solver.stats.frontier_score_time += elapsed;
+            }
+
+            return score.live_candidate_count;
+        }
+
+        ui cachedLiveAnchorCount(FrontierScore &score) const
+        {
+            collectAnchors(score);
+            return score.live_anchor_count;
+        }
+
+        ui cachedQueryDegreeCount(FrontierScore &score) const
+        {
+            if (!score.query_degree_ready) {
+                Timer t;
+                score.query_degree = (ui)solver.q_neighbors[score.u].size();
+                score.query_degree_ready = true;
+
+                long long elapsed = t.elapsed();
+                solver.stats.frontier_score_query_degree_time += elapsed;
+                solver.stats.frontier_score_time += elapsed;
+            }
+
+            return score.query_degree;
         }
 
         // Smaller anchor support, fewer live candidates, more live anchors, higher query degree, smaller vertex id
-        bool isBetterFrontier(ui lhs_u, const FrontierScore &lhs, ui rhs_u, const FrontierScore &rhs) const
+        bool isBetterFrontier(FrontierScore &lhs, FrontierScore &rhs) const
         {
-            if (lhs.best_anchor_support != rhs.best_anchor_support) {
-                return lhs.best_anchor_support < rhs.best_anchor_support;
+            ui lhs_best_anchor_support = cachedBestAnchorSupportCount(lhs);
+            ui rhs_best_anchor_support = cachedBestAnchorSupportCount(rhs);
+            if (lhs_best_anchor_support != rhs_best_anchor_support) {
+                return lhs_best_anchor_support < rhs_best_anchor_support;
             }
-            if (lhs.live_candidate_count != rhs.live_candidate_count) {
-                return lhs.live_candidate_count < rhs.live_candidate_count;
+
+            ui lhs_live_candidate_count = cachedLiveCandidateCount(lhs);
+            ui rhs_live_candidate_count = cachedLiveCandidateCount(rhs);
+            if (lhs_live_candidate_count != rhs_live_candidate_count) {
+                return lhs_live_candidate_count < rhs_live_candidate_count;
             }
-            if (lhs.live_anchor_count != rhs.live_anchor_count) {
-                return lhs.live_anchor_count > rhs.live_anchor_count;
+
+            ui lhs_live_anchor_count = cachedLiveAnchorCount(lhs);
+            ui rhs_live_anchor_count = cachedLiveAnchorCount(rhs);
+            if (lhs_live_anchor_count != rhs_live_anchor_count) {
+                return lhs_live_anchor_count > rhs_live_anchor_count;
             }
-            if (lhs.query_degree != rhs.query_degree) {
-                return lhs.query_degree > rhs.query_degree;
+
+            ui lhs_query_degree = cachedQueryDegreeCount(lhs);
+            ui rhs_query_degree = cachedQueryDegreeCount(rhs);
+            if (lhs_query_degree != rhs_query_degree) {
+                return lhs_query_degree > rhs_query_degree;
             }
-            return lhs_u < rhs_u;
+
+            return lhs.u < rhs.u;
         }
 
         ui selectBestFrontierVertex(const vector<ui> &frontier_candidates) const
         {
             assert(!frontier_candidates.empty());
 
-            vector<ui> anchors_buf;
-            ui best_u = frontier_candidates.front();
-            FrontierScore best_score = scoreFrontier(best_u, anchors_buf);
+            FrontierScore *best_score = &scoreFor(frontier_candidates.front());
 
             for (ui i = 1; i < frontier_candidates.size(); ++i) {
-                ui u = frontier_candidates[i];
-                FrontierScore score = scoreFrontier(u, anchors_buf);
-                if (isBetterFrontier(u, score, best_u, best_score)) {
-                    best_u = u;
-                    best_score = score;
+                FrontierScore &score = scoreFor(frontier_candidates[i]);
+                if (isBetterFrontier(score, *best_score)) {
+                    best_score = &score;
                 }
             }
 
-            return best_u;
+            return best_score->u;
         }
 
         void collectComponent(ui best_u, FrontierState &state)
@@ -1025,7 +1161,7 @@ private:
 
         Timer t_frontier;
         BranchSelector branch_selector(*this);
-        FrontierState current_state = branch_selector.buildFrontierState(parent_state);
+        FrontierState current_state = branch_selector.buildFrontierState(parent_state); // sorted
         const vector<ui> &U_frontier = current_state.component_frontier;
         assert(!U_frontier.empty());
         stats.frontier_time += t_frontier.elapsed();
