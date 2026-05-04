@@ -148,6 +148,7 @@ public:
         printf("Pruning Calls:       %lld\n", stats.prun_calls);
         printf("Results Found:       %zu\n", results_ptr ? results_ptr->size() : 0);
         printf("-----------------------------------------------------------\n");
+        fflush(stdout);
     }
 
 private:
@@ -638,6 +639,7 @@ private:
                 }
                 printf("\n");
             }
+            fflush(stdout);
         }
     };
 
