@@ -51,6 +51,8 @@ KNOWN_ALGORITHM_SUFFIXES = (
 )
 
 DEFAULT_DISPLAY_METRICS = ("count", "run_ms", "recursion_calls")
+RUNTIME_LOW_COLOR_THRESHOLD_MS = 20.0
+MISSING_RUNTIME_RATIO = 10.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -252,10 +254,17 @@ def compute_speedup(
     ours: Optional[float],
     best_other: Optional[float],
     higher_is_better: bool,
+    missing_ratio: Optional[float] = None,
 ) -> Optional[float]:
-    if ours is None or best_other is None:
+    if (ours is not None and ours < 0) or (best_other is not None and best_other < 0):
         return None
-    if ours < 0 or best_other < 0:
+    if ours is None or best_other is None:
+        if missing_ratio is None or (ours is None and best_other is None):
+            return None
+        if ours is not None:
+            return missing_ratio
+        if best_other is not None:
+            return 1.0 / missing_ratio
         return None
 
     if higher_is_better:
@@ -276,8 +285,32 @@ def blend_channel(start: int, end: int, amount: float) -> int:
     return int(round(start + (end - start) * amount))
 
 
-def ratio_color(ratio: Optional[float], cap_ratio: float) -> Tuple[str, str]:
+def is_runtime_metric(metric: str) -> bool:
+    return metric.endswith("_ms")
+
+
+def suppress_runtime_color(
+    metric: str,
+    ours_value: Optional[float],
+    best_value: Optional[float],
+) -> bool:
+    return (
+        is_runtime_metric(metric)
+        and ours_value is not None
+        and best_value is not None
+        and 0 <= ours_value < RUNTIME_LOW_COLOR_THRESHOLD_MS
+        and 0 <= best_value < RUNTIME_LOW_COLOR_THRESHOLD_MS
+    )
+
+
+def ratio_color(
+    ratio: Optional[float],
+    cap_ratio: float,
+    suppress_color: bool = False,
+) -> Tuple[str, str]:
     if ratio is None:
+        return "", ""
+    if suppress_color:
         return "", ""
     if ratio == 1:
         return "#ffffff", "tie"
@@ -421,8 +454,21 @@ def enrich_row(
     else:
         best_algo, best_value = best
 
-    speedup = compute_speedup(ours_value, best_value, higher_is_better)
-    color, direction = ratio_color(speedup, cap_ratio)
+    missing_ratio = None
+    if is_runtime_metric(metric) and any(algo != ours_algorithm for algo in algorithms):
+        missing_ratio = MISSING_RUNTIME_RATIO
+
+    speedup = compute_speedup(
+        ours_value,
+        best_value,
+        higher_is_better,
+        missing_ratio,
+    )
+    color, direction = ratio_color(
+        speedup,
+        cap_ratio,
+        suppress_runtime_color(metric, ours_value, best_value),
+    )
 
     output["best_other_algorithm"] = best_algo
     output[f"best_other_{metric}"] = format_number(best_value)
@@ -585,7 +631,11 @@ def build_threshold_speedup_table(
                 best_algorithm = "mixed"
             else:
                 best_algorithm = ""
-            color, direction = ratio_color(ratio, cap_ratio)
+            color, direction = ratio_color(
+                ratio,
+                cap_ratio,
+                suppress_runtime_color(metric, ours_value, best_value),
+            )
             output[threshold_column] = format_threshold_cell(
                 ratio, ours_value, best_value, best_algorithm, metric
             )
@@ -692,6 +742,8 @@ td.text, th.text { text-align: left; }
             "<span style=\"background:#eaf2ea\">green: CDE faster</span>"
             "<span style=\"background:#faeded\">red: CDE slower</span>"
             "<span style=\"background:#2e7d32;color:#fff\">deeper color: more extreme ratio</span>"
+            "<span>no color: both runtimes &lt; 20 ms</span>"
+            "<span>missing runtime: treated as a 10x gap</span>"
             "</div>\n"
         )
 
@@ -790,6 +842,8 @@ td.text, th.text { text-align: left; }
             "<span style=\"background:#eaf2ea\">green: CDE faster</span>"
             "<span style=\"background:#faeded\">red: CDE slower</span>"
             "<span style=\"background:#2e7d32;color:#fff\">deeper color: more extreme ratio</span>"
+            "<span>no color: both runtimes &lt; 20 ms</span>"
+            "<span>missing runtime: treated as a 10x gap</span>"
             "</div>\n"
         )
 
