@@ -29,13 +29,13 @@ Algorithm columns are detected automatically from suffixes such as
 From the repository root:
 
 ```bash
-python3 -B scripts/make_result_tables.py result/20260426_025928/summary.tsv
+python3 -B scripts/make_result_tables.py result/20260423_174256/summary.tsv
 ```
 
 You can also pass the result directory directly:
 
 ```bash
-python3 -B scripts/make_result_tables.py result/20260426_025928
+python3 -B scripts/make_result_tables.py result/20260423_174256
 ```
 
 ## Output

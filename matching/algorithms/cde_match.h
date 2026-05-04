@@ -313,8 +313,10 @@ private:
         bool run()
         {
             if (!filterNLF()) return false;
+#ifdef ENABLE_ADVANCED_FILTERING
             if (!filterSpoke()) return false;
             if (!filterOneHop()) return false;
+#endif
 
 #ifndef NDEBUG
             printCandStats();
@@ -714,10 +716,11 @@ private:
             collectComponent(best_u, state);
             solver.stats.frontier_component_time += t_component.elapsed();
 
+#ifdef ENABLE_FRONTIER_ORDERING
             Timer t_sort;
             sortFrontier(state.component_frontier);
             solver.stats.frontier_sort_time += t_sort.elapsed();
-
+#endif
             return state;
         }
 
@@ -732,7 +735,7 @@ private:
                 FrontierScore &lhs = scoreFor(lhs_u);
                 FrontierScore &rhs = scoreFor(rhs_u);
                 return isBetterFrontier(lhs, rhs);
-            });
+                });
         }
 
         // Move to the next BFS visit token
@@ -873,11 +876,11 @@ private:
                 return lhs_best_anchor_support < rhs_best_anchor_support;
             }
 
-            ui lhs_live_candidate_count = cachedLiveCandidateCount(lhs);
-            ui rhs_live_candidate_count = cachedLiveCandidateCount(rhs);
-            if (lhs_live_candidate_count != rhs_live_candidate_count) {
-                return lhs_live_candidate_count < rhs_live_candidate_count;
-            }
+            // ui lhs_live_candidate_count = cachedLiveCandidateCount(lhs);
+            // ui rhs_live_candidate_count = cachedLiveCandidateCount(rhs);
+            // if (lhs_live_candidate_count != rhs_live_candidate_count) {
+            //     return lhs_live_candidate_count < rhs_live_candidate_count;
+            // }
 
             ui lhs_live_anchor_count = cachedLiveAnchorCount(lhs);
             ui rhs_live_anchor_count = cachedLiveAnchorCount(rhs);
