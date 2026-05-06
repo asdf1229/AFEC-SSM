@@ -2,6 +2,7 @@
 #define MATCHING_ALGORITHMS_CDE_MATCH_H_
 
 #include "graph/graph.h"
+#include "matching/run_matching.h"
 #include "utility/utility.h"
 #include "utility/mybitset.h"
 #include <limits>
@@ -119,6 +120,7 @@ public:
         // counters
         long long recursion_calls = 0;
         long long prun_calls = 0;
+        size_t result_count = 0;
     } stats;
 
     void printStats() const
@@ -146,7 +148,7 @@ public:
         printf("  - Branch Time:     %.4lf ms (%.2f%% of Search)\n", stats.branch_time / 1000.0, pct(stats.branch_time, stats.dfs_time));
         printf("Recursion Calls:     %lld\n", stats.recursion_calls);
         printf("Pruning Calls:       %lld\n", stats.prun_calls);
-        printf("Results Found:       %zu\n", results_ptr ? results_ptr->size() : 0);
+        printf("Results Found:       %zu\n", stats.result_count);
         printf("-----------------------------------------------------------\n");
         fflush(stdout);
     }
@@ -698,6 +700,26 @@ private:
             }
         }
 
+        void sortAnchorsBySupport(ui u, vector<ui> &anchors) const
+        {
+            if (anchors.size() <= 1) {
+                return;
+            }
+
+            vector<pair<ui, ui>> scored_anchors;
+            scored_anchors.reserve(anchors.size());
+
+            for (ui anchor : anchors) {
+                scored_anchors.push_back({ countAnchorSupport(u, anchor), anchor });
+            }
+
+            sort(scored_anchors.begin(), scored_anchors.end());
+
+            for (ui i = 0; i < scored_anchors.size(); ++i) {
+                anchors[i] = scored_anchors[i].second;
+            }
+        }
+
         FrontierState buildFrontierState(const FrontierState *parent_state)
         {
             FrontierState state;
@@ -1156,7 +1178,12 @@ private:
 
         if (part_M.size() == qn) {
             stats.recursion_calls++;
+#ifdef NDEBUG
+            stats.result_count++;
+#else
             results_ptr->push_back(part_M);
+            stats.result_count++;
+#endif
             return;
         }
 
@@ -1191,6 +1218,7 @@ private:
         for (ui u : U_frontier) {
             vector<ui> U_anchor;
             branch_selector.collectLiveAnchors(u, U_anchor);
+            branch_selector.sortAnchorsBySupport(u, U_anchor);
 
             bool threshold_exceeded = false;
 
@@ -1308,6 +1336,7 @@ void Approximate_Matching(const Graph *query_graph, const Graph *data_graph, vec
 
     solver.stats.total_time = t_total.elapsed();
     solver.printStats();
+    ssm_ged::set_reported_result_count(solver.stats.result_count);
 }
 
 #endif

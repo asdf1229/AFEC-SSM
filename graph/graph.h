@@ -49,6 +49,7 @@ public:
 		return n;
 	}
 
+	// directed edges count
 	ept getEdgesCount() const
 	{
 		return m;

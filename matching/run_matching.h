@@ -14,6 +14,10 @@ namespace ssm_ged {
         AlgorithmEntry entry;
     };
 
+    void clear_reported_result_count();
+    void set_reported_result_count(size_t count);
+    size_t get_reported_result_count(const MatchResults &results);
+
     const AlgorithmDefinition &create_algorithm_definition();
     int run_algorithm_main(int argc, char *argv[], const AlgorithmDefinition &algorithm);
 

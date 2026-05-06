@@ -7,6 +7,9 @@ using namespace std;
 
 namespace {
 
+    bool reported_result_count_set = false;
+    size_t reported_result_count = 0;
+
     LabelID label2int(const string str, map<string, LabelID> &M)
     {
         if (M.find(str) == M.end()) M[str] = M.size();
@@ -97,6 +100,7 @@ namespace {
         graph->build_graph(id, vertices, edges);
     }
 
+#ifndef NDEBUG
     static string mapping_to_key(const vector<pair<ui, ui> > &mapping)
     {
         vector<pair<ui, ui> > tmp = mapping;
@@ -250,6 +254,7 @@ namespace {
         }
         printf("-------------------------\n");
     }
+#endif
 
     double to_ms(long long us)
     {
@@ -259,6 +264,23 @@ namespace {
 } // namespace
 
 namespace ssm_ged {
+
+    void clear_reported_result_count()
+    {
+        reported_result_count_set = false;
+        reported_result_count = 0;
+    }
+
+    void set_reported_result_count(size_t count)
+    {
+        reported_result_count_set = true;
+        reported_result_count = count;
+    }
+
+    size_t get_reported_result_count(const MatchResults &results)
+    {
+        return reported_result_count_set ? reported_result_count : results.size();
+    }
 
     int run_algorithm_main(int argc, char *argv[], const AlgorithmDefinition &algorithm)
     {
@@ -306,26 +328,34 @@ namespace ssm_ged {
         t.restart();
         load_graph(query_graph_file, query_graph, vM, eM);
         load_graph(data_graph_file, data_graph, vM, eM);
-        threshold = min(threshold, (int)(query_graph->getEdgesCount() - query_graph->getVerticesCount() + 1));
+
+        assert(query_graph->getEdgesCount() % 2 == 0);
+        ui query_undirected_edges = query_graph->getEdgesCount() / 2;
+        assert(query_undirected_edges >= query_graph->getVerticesCount() - 1);
+        threshold = min(threshold, (int)(query_undirected_edges - query_graph->getVerticesCount() + 1));
         load_time = t.elapsed();
 
         MatchResults results;
 
         t.restart();
+        clear_reported_result_count();
         algorithm.entry(query_graph, data_graph, results, threshold);
         run_time = t.elapsed();
+        size_t result_count = get_reported_result_count(results);
 
         printf("%s Results:\n", algorithm.display_name.c_str());
-        printf("  Result count: %zu\n", results.size());
+        printf("  Result count: %zu\n", result_count);
         printf("  Load Graphs Time: %.4lf ms\n", to_ms(load_time));
         printf("  Run Time: %.4lf ms\n", to_ms(run_time));
         printf("  Total Time: %.4lf ms\n", to_ms(load_time + run_time));
         printf("SSM_GED_SUMMARY algorithm=%s count=%zu load_ms=%.4lf run_ms=%.4lf total_ms=%.4lf\n",
-            algorithm.key.c_str(), results.size(), to_ms(load_time), to_ms(run_time), to_ms(load_time + run_time));
+            algorithm.key.c_str(), result_count, to_ms(load_time), to_ms(run_time), to_ms(load_time + run_time));
 
+#ifndef NDEBUG
         if (!results.empty()) {
             check_correctness(query_graph, data_graph, results, threshold);
         }
+#endif
 
         delete query_graph;
         delete data_graph;

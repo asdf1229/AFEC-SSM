@@ -2,6 +2,7 @@
 #define MATCHING_ALGORITHMS_TREESPAN_H_
 
 #include "graph/graph.h"
+#include "matching/run_matching.h"
 #include "utility/utility.h"
 #include "utility/mybitset.h"
 
@@ -98,6 +99,7 @@ public:
         long long sequences_count = 0;
         long long enum_call_count = 0;
         long long duplicate_results = 0;
+        size_t result_count = 0;
     } stats;
 
     void printStats() const
@@ -118,7 +120,7 @@ public:
         printf("Recursion Calls:     %lld\n", stats.recursion_calls);
         printf("[hasEdge] Calls:     %lld\n", stats.has_edge_calls);
         printf("Duplicate Results:   %lld\n", stats.duplicate_results);
-        printf("Results Found:       %zu\n", results_ptr ? results_ptr->size() : 0);
+        printf("Results Found:       %zu\n", stats.result_count);
         printf("---------------------------------------\n");
     }
 
@@ -644,12 +646,17 @@ private:
             return;
         }
 
+#ifdef NDEBUG
+        stats.result_count++;
+#else
         vector<pair<ui, ui>> res;
         res.reserve(qn);
         for (ui u = 0; u < qn; ++u) {
             res.push_back({ u, (ui)mapped_q[u] });
         }
         results_ptr->push_back(res);
+        stats.result_count++;
+#endif
 
         stats.verify_time += t_verify.elapsed();
     }
@@ -695,6 +702,7 @@ void Approximate_TreeSpan(const Graph *query_graph, const Graph *data_graph, vec
 
     solver.stats.total_time = t_total.elapsed();
     solver.printStats();
+    ssm_ged::set_reported_result_count(solver.stats.result_count);
 }
 
 #endif
