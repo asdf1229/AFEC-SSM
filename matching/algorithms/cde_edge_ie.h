@@ -1,5 +1,5 @@
-#ifndef MATCHING_ALGORITHMS_CDE_MATCH_H_
-#define MATCHING_ALGORITHMS_CDE_MATCH_H_
+#ifndef MATCHING_ALGORITHMS_CDE_EDGE_IE_H_
+#define MATCHING_ALGORITHMS_CDE_EDGE_IE_H_
 
 #include "graph/graph.h"
 #include "matching/run_matching.h"
@@ -63,6 +63,7 @@ public:
             stats.init_time = t_init.elapsed();
             return false;
         }
+        initEdgeOrdering();
 
         stats.init_time = t_init.elapsed();
         return true;
@@ -78,7 +79,12 @@ public:
 
         BranchSelector branch_selector(*this);
         ui root = branch_selector.selectInitialRoot();
-        root = 4; // for debug
+#ifndef NDEBUG
+        if (kDebugInitialRoot >= 0) {
+            assert((ui)kDebugInitialRoot < qn);
+            root = (ui)kDebugInitialRoot;
+        }
+#endif
         printf("Selected initial root: u=%u with %zu candidates\n", root, (size_t)candidates[root].size());
 
         for (ui v0 : candidates[root]) {
@@ -137,7 +143,7 @@ public:
             return whole > 0 ? (double)part / whole * 100.0 : 0.0;
             };
 
-        printf("\n--- CDE-Match Time Analysis ---\n");
+        printf("\n--- CDE-Edge-IE Time Analysis ---\n");
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
         printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
         printf("  - Filter Time:     %.4lf ms (%.2f%% of Init)\n", stats.filter_time / 1000.0, pct(stats.filter_time, stats.init_time));
@@ -166,9 +172,31 @@ public:
 
 private:
 #ifndef NDEBUG
+    // Set to a query vertex id for local root experiments; -1 keeps automatic selection.
+    enum { kDebugInitialRoot = -1 };
     // Internal debug knob: set to 0 to disable branch-order prefix counting.
-    enum { kDebugBranchOrderDepth = 5 };
+    enum { kDebugBranchOrderDepth = 1 };
 #endif
+
+    struct OrderedQueryEdge {
+        ui u = 0;
+        ui v = 0;
+        ui weight = 0;
+        ui rank = 0;
+
+        bool operator<(const OrderedQueryEdge &other) const
+        {
+            if (weight != other.weight) return weight < other.weight;
+            if (u != other.u) return u < other.u;
+            return v < other.v;
+        }
+    };
+
+    struct ActiveEdge {
+        ui u = 0;       // unmatched endpoint
+        ui anchor = 0;  // matched endpoint
+        int rank = std::numeric_limits<int>::max();
+    };
 
     const Graph *query_graph;
     const Graph *data_graph;
@@ -179,6 +207,8 @@ private:
     ui max_g_deg;
     vector<vector<char>> q_matrix;
     vector<vector<ui>> q_neighbors;
+    vector<OrderedQueryEdge> ordered_query_edges;
+    vector<vector<int>> q_edge_rank;
 
     vector<MyBitset> candidates;
     vector<vector<ui>> Lq_counts, Lg_counts;
@@ -299,6 +329,8 @@ private:
 
         q_matrix.clear();
         q_neighbors.clear();
+        ordered_query_edges.clear();
+        q_edge_rank.clear();
 
         anchor_count.assign(qn, 0);
         frontier_pos.assign(qn, -1);
@@ -439,6 +471,90 @@ private:
         }
     }
 #endif
+
+    void initEdgeOrdering()
+    {
+        ordered_query_edges.clear();
+        q_edge_rank.assign(qn, vector<int>(qn, -1));
+
+        for (ui u = 0; u < qn; ++u) {
+            for (ui v : q_neighbors[u]) {
+                if (u >= v) continue;
+
+                OrderedQueryEdge edge;
+                edge.u = u;
+                edge.v = v;
+                edge.weight = (ui)candidates[u].size() + (ui)candidates[v].size()
+                    + (ui)q_neighbors[u].size() + (ui)q_neighbors[v].size();
+                ordered_query_edges.push_back(edge);
+            }
+        }
+
+        sort(ordered_query_edges.begin(), ordered_query_edges.end());
+        for (ui i = 0; i < ordered_query_edges.size(); ++i) {
+            OrderedQueryEdge &edge = ordered_query_edges[i];
+            edge.rank = i;
+            q_edge_rank[edge.u][edge.v] = (int)i;
+            q_edge_rank[edge.v][edge.u] = (int)i;
+        }
+    }
+
+    bool findBestActiveEdge(const vector<ui> &component_frontier, ActiveEdge &best) const
+    {
+        bool found = false;
+        for (ui u : component_frontier) {
+            if (u >= qn || in_Mq[u] || frontier_pos[u] == -1) {
+                continue;
+            }
+
+            for (ui anchor : q_neighbors[u]) {
+                if (!in_Mq[anchor] || is_excluded[u][anchor]) {
+                    continue;
+                }
+
+                int rank = q_edge_rank[u][anchor];
+                if (rank < 0) {
+                    continue;
+                }
+
+                if (!found || rank < best.rank ||
+                    (rank == best.rank && (u < best.u || (u == best.u && anchor < best.anchor)))) {
+                    best.u = u;
+                    best.anchor = anchor;
+                    best.rank = rank;
+                    found = true;
+                }
+            }
+        }
+        return found;
+    }
+
+    void collectEdgeCandidates(ui u, ui anchor, vector<ui> &cand_v_list) const
+    {
+        cand_v_list.clear();
+        ui deg = 0;
+        const ui *nbrs = data_graph->getVertexNeighbors((ui)mapped_q[anchor], deg);
+        for (ui i = 0; i < deg; ++i) {
+            ui v = nbrs[i];
+            if (!candidates[u].contains(v)) continue;
+            if (mapped_g[v] != -1) continue;
+            if (x_cand[u].contains(v)) continue;
+            cand_v_list.push_back(v);
+        }
+    }
+
+    ui computeLiveAnchorDelta(ui u, ui v, ui selected_anchor) const
+    {
+        ui delta = 0;
+        for (ui anchor : q_neighbors[u]) {
+            if (anchor == selected_anchor) continue;
+            if (!in_Mq[anchor] || is_excluded[u][anchor]) continue;
+            if (!data_graph->hasEdge(v, (ui)mapped_q[anchor])) {
+                delta++;
+            }
+        }
+        return delta;
+    }
 
     void initGlobalLabelCounts(const Graph *g, vector<vector<ui>> &counts, vector<ui> &degrees)
     {
@@ -1366,9 +1482,12 @@ private:
 
         stats.recursion_calls++;
 
+        (void)parent_state;
+        (void)u_new;
+
         Timer t_frontier;
-        BranchSelector branch_selector(*this);
-        FrontierState current_state = branch_selector.buildFrontierState(parent_state, u_new); // sorted
+        FrontierState current_state;
+        current_state.component_frontier = active_frontier;
         const vector<ui> &U_frontier = current_state.component_frontier;
         assert(!U_frontier.empty());
         stats.frontier_time += t_frontier.elapsed();
@@ -1385,106 +1504,86 @@ private:
 
         Timer t_branch;
         long long child_dfs_time = 0;
-        vector<pair<ui, ui>> local_X;       // Records changes to is_excluded
-        vector<pair<ui, ui>> local_x_cand;  // Records changes to x_cand
+        vector<pair<ui, ui>> local_X;
+        vector<pair<ui, ui>> local_x_cand;
+        vector<ui> cand_v_list;
 
         ui current_cost = cost;
 
-        for (ui u : U_frontier) {
-            vector<ui> U_anchor;
-            branch_selector.collectLiveAnchors(u, U_anchor);
-            branch_selector.sortAnchorsBySupport(u, U_anchor);
+        while (current_cost <= threshold) {
+            ActiveEdge edge;
+            if (!findBestActiveEdge(U_frontier, edge)) {
+                break;
+            }
 
-            bool threshold_exceeded = false;
+            ui u = edge.u;
+            ui ua = edge.anchor;
+            assert(!in_Mq[u]);
+            assert(in_Mq[ua]);
+            assert(!is_excluded[u][ua]);
 
-            // --- Try matching u from each anchor's neighbors ---
-            for (ui ua : U_anchor) {
-                assert(!is_excluded[u][ua]);
+            collectEdgeCandidates(u, ua, cand_v_list);
 
-                // branch 1: matching u by (u, ua) edge
-                vector<ui> cand_v_list;
-                ui deg; const ui *nbrs = data_graph->getVertexNeighbors(mapped_q[ua], deg);
-                for (ui j = 0; j < deg; ++j) {
-                    ui v = nbrs[j];
-                    if (candidates[u].contains(v)) {
-                        if (mapped_g[v] != -1) continue;
-                        if (x_cand[u].contains(v)) continue;
-                        cand_v_list.push_back(v);
-                    }
-                }
+            // Include branch: use this frontier-anchor edge to add exactly one
+            // new query vertex in the recursive child state.
+            for (ui v : cand_v_list) {
+                assert(mapped_g[v] == -1);
+                assert(!x_cand[u].contains(v));
 
-                for (ui v : cand_v_list) {
-                    assert(mapped_g[v] == -1);
-                    assert(!x_cand[u].contains(v));
-
-                    ui delta = 0;
-                    for (ui other_ua : U_anchor) {
-                        if (other_ua == ua) continue;
-                        if (is_excluded[u][other_ua]) continue;
-
-                        bool has_edge = data_graph->hasEdge(v, mapped_q[other_ua]);
-
-                        if (!has_edge) delta++;
-                    }
-
-                    if (current_cost + delta > threshold) continue;
-
-#ifndef NDEBUG
-                    recordBranchOrderDebug(u);
-#endif
-                    mapped_q[u] = (int)v;
-                    mapped_g[v] = (int)u;
-                    in_Mq[u] = 1;
-                    part_M.push_back({ u, v });
-
-                    updateFrontier(u, true);
-
-                    Timer t_child;
-                    dfs(current_cost + delta, (int)u, &current_state);
-                    child_dfs_time += t_child.elapsed();
-
-                    updateFrontier(u, false);
-
-                    part_M.pop_back();
-                    in_Mq[u] = 0;
-                    mapped_g[v] = -1;
-                    mapped_q[u] = -1;
-                }
-
-                // branch 2 : excluding (u, ua)
-                current_cost++;
-                is_excluded[u][ua] = 1;
-                is_excluded[ua][u] = 1;
-                anchor_count[u]--;
-                local_X.push_back({ u, ua });
-
-                if (current_cost > threshold) {
-                    threshold_exceeded = true;
-                    break;
-                }
+                ui delta = computeLiveAnchorDelta(u, v, ua);
+                if (current_cost + delta > threshold) continue;
 
 #ifndef NDEBUG
                 recordBranchOrderDebug(u);
 #endif
-                for (ui v : cand_v_list) {
-                    if (!x_cand[u].contains(v)) {
-                        x_cand[u].insert(v);
-                        local_x_cand.push_back({ u, v });
-                    }
-                }
+                mapped_q[u] = (int)v;
+                mapped_g[v] = (int)u;
+                in_Mq[u] = 1;
+                part_M.push_back({ u, v });
+
+                updateFrontier(u, true);
+
+                Timer t_child;
+                dfs(current_cost + delta, (int)u, &current_state);
+                child_dfs_time += t_child.elapsed();
+
+                updateFrontier(u, false);
+
+                part_M.pop_back();
+                in_Mq[u] = 0;
+                mapped_g[v] = -1;
+                mapped_q[u] = -1;
             }
 
-            if (threshold_exceeded) {
+            // Exclude branch: keep this decision in the current frame, then
+            // continue to the next globally ordered active edge without a
+            // recursive call. Every recursive child above still adds a vertex.
+            current_cost++;
+            is_excluded[u][ua] = 1;
+            is_excluded[ua][u] = 1;
+            anchor_count[u]--;
+            local_X.push_back({ u, ua });
+            updateFrontierStatus(u);
+
+            if (current_cost > threshold) {
                 break;
             }
 
-            updateFrontierStatus(u);
+#ifndef NDEBUG
+            recordBranchOrderDebug(u);
+#endif
+            for (ui v : cand_v_list) {
+                if (!x_cand[u].contains(v)) {
+                    x_cand[u].insert(v);
+                    local_x_cand.push_back({ u, v });
+                }
+            }
         }
 
         stats.branch_time += t_branch.elapsed() - child_dfs_time;
 
-        // backtracking
-        for (auto &e : local_X) {
+        for (auto it = local_X.rbegin(); it != local_X.rend(); ++it) {
+            const pair<ui, ui> &e = *it;
             is_excluded[e.first][e.second] = 0;
             is_excluded[e.second][e.first] = 0;
 
@@ -1495,17 +1594,17 @@ private:
             updateFrontierStatus(e.first);
         }
 
-        for (auto &p : local_x_cand) {
-            x_cand[p.first].remove(p.second);
+        for (auto it = local_x_cand.rbegin(); it != local_x_cand.rend(); ++it) {
+            x_cand[it->first].remove(it->second);
         }
     }
     // ========================================================================
 };
 
 // ============================================================
-// Top-level function: Approximate_Matching
+// Top-level function: Approximate_CDE_EdgeIE
 // ============================================================
-void Approximate_Matching(const Graph *query_graph, const Graph *data_graph, vector<vector<pair<ui, ui> > > &M_ANS, ui threshold)
+void Approximate_CDE_EdgeIE(const Graph *query_graph, const Graph *data_graph, vector<vector<pair<ui, ui> > > &M_ANS, ui threshold)
 {
     Timer t_total;
     t_total.restart();
