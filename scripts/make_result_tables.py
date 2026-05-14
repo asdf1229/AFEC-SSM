@@ -5,7 +5,7 @@ Build an HTML comparison report from SSM-GED summary results.
 The repository's benchmark summaries are TSV files shaped like:
 
   dataset_group dataset query_group query threshold status expected_count
-  cde_match_count cde_match_run_ms ... treespan_count treespan_run_ms ...
+  cde_edge_ie_count cde_edge_ie_run_ms ... treespan_count treespan_run_ms ...
 
 This script detects algorithm columns, compares the selected algorithm against
 the best non-selected algorithm for a metric, and writes one report.html by
@@ -53,11 +53,12 @@ KNOWN_ALGORITHM_SUFFIXES = (
 DEFAULT_DISPLAY_METRICS = ("count", "run_ms", "recursion_calls")
 RUNTIME_LOW_COLOR_THRESHOLD_MS = 20.0
 MISSING_RUNTIME_RATIO = 10.0
+DEFAULT_OURS_ALGORITHM = "cde_edge_ie"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create a colored SSM-GED HTML report with CDE speedups."
+        description="Create a colored SSM-GED HTML report with selected-algorithm speedups."
     )
     parser.add_argument(
         "inputs",
@@ -72,8 +73,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ours",
-        default="cde",
-        help="our algorithm name or prefix; default: cde",
+        default=DEFAULT_OURS_ALGORITHM,
+        help=f"our algorithm name or prefix; default: {DEFAULT_OURS_ALGORITHM}",
     )
     parser.add_argument(
         "--metric",
@@ -555,6 +556,7 @@ def format_threshold_cell(
     best_value: Optional[float],
     best_algorithm: str,
     metric: str,
+    ours_algorithm: str,
 ) -> str:
     if ratio is None:
         return ""
@@ -562,7 +564,7 @@ def format_threshold_cell(
     unit = " ms" if metric.endswith("_ms") else ""
     lines = [format_number(ratio)]
     if ours_value is not None:
-        lines.append(f"CDE: {format_number(ours_value)}{unit}")
+        lines.append(f"{ours_algorithm}: {format_number(ours_value)}{unit}")
     if best_value is not None:
         best_label = f"best({best_algorithm})" if best_algorithm else "best"
         lines.append(f"{best_label}: {format_number(best_value)}{unit}")
@@ -637,7 +639,7 @@ def build_threshold_speedup_table(
                 suppress_runtime_color(metric, ours_value, best_value),
             )
             output[threshold_column] = format_threshold_cell(
-                ratio, ours_value, best_value, best_algorithm, metric
+                ratio, ours_value, best_value, best_algorithm, metric, ours_algorithm
             )
             output[f"__color__{threshold_column}"] = color
             output[f"__direction__{threshold_column}"] = direction
@@ -727,6 +729,7 @@ td.text, th.text { text-align: left; }
 .summary span { background: #f9fafb; border: 1px solid #e5e7eb; padding: 4px 8px; }
 """
     with path.open("w", encoding="utf-8") as handle:
+        ours_label = html.escape(ours_algorithm)
         handle.write("<!doctype html>\n<html><head><meta charset=\"utf-8\">\n")
         handle.write("<title>SSM-GED Result Tables</title>\n")
         handle.write(f"<style>{style}</style>\n</head><body>\n")
@@ -735,15 +738,15 @@ td.text, th.text { text-align: left; }
         handle.write(
             f"<p>Metric: {html.escape(metric)} ({metric_direction}). "
             "Speedup values above 1 favor "
-            f"{html.escape(ours_algorithm)}; values below 1 favor the best other algorithm.</p>\n"
+            f"{ours_label}; values below 1 favor the best other algorithm.</p>\n"
         )
         handle.write(
-            "<div class=\"legend\">"
-            "<span style=\"background:#eaf2ea\">green: CDE faster</span>"
-            "<span style=\"background:#faeded\">red: CDE slower</span>"
-            "<span style=\"background:#2e7d32;color:#fff\">deeper color: more extreme ratio</span>"
-            "<span>no color: both runtimes &lt; 20 ms</span>"
-            "<span>missing runtime: treated as a 10x gap</span>"
+            f"<div class=\"legend\">"
+            f"<span style=\"background:#eaf2ea\">green: {ours_label} faster</span>"
+            f"<span style=\"background:#faeded\">red: {ours_label} slower</span>"
+            f"<span style=\"background:#2e7d32;color:#fff\">deeper color: more extreme ratio</span>"
+            f"<span>no color: both runtimes &lt; 20 ms</span>"
+            f"<span>missing runtime: treated as a 10x gap</span>"
             "</div>\n"
         )
 
@@ -758,8 +761,8 @@ td.text, th.text { text-align: left; }
                 "<div class=\"summary\">"
                 f"<span>rows: {html.escape(summary.get('rows', ''))}</span>"
                 f"<span>comparable: {html.escape(summary.get('comparable_rows', ''))}</span>"
-                f"<span>CDE faster: {html.escape(summary.get('ours_faster_rows', ''))}</span>"
-                f"<span>CDE slower: {html.escape(summary.get('ours_slower_rows', ''))}</span>"
+                f"<span>{ours_label} faster: {html.escape(summary.get('ours_faster_rows', ''))}</span>"
+                f"<span>{ours_label} slower: {html.escape(summary.get('ours_slower_rows', ''))}</span>"
                 f"<span>tie: {html.escape(summary.get('equal_rows', ''))}</span>"
                 f"<span>geomean speedup: {html.escape(summary.get('geomean_speedup', ''))}</span>"
                 "</div>\n"
@@ -827,6 +830,7 @@ td.text, th.text { text-align: left; }
 .summary span { background: #f9fafb; border: 1px solid #e5e7eb; padding: 4px 8px; }
 """
     with path.open("w", encoding="utf-8") as handle:
+        ours_label = html.escape(ours_algorithm)
         handle.write("<!doctype html>\n<html><head><meta charset=\"utf-8\">\n")
         handle.write("<title>SSM-GED Speedup by t</title>\n")
         handle.write(f"<style>{style}</style>\n</head><body>\n")
@@ -835,15 +839,15 @@ td.text, th.text { text-align: left; }
         handle.write(
             f"<p>Metric: {html.escape(metric)} ({metric_direction}). "
             "Each cell is the running-time speedup of "
-            f"{html.escape(ours_algorithm)} against the best other algorithm at that t.</p>\n"
+            f"{ours_label} against the best other algorithm at that t.</p>\n"
         )
         handle.write(
-            "<div class=\"legend\">"
-            "<span style=\"background:#eaf2ea\">green: CDE faster</span>"
-            "<span style=\"background:#faeded\">red: CDE slower</span>"
-            "<span style=\"background:#2e7d32;color:#fff\">deeper color: more extreme ratio</span>"
-            "<span>no color: both runtimes &lt; 20 ms</span>"
-            "<span>missing runtime: treated as a 10x gap</span>"
+            f"<div class=\"legend\">"
+            f"<span style=\"background:#eaf2ea\">green: {ours_label} faster</span>"
+            f"<span style=\"background:#faeded\">red: {ours_label} slower</span>"
+            f"<span style=\"background:#2e7d32;color:#fff\">deeper color: more extreme ratio</span>"
+            f"<span>no color: both runtimes &lt; 20 ms</span>"
+            f"<span>missing runtime: treated as a 10x gap</span>"
             "</div>\n"
         )
 
@@ -853,8 +857,8 @@ td.text, th.text { text-align: left; }
                 "<div class=\"summary\">"
                 f"<span>rows: {html.escape(summary.get('rows', ''))}</span>"
                 f"<span>comparable: {html.escape(summary.get('comparable_rows', ''))}</span>"
-                f"<span>CDE faster: {html.escape(summary.get('ours_faster_rows', ''))}</span>"
-                f"<span>CDE slower: {html.escape(summary.get('ours_slower_rows', ''))}</span>"
+                f"<span>{ours_label} faster: {html.escape(summary.get('ours_faster_rows', ''))}</span>"
+                f"<span>{ours_label} slower: {html.escape(summary.get('ours_slower_rows', ''))}</span>"
                 f"<span>tie: {html.escape(summary.get('equal_rows', ''))}</span>"
                 f"<span>geomean speedup: {html.escape(summary.get('geomean_speedup', ''))}</span>"
                 "</div>\n"

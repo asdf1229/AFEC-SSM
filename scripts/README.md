@@ -1,8 +1,9 @@
 # HTML Result Report
 
 `make_result_tables.py` reads SSM-GED benchmark summaries and creates comparison
-tables for CDE against the best result from the other algorithms. It now writes
-one HTML report by default.
+tables for the selected primary algorithm against the best result from the other
+algorithms. The default primary algorithm is `cde_edge_ie`. It now writes one
+HTML report by default.
 
 ## Input
 
@@ -18,6 +19,7 @@ query
 threshold
 status
 cde_match_run_ms
+cde_edge_ie_run_ms
 treespan_run_ms
 ```
 
@@ -38,6 +40,12 @@ You can also pass the result directory directly:
 python3 -B scripts/make_result_tables.py result/20260423_174256
 ```
 
+To compare a different primary algorithm, pass `--ours`:
+
+```bash
+python3 -B scripts/make_result_tables.py --ours cde_match result/20260423_174256
+```
+
 ## Output
 
 By default, output is written beside the input `summary.tsv`.
@@ -51,22 +59,22 @@ speedup_by_t.html    Standalone threshold-oriented speedup report.
 
 The detailed report contains one detailed result table per comparison object.
 The standalone threshold report places `t` values across columns and only
-compares final running time. Each threshold cell shows the speedup, CDE running
-time, and the best non-CDE running time.
+compares final running time. Each threshold cell shows the speedup, primary
+algorithm running time, and the best non-primary-algorithm running time.
 
 ## Speedup
 
 For the default time metric, smaller is better:
 
 ```text
-speedup = best_other_run_ms / cde_match_run_ms
+speedup = best_other_run_ms / cde_edge_ie_run_ms
 ```
 
 Meaning:
 
 ```text
-speedup > 1   CDE is faster, shown as green.
-speedup < 1   CDE is slower, shown as red.
+speedup > 1   cde_edge_ie is faster, shown as green.
+speedup < 1   cde_edge_ie is slower, shown as red.
 speedup = 1   Tie, shown as white.
 ```
 

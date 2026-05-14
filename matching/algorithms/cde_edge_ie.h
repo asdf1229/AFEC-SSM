@@ -53,6 +53,10 @@ public:
             }
         }
 
+#ifdef ENABLE_BRIDGE_FILTERING
+        identifyQueryBridges();
+        initQueryBridgeLabelCounts();
+#endif
         initGlobalLabelCounts(query_graph, Lq_counts, Lq_degrees);
         initGlobalLabelCounts(data_graph, Lg_counts, Lg_degrees);
 
@@ -80,10 +84,10 @@ public:
         BranchSelector branch_selector(*this);
         ui root = branch_selector.selectInitialRoot();
 #ifndef NDEBUG
-        if (kDebugInitialRoot >= 0) {
-            assert((ui)kDebugInitialRoot < qn);
-            root = (ui)kDebugInitialRoot;
-        }
+        // if (kDebugInitialRoot >= 0) {
+        //     assert((ui)kDebugInitialRoot < qn);
+        //     root = (ui)kDebugInitialRoot;
+        // }
 #endif
         printf("Selected initial root: u=%u with %zu candidates\n", root, (size_t)candidates[root].size());
 
@@ -173,7 +177,7 @@ public:
 private:
 #ifndef NDEBUG
     // Set to a query vertex id for local root experiments; -1 keeps automatic selection.
-    enum { kDebugInitialRoot = -1 };
+    enum { kDebugInitialRoot = 4 };
     // Internal debug knob: set to 0 to disable branch-order prefix counting.
     enum { kDebugBranchOrderDepth = 1 };
 #endif
@@ -209,6 +213,10 @@ private:
     vector<vector<ui>> q_neighbors;
     vector<OrderedQueryEdge> ordered_query_edges;
     vector<vector<int>> q_edge_rank;
+    vector<vector<char>> q_bridge_matrix;
+    vector<pair<ui, ui>> q_bridge_edges;
+    vector<vector<ui>> Lq_bridge_counts, Lq_non_bridge_counts;
+    vector<ui> Lq_bridge_degrees, Lq_non_bridge_degrees;
 
     vector<MyBitset> candidates;
     vector<vector<ui>> Lq_counts, Lg_counts;
@@ -329,6 +337,12 @@ private:
 
         q_matrix.clear();
         q_neighbors.clear();
+        q_bridge_matrix.clear();
+        q_bridge_edges.clear();
+        Lq_bridge_counts.clear();
+        Lq_non_bridge_counts.clear();
+        Lq_bridge_degrees.clear();
+        Lq_non_bridge_degrees.clear();
         ordered_query_edges.clear();
         q_edge_rank.clear();
 
@@ -472,6 +486,82 @@ private:
     }
 #endif
 
+    void markQueryBridge(ui u, ui v)
+    {
+        if (q_bridge_matrix[u][v]) {
+            return;
+        }
+
+        q_bridge_matrix[u][v] = 1;
+        q_bridge_matrix[v][u] = 1;
+        if (u < v) {
+            q_bridge_edges.push_back({ u, v });
+        }
+        else {
+            q_bridge_edges.push_back({ v, u });
+        }
+    }
+
+    void dfsQueryBridges(ui u, ui parent, vector<int> &disc, vector<int> &low, int &timer)
+    {
+        disc[u] = low[u] = ++timer;
+
+        for (ui v : q_neighbors[u]) {
+            if (disc[v] == 0) {
+                dfsQueryBridges(v, u, disc, low, timer);
+                low[u] = std::min(low[u], low[v]);
+                if (low[v] > disc[u]) {
+                    markQueryBridge(u, v);
+                }
+            }
+            else if (v != parent) {
+                low[u] = std::min(low[u], disc[v]);
+            }
+        }
+    }
+
+    void identifyQueryBridges()
+    {
+        q_bridge_matrix.assign(qn, vector<char>(qn, 0));
+        q_bridge_edges.clear();
+
+        vector<int> disc(qn, 0);
+        vector<int> low(qn, 0);
+        int timer = 0;
+
+        for (ui u = 0; u < qn; ++u) {
+            if (disc[u] == 0) {
+                dfsQueryBridges(u, qn, disc, low, timer);
+            }
+        }
+    }
+
+    void initQueryBridgeLabelCounts()
+    {
+        Lq_bridge_counts.assign(qn, vector<ui>(label_count, 0));
+        Lq_non_bridge_counts.assign(qn, vector<ui>(label_count, 0));
+        Lq_bridge_degrees.assign(qn, 0);
+        Lq_non_bridge_degrees.assign(qn, 0);
+
+        for (ui u = 0; u < qn; ++u) {
+            for (ui u1 : q_neighbors[u]) {
+                LabelID label = query_graph->getVertexLabel(u1);
+                if (label < 0 || (ui)label >= label_count) {
+                    continue;
+                }
+
+                if (q_bridge_matrix[u][u1]) {
+                    Lq_bridge_counts[u][(ui)label]++;
+                    Lq_bridge_degrees[u]++;
+                }
+                else {
+                    Lq_non_bridge_counts[u][(ui)label]++;
+                    Lq_non_bridge_degrees[u]++;
+                }
+            }
+        }
+    }
+
     void initEdgeOrdering()
     {
         ordered_query_edges.clear();
@@ -582,14 +672,18 @@ private:
         MatchingSolver &solver;
         vector<vector<ui>>  spoke_matrix;
         vector<int>         spoke_match;
+        vector<int>         spoke_match_left;
         vector<bool>        spoke_vis;
+        vector<char>        spoke_is_bridge;
         MyBitset            onehop_vis;
 
         explicit CandidateFilter(MatchingSolver &solver)
             : solver(solver),
             spoke_matrix(solver.qn, vector<ui>()),
             spoke_match(solver.max_g_deg, -1),
+            spoke_match_left(solver.qn, -1),
             spoke_vis(solver.max_g_deg, false),
+            spoke_is_bridge(solver.qn, 0),
             onehop_vis((int)solver.gn)
         {
         }
@@ -597,9 +691,18 @@ private:
         bool run()
         {
             if (!filterNLF()) return false;
+#ifdef ENABLE_BRIDGE_FILTERING
+            if (!filterBridgeCandidates()) return false;
+#endif
 #ifdef ENABLE_ADVANCED_FILTERING
             if (!filterSpoke()) return false;
+#ifdef ENABLE_BRIDGE_FILTERING
+            if (!filterBridgeCandidates()) return false;
+#endif
             if (!filterOneHop()) return false;
+#ifdef ENABLE_BRIDGE_FILTERING
+            if (!filterBridgeCandidates()) return false;
+#endif
 #endif
 
 #ifndef NDEBUG
@@ -614,9 +717,23 @@ private:
             ui diff = 0;
             size_t sz = solver.Lq_counts[u].size();
             for (size_t i = 0; i < sz; ++i) {
+#ifdef ENABLE_BRIDGE_FILTERING
+                ui bridge_need = solver.Lq_bridge_counts[u][i];
+                ui data_count = solver.Lg_counts[v][i];
+                if (bridge_need > data_count) {
+                    return solver.threshold + 1;
+                }
+
+                ui non_bridge_need = solver.Lq_non_bridge_counts[u][i];
+                ui non_bridge_available = data_count - bridge_need;
+                if (non_bridge_need > non_bridge_available) {
+                    diff += (non_bridge_need - non_bridge_available);
+                }
+#else
                 if (solver.Lq_counts[u][i] > solver.Lg_counts[v][i]) {
                     diff += (solver.Lq_counts[u][i] - solver.Lg_counts[v][i]);
                 }
+#endif
             }
             return diff;
         }
@@ -627,7 +744,13 @@ private:
                 LabelID lu = solver.query_graph->getVertexLabel(u);
                 for (ui v = 0; v < solver.gn; ++v) {
                     if (lu != solver.data_graph->getVertexLabel(v)) continue;
+#ifdef ENABLE_BRIDGE_FILTERING
+                    if (solver.Lq_bridge_degrees[u] > solver.Lg_degrees[v]) continue;
+                    ui non_bridge_degree_capacity = solver.Lg_degrees[v] - solver.Lq_bridge_degrees[u];
+                    if (solver.Lq_non_bridge_degrees[u] > non_bridge_degree_capacity + solver.threshold) continue;
+#else
                     if (solver.Lq_degrees[u] > solver.Lg_degrees[v] + solver.threshold) continue;
+#endif
                     if (computeNLF(u, v) > solver.threshold) continue;
                     solver.candidates[u].insert(v);
                 }
@@ -635,6 +758,57 @@ private:
             }
             return true;
         }
+
+#ifdef ENABLE_BRIDGE_FILTERING
+        bool hasBridgeCandidateSupport(ui v, ui other_u) const
+        {
+            ui deg = 0;
+            const ui *nbrs = solver.data_graph->getVertexNeighbors(v, deg);
+            for (ui i = 0; i < deg; ++i) {
+                if (solver.candidates[other_u].contains(nbrs[i])) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool pruneBridgeSide(ui u, ui other_u, bool &changed)
+        {
+            vector<ui> to_remove;
+            for (ui v : solver.candidates[u]) {
+                if (!hasBridgeCandidateSupport(v, other_u)) {
+                    to_remove.push_back(v);
+                }
+            }
+
+            if (to_remove.empty()) {
+                return true;
+            }
+
+            changed = true;
+            for (ui v : to_remove) {
+                solver.candidates[u].remove(v);
+            }
+            return !solver.candidates[u].empty();
+        }
+
+        bool filterBridgeCandidates()
+        {
+            if (solver.q_bridge_edges.empty()) {
+                return true;
+            }
+
+            bool changed = true;
+            while (changed) {
+                changed = false;
+                for (const pair<ui, ui> &edge : solver.q_bridge_edges) {
+                    if (!pruneBridgeSide(edge.first, edge.second, changed)) return false;
+                    if (!pruneBridgeSide(edge.second, edge.first, changed)) return false;
+                }
+            }
+            return true;
+        }
+#endif
 
         bool dfsMatchSpoke(ui left_idx, const vector<vector<ui>> &adj)
         {
@@ -644,6 +818,7 @@ private:
                 if (spoke_match[right_idx] < 0 ||
                     dfsMatchSpoke((ui)spoke_match[right_idx], adj)) {
                     spoke_match[right_idx] = (int)left_idx;
+                    spoke_match_left[left_idx] = (int)right_idx;
                     return true;
                 }
             }
@@ -654,12 +829,50 @@ private:
         {
             ui mu = 0;
             std::fill(spoke_match.begin(), spoke_match.begin() + right_size, -1);
+            std::fill(spoke_match_left.begin(), spoke_match_left.begin() + left_size, -1);
             for (ui i = 0; i < left_size; ++i) {
                 std::fill(spoke_vis.begin(), spoke_vis.begin() + right_size, false);
                 if (dfsMatchSpoke(i, adj)) mu++;
             }
             return mu;
         }
+
+#ifdef ENABLE_BRIDGE_FILTERING
+        bool computeBridgeAwareSpokeMissing(const vector<vector<ui>> &adj, ui left_size,
+            ui right_size, ui &missing_non_bridge)
+        {
+            std::fill(spoke_match.begin(), spoke_match.begin() + right_size, -1);
+            std::fill(spoke_match_left.begin(), spoke_match_left.begin() + left_size, -1);
+
+            ui non_bridge_count = 0;
+            for (ui i = 0; i < left_size; ++i) {
+                if (spoke_is_bridge[i]) {
+                    std::fill(spoke_vis.begin(), spoke_vis.begin() + right_size, false);
+                    if (!dfsMatchSpoke(i, adj)) {
+                        return false;
+                    }
+                }
+                else {
+                    non_bridge_count++;
+                }
+            }
+
+            ui non_bridge_match = 0;
+            for (ui i = 0; i < left_size; ++i) {
+                if (spoke_is_bridge[i]) {
+                    continue;
+                }
+
+                std::fill(spoke_vis.begin(), spoke_vis.begin() + right_size, false);
+                if (dfsMatchSpoke(i, adj)) {
+                    non_bridge_match++;
+                }
+            }
+
+            missing_non_bridge = non_bridge_count - non_bridge_match;
+            return true;
+        }
+#endif
 
         // If u is matched to v, compute the minimum number of spoke edges
         // from u to its neighbors that cannot be supported by neighbors of v.
@@ -673,6 +886,9 @@ private:
             for (ui i = 0; i < deg_u; ++i) {
                 spoke_matrix[i].clear();
                 ui u1 = u_neighbors[i];
+#ifdef ENABLE_BRIDGE_FILTERING
+                spoke_is_bridge[i] = solver.q_bridge_matrix[u][u1];
+#endif
                 for (ui j = 0; j < deg_v; ++j) {
                     ui v1 = v_neighbors[j];
                     if (solver.candidates[u1].contains(v1)) {
@@ -681,8 +897,16 @@ private:
                 }
             }
 
+#ifdef ENABLE_BRIDGE_FILTERING
+            ui missing_non_bridge = 0;
+            if (!computeBridgeAwareSpokeMissing(spoke_matrix, deg_u, deg_v, missing_non_bridge)) {
+                return solver.threshold + 1;
+            }
+            return missing_non_bridge;
+#else
             ui match_size = computeMaxMatchSpoke(spoke_matrix, deg_u, deg_v);
             return deg_u - match_size;
+#endif
         }
 
         bool filterSpoke()
@@ -729,13 +953,17 @@ private:
         // Build the DFS order for one-hop matching.
         // Fewer candidates first.
         // More inner edges first if tied.
-        vector<ui> buildOneHopOrder(const vector<ui> &u_neighbors, const vector<vector<ui>> &cand) const
+        vector<ui> buildOneHopOrder(const vector<ui> &u_neighbors,
+            const vector<vector<ui>> &cand, const vector<char> &spoke_bridge) const
         {
             ui deg_u = (ui)u_neighbors.size();
             vector<ui> ord(deg_u);
             iota(ord.begin(), ord.end(), 0);
 
             sort(ord.begin(), ord.end(), [&](ui a, ui b) {
+                if (spoke_bridge[a] != spoke_bridge[b]) {
+                    return spoke_bridge[a] > spoke_bridge[b];
+                }
                 if (cand[a].size() != cand[b].size()) {
                     return cand[a].size() < cand[b].size();
                 }
@@ -750,7 +978,7 @@ private:
         }
 
         ui computeRemainLBOneHop(ui pos, const vector<ui> &ord,
-            const vector<vector<ui>> &cand) const
+            const vector<vector<ui>> &cand, const vector<char> &spoke_bridge) const
         {
             ui rem = 0;
             for (ui p = pos; p < ord.size(); ++p) {
@@ -763,6 +991,9 @@ private:
                     }
                 }
                 if (!has_free) rem++;
+                if (!has_free && spoke_bridge[u1]) {
+                    return solver.threshold + 1;
+                }
             }
             return rem;
         }
@@ -771,22 +1002,25 @@ private:
         // Branch 1: skip u1, adding one missing spoke edge
         // Branch 2: match u1 to v1, adding newly missing inner edges
         bool dfsOneHop(ui pos, vector<int> &state, ui cost,
-            const vector<ui> &ord, const vector<ui> &u_neighbors, const vector<vector<ui>> &cand)
+            const vector<ui> &ord, const vector<ui> &u_neighbors, const vector<vector<ui>> &cand,
+            const vector<char> &spoke_bridge)
         {
             if (cost > solver.threshold) return false;
             if (pos == ord.size()) return true;
 
-            ui rem_lb = computeRemainLBOneHop(pos, ord, cand);
+            ui rem_lb = computeRemainLBOneHop(pos, ord, cand, spoke_bridge);
             if (cost + rem_lb > solver.threshold) return false;
 
             ui i = ord[pos];
             ui u1 = u_neighbors[i];
 
             // branch 1: skip u1
-            state[i] = -1;
-            if (dfsOneHop(pos + 1, state, cost + 1, ord, u_neighbors, cand)) {
-                state[i] = -2;
-                return true;
+            if (!spoke_bridge[i]) {
+                state[i] = -1;
+                if (dfsOneHop(pos + 1, state, cost + 1, ord, u_neighbors, cand, spoke_bridge)) {
+                    state[i] = -2;
+                    return true;
+                }
             }
 
             // branch 2: match u1 to v1
@@ -794,21 +1028,31 @@ private:
                 if (onehop_vis.contains(v1)) continue;
 
                 ui delta_inner = 0;
+                bool missing_bridge = false;
                 for (ui j = 0; j < u_neighbors.size(); ++j) {
                     if (state[j] < 0) continue;
                     ui u2 = u_neighbors[j];
                     if (!solver.q_matrix[u1][u2]) continue;
 
                     ui v2 = (ui)state[j];
-                    if (!solver.data_graph->hasEdge(v1, v2)) delta_inner++;
+                    if (!solver.data_graph->hasEdge(v1, v2)) {
+#ifdef ENABLE_BRIDGE_FILTERING
+                        if (solver.q_bridge_matrix[u1][u2]) {
+                            missing_bridge = true;
+                            break;
+                        }
+#endif
+                        delta_inner++;
+                    }
                 }
 
+                if (missing_bridge) continue;
                 if (cost + delta_inner > solver.threshold) continue;
 
                 onehop_vis.insert(v1);
                 state[i] = (int)v1;
 
-                if (dfsOneHop(pos + 1, state, cost + delta_inner, ord, u_neighbors, cand)) {
+                if (dfsOneHop(pos + 1, state, cost + delta_inner, ord, u_neighbors, cand, spoke_bridge)) {
                     onehop_vis.remove(v1);
                     state[i] = -2;
                     return true;
@@ -829,9 +1073,13 @@ private:
             ui deg_v = 0;
             const ui *v_neighbors = solver.data_graph->getVertexNeighbors(v, deg_v);
             vector<vector<ui>> cand(deg_u);
+            vector<char> spoke_bridge(deg_u, 0);
 
             for (ui i = 0; i < deg_u; ++i) {
                 ui u1 = u_neighbors[i];
+#ifdef ENABLE_BRIDGE_FILTERING
+                spoke_bridge[i] = solver.q_bridge_matrix[u][u1];
+#endif
                 for (ui j = 0; j < deg_v; ++j) {
                     ui v1 = v_neighbors[j];
                     if (solver.candidates[u1].contains(v1)) {
@@ -841,7 +1089,7 @@ private:
             }
 
             // matching order
-            vector<ui> ord = buildOneHopOrder(u_neighbors, cand);
+            vector<ui> ord = buildOneHopOrder(u_neighbors, cand, spoke_bridge);
 
             // the current DFS state of u_neighbors[i]:
             // -2: unprocessed
@@ -849,7 +1097,7 @@ private:
             // >=0: matched to the corresponding data vertex
             vector<int> state(deg_u, -2);
 
-            return dfsOneHop(0, state, 0, ord, u_neighbors, cand);
+            return dfsOneHop(0, state, 0, ord, u_neighbors, cand, spoke_bridge);
         }
 
         bool filterOneHop()
@@ -1482,12 +1730,9 @@ private:
 
         stats.recursion_calls++;
 
-        (void)parent_state;
-        (void)u_new;
-
         Timer t_frontier;
-        FrontierState current_state;
-        current_state.component_frontier = active_frontier;
+        BranchSelector branch_selector(*this);
+        FrontierState current_state = branch_selector.buildFrontierState(parent_state, u_new); // sorted
         const vector<ui> &U_frontier = current_state.component_frontier;
         assert(!U_frontier.empty());
         stats.frontier_time += t_frontier.elapsed();

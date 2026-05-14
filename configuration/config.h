@@ -3,8 +3,9 @@
 
 // #define ENABLE_EDGE_LABEL
 #define ENABLE_ADVANCED_FILTERING
+#define ENABLE_BRIDGE_FILTERING
 // #define ENABLE_FRONTIER_ORDERING
 #define LOWER_BOUND
-// #define NDEBUG
+#define NDEBUG
 
 #endif //_CONFIG_H_
