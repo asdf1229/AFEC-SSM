@@ -46,6 +46,27 @@ To compare a different primary algorithm, pass `--ours`:
 python3 -B scripts/make_result_tables.py --ours cde_match result/20260423_174256
 ```
 
+To restrict the comparison to specific algorithms, pass `--algorithms`. When
+`--ours` is omitted, the first algorithm in the list is used as the primary
+algorithm:
+
+```bash
+python3 -B scripts/make_result_tables.py \
+  --algorithms cde_edge_ie,cde_match,treespan \
+  result/20260423_174256
+```
+
+You can also combine both options. In that case, `--algorithms` controls which
+algorithms are included, and `--ours` chooses the primary algorithm from that
+selected set:
+
+```bash
+python3 -B scripts/make_result_tables.py \
+  --algorithms cde_edge_ie,cde_match,treespan \
+  --ours cde_match \
+  result/20260423_174256
+```
+
 ## Output
 
 By default, output is written beside the input `summary.tsv`.

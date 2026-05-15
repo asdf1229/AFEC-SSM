@@ -73,8 +73,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ours",
-        default=DEFAULT_OURS_ALGORITHM,
-        help=f"our algorithm name or prefix; default: {DEFAULT_OURS_ALGORITHM}",
+        default=None,
+        help=(
+            "primary algorithm name or prefix; default: first --algorithms item, "
+            f"or {DEFAULT_OURS_ALGORITHM} when --algorithms is not set"
+        ),
+    )
+    parser.add_argument(
+        "--algorithms",
+        default=None,
+        help=(
+            "comma-separated algorithms to include in the comparison; "
+            "if --ours is omitted, the first item is the primary algorithm"
+        ),
     )
     parser.add_argument(
         "--metric",
@@ -218,6 +229,30 @@ def resolve_algorithm(name_or_prefix: str, algorithms: Sequence[str]) -> str:
 
     available = ", ".join(algorithms) if algorithms else "<none>"
     raise ValueError(f"Cannot resolve algorithm '{name_or_prefix}'. Available: {available}")
+
+
+def parse_algorithm_list(value: Optional[str]) -> Optional[List[str]]:
+    if value is None:
+        return None
+    algorithms = [part.strip() for part in value.split(",") if part.strip()]
+    if not algorithms:
+        raise ValueError("--algorithms must contain at least one algorithm")
+    return algorithms
+
+
+def resolve_algorithm_list(
+    names_or_prefixes: Sequence[str],
+    available_algorithms: Sequence[str],
+) -> List[str]:
+    resolved = []
+    seen = set()
+    for name_or_prefix in names_or_prefixes:
+        algorithm = resolve_algorithm(name_or_prefix, available_algorithms)
+        if algorithm in seen:
+            continue
+        resolved.append(algorithm)
+        seen.add(algorithm)
+    return resolved
 
 
 def parse_group_by(value: str) -> List[str]:
@@ -933,8 +968,24 @@ def main() -> int:
             missing = ", ".join(missing_group_columns)
             raise ValueError(f"Missing --group-by column(s): {missing}")
 
-        algorithms = detect_algorithms(fieldnames, args.metric)
-        ours_algorithm = resolve_algorithm(args.ours, algorithms)
+        detected_algorithms = detect_algorithms(fieldnames, args.metric)
+        selected_algorithm_names = parse_algorithm_list(args.algorithms)
+        if selected_algorithm_names is None:
+            algorithms = detected_algorithms
+            ours_algorithm = resolve_algorithm(
+                args.ours or DEFAULT_OURS_ALGORITHM,
+                algorithms,
+            )
+        else:
+            algorithms = resolve_algorithm_list(
+                selected_algorithm_names,
+                detected_algorithms,
+            )
+            if args.ours:
+                ours_algorithm = resolve_algorithm(args.ours, algorithms)
+            else:
+                ours_algorithm = algorithms[0]
+
         output_columns = build_output_columns(
             fieldnames, algorithms, ours_algorithm, args.metric
         )
