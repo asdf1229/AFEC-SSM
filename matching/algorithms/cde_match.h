@@ -120,6 +120,11 @@ public:
         // init breakdown
         long long init_time = 0;
         long long filter_time = 0;
+        long long filter_nlf_time = 0;
+        long long filter_bridge_time = 0;
+        long long filter_spoke_time = 0;
+        long long filter_onehop_time = 0;
+        ui filter_candidate_count = 0;
         // search breakdown
         long long dfs_time = 0;
         long long lb_time = 0;       // computeLowerBound
@@ -150,6 +155,11 @@ public:
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
         printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
         printf("  - Filter Time:     %.4lf ms (%.2f%% of Init)\n", stats.filter_time / 1000.0, pct(stats.filter_time, stats.init_time));
+        printf("    - NLF:           %.4lf ms (%.2f%% of Filter)\n", stats.filter_nlf_time / 1000.0, pct(stats.filter_nlf_time, stats.filter_time));
+        printf("    - Bridge:        %.4lf ms (%.2f%% of Filter)\n", stats.filter_bridge_time / 1000.0, pct(stats.filter_bridge_time, stats.filter_time));
+        printf("    - Spoke:         %.4lf ms (%.2f%% of Filter)\n", stats.filter_spoke_time / 1000.0, pct(stats.filter_spoke_time, stats.filter_time));
+        printf("    - OneHop:        %.4lf ms (%.2f%% of Filter)\n", stats.filter_onehop_time / 1000.0, pct(stats.filter_onehop_time, stats.filter_time));
+        printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
         printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, pct(stats.dfs_time, stats.total_time));
         printf("  - LowerBound Time: %.4lf ms (%.2f%% of Search)\n", stats.lb_time / 1000.0, pct(stats.lb_time, stats.dfs_time));
         printf("  - Frontier Time:   %.4lf ms (%.2f%% of Search)\n", stats.frontier_time / 1000.0, pct(stats.frontier_time, stats.dfs_time));
@@ -581,20 +591,47 @@ private:
 
         bool run()
         {
-            if (!filterNLF()) return false;
+            Timer t;
+            bool ok = filterNLF();
+            solver.stats.filter_nlf_time += t.elapsed();
+            if (!ok) return false;
 #ifdef ENABLE_BRIDGE_FILTERING
-            if (!filterBridgeCandidates()) return false;
+            t.restart();
+            ok = filterBridgeCandidates();
+            solver.stats.filter_bridge_time += t.elapsed();
+            if (!ok) return false;
 #endif
 #ifdef ENABLE_ADVANCED_FILTERING
-            if (!filterSpoke()) return false;
+#ifdef ENABLE_SPOKE_FILTERING
+            t.restart();
+            ok = filterSpoke();
+            solver.stats.filter_spoke_time += t.elapsed();
+            if (!ok) return false;
 #ifdef ENABLE_BRIDGE_FILTERING
-            if (!filterBridgeCandidates()) return false;
+            t.restart();
+            ok = filterBridgeCandidates();
+            solver.stats.filter_bridge_time += t.elapsed();
+            if (!ok) return false;
 #endif
-            if (!filterOneHop()) return false;
+#endif
+#ifdef ENABLE_ONEHOP_FILTERING
+            t.restart();
+            ok = filterOneHop();
+            solver.stats.filter_onehop_time += t.elapsed();
+            if (!ok) return false;
 #ifdef ENABLE_BRIDGE_FILTERING
-            if (!filterBridgeCandidates()) return false;
+            t.restart();
+            ok = filterBridgeCandidates();
+            solver.stats.filter_bridge_time += t.elapsed();
+            if (!ok) return false;
 #endif
 #endif
+#endif
+
+            solver.stats.filter_candidate_count = 0;
+            for (ui u = 0; u < solver.qn; ++u) {
+                solver.stats.filter_candidate_count += (ui)solver.candidates[u].size();
+            }
 
 #ifndef NDEBUG
             printCandStats();
@@ -700,6 +737,16 @@ private:
             return true;
         }
 #endif
+
+        bool canSkipApproxLocalFilter(ui u) const
+        {
+#ifdef ENABLE_BRIDGE_FILTERING
+            if (solver.Lq_bridge_degrees[u] != 0) {
+                return false;
+            }
+#endif
+            return solver.q_neighbors[u].size() <= solver.threshold;
+        }
 
         bool dfsMatchSpoke(ui left_idx, const vector<vector<ui>> &adj)
         {
@@ -809,6 +856,10 @@ private:
             while (!q.empty()) {
                 ui u = q.front(); q.pop();
                 in_q[u] = 0;
+
+                if (canSkipApproxLocalFilter(u)) {
+                    continue;
+                }
 
                 vector<ui> to_remove;
                 for (ui v : solver.candidates[u]) {
@@ -1000,6 +1051,14 @@ private:
                 if (countInnerEdges(u) == 0) continue;
 
                 for (ui v : solver.candidates[u]) {
+                    ui missing_edges = computeLBSpoke(u, v);
+                    if (missing_edges > solver.threshold) {
+                        to_remove.push_back({ u, v });
+                        continue;
+                    }
+                    if (solver.threshold - missing_edges > (ui)ONEHOP_FILTER_MISSING_GAP) {
+                        continue;
+                    }
                     if (!checkOneHop(u, v)) {
                         to_remove.push_back({ u, v });
                     }
