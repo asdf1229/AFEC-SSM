@@ -10,7 +10,26 @@
 #endif
 #define ENABLE_BRIDGE_FILTERING
 // #define ENABLE_FRONTIER_ORDERING
+
+// #define LOWER_BOUND
+// Choose at most one LOWER_BOUND implementation.
+#define CDE_LB_LIGHTWEIGHT_SPOKE
+// #define CDE_LB_COMPONENT_MWPM
+// #define CDE_LB_COMPONENT_MWPM_CACHE
+#ifdef CDE_LB_COMPONENT_MWPM_CACHE
+#ifndef CDE_LB_COMPONENT_MWPM
+#define CDE_LB_COMPONENT_MWPM
+#endif
+#endif
+#if defined(CDE_LB_LIGHTWEIGHT_SPOKE) && defined(CDE_LB_COMPONENT_MWPM)
+#error "Choose only one lower-bound implementation: CDE_LB_LIGHTWEIGHT_SPOKE or CDE_LB_COMPONENT_MWPM."
+#endif
+#if (defined(CDE_LB_LIGHTWEIGHT_SPOKE) || defined(CDE_LB_COMPONENT_MWPM)) && !defined(LOWER_BOUND)
 #define LOWER_BOUND
+#endif
+#ifndef LOWER_BOUND_MISSING_GAP
+#define LOWER_BOUND_MISSING_GAP 0
+#endif
 #define NDEBUG
 
 #endif //_CONFIG_H_
