@@ -83,13 +83,22 @@ public:
 		return edges + pstart[id];
 	}
 
-	// Check if there is an edge u -> v
+	// Check if there is an undirected edge between u and v.
 	bool hasEdge(ui u, ui v) const
 	{
 		assert(u < n && v < n);
-		ept l = pstart[u], r = pstart[u + 1];
-		// binary search in sorted adjacency list
-		return std::binary_search(edges + l, edges + r, v);
+
+		ept du = pstart[u + 1] - pstart[u];
+		ept dv = pstart[v + 1] - pstart[v];
+
+		if (du <= dv) {
+			ept l = pstart[u], r = pstart[u + 1];
+			return std::binary_search(edges + l, edges + r, v);
+		}
+		else {
+			ept l = pstart[v], r = pstart[v + 1];
+			return std::binary_search(edges + l, edges + r, u);
+		}
 	}
 };
 
