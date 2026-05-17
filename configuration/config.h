@@ -14,19 +14,10 @@
 
 // --- lower-bound options ---
 // #define LOWER_BOUND
-// Choose at most one LOWER_BOUND implementation.
 #define CDE_LB_LIGHTWEIGHT_SPOKE
 // #define CDE_LB_COMPONENT_MWPM
 // #define CDE_LB_COMPONENT_MWPM_CACHE
-#ifdef CDE_LB_COMPONENT_MWPM_CACHE
-#ifndef CDE_LB_COMPONENT_MWPM
-#define CDE_LB_COMPONENT_MWPM
-#endif
-#endif
-#if defined(CDE_LB_LIGHTWEIGHT_SPOKE) && defined(CDE_LB_COMPONENT_MWPM)
-#error "Choose only one lower-bound implementation: CDE_LB_LIGHTWEIGHT_SPOKE or CDE_LB_COMPONENT_MWPM."
-#endif
-#if (defined(CDE_LB_LIGHTWEIGHT_SPOKE) || defined(CDE_LB_COMPONENT_MWPM)) && !defined(LOWER_BOUND)
+#if defined(CDE_LB_LIGHTWEIGHT_SPOKE)
 #define LOWER_BOUND
 #endif
 #ifndef LOWER_BOUND_MISSING_GAP

@@ -5,18 +5,6 @@
 #include "matching/run_matching.h"
 #include "utility/utility.h"
 #include "utility/mybitset.h"
-#include <limits>
-#ifndef NDEBUG
-#include <map>
-#endif
-
-#ifndef CDE_LB_MWPM_MAX_ROWS
-#define CDE_LB_MWPM_MAX_ROWS 0
-#endif
-#ifndef CDE_LB_MWPM_MAX_COLS
-#define CDE_LB_MWPM_MAX_COLS 0
-#endif
-
 using namespace std;
 
 // ============================================================================
@@ -67,10 +55,6 @@ public:
 
         initGlobalLabelCounts(query_graph, Lq_counts, Lq_degrees);
         initGlobalLabelCounts(data_graph, Lg_counts, Lg_degrees);
-        Lq_residual_counts = Lq_counts;
-        Lg_residual_counts = Lg_counts;
-        Lq_residual_degrees = Lq_degrees;
-        Lg_residual_degrees = Lg_degrees;
 
         Timer t_filter;
         bool res = runCandidateFiltering();
@@ -98,15 +82,13 @@ public:
         //     assert((ui)kDebugInitialRoot < qn);
         //     root = (ui)kDebugInitialRoot;
         // }
-#endif
         printf("Selected initial root: u=%u with %zu candidates\n", root, (size_t)candidates[root].size());
+#endif
 
         for (ui v0 : candidates[root]) {
 #ifndef NDEBUG
             recordBranchOrderDebug(root);
 #endif
-            updateResidualLabelCounts(query_graph, root, mapped_q, Lq_residual_counts, Lq_residual_degrees, false);
-            updateResidualLabelCounts(data_graph, v0, mapped_g, Lg_residual_counts, Lg_residual_degrees, false);
             mapped_q[root] = (int)v0;
             mapped_g[v0] = (int)root;
             in_Mq[root] = 1;
@@ -114,7 +96,7 @@ public:
 
             updateFrontier(root, true);
 
-            dfs(0, (int)root, nullptr, nullptr);
+            dfs(0, (int)root, nullptr);
 
             updateFrontier(root, false);
 
@@ -122,8 +104,6 @@ public:
             mapped_g[v0] = -1;
             in_Mq[root] = 0;
             part_M.pop_back();
-            updateResidualLabelCounts(query_graph, root, mapped_q, Lq_residual_counts, Lq_residual_degrees, true);
-            updateResidualLabelCounts(data_graph, v0, mapped_g, Lg_residual_counts, Lg_residual_degrees, true);
         }
 
         stats.dfs_time = t_search.elapsed();
@@ -143,10 +123,6 @@ public:
         // search breakdown
         long long dfs_time = 0;
         long long lb_time = 0;       // computeLowerBound
-        long long lb_state_time = 0;
-        long long lb_sf_time = 0;
-        long long lb_uu_label_time = 0;
-        long long lb_uu_unsupported_time = 0;
         long long lb_light_spoke_time = 0;
         long long frontier_time = 0; // building and ordering U_frontier
         long long frontier_preferred_time = 0;
@@ -173,9 +149,7 @@ public:
             };
 #endif
 
-        long long lb_accounted_time = stats.lb_state_time + stats.lb_sf_time
-            + stats.lb_uu_label_time + stats.lb_uu_unsupported_time
-            + stats.lb_light_spoke_time;
+        long long lb_accounted_time = stats.lb_light_spoke_time;
         long long lb_other_time = stats.lb_time > lb_accounted_time
             ? stats.lb_time - lb_accounted_time : 0;
         long long search_accounted_time = stats.lb_time + stats.frontier_time + stats.branch_time;
@@ -204,10 +178,6 @@ public:
         printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
         printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, pct(stats.dfs_time, stats.total_time));
         printf("  - LowerBound Time: %.4lf ms (%.2f%% of Search)\n", stats.lb_time / 1000.0, pct(stats.lb_time, stats.dfs_time));
-        printf("    - State:         %.4lf ms (%.2f%% of LB)\n", stats.lb_state_time / 1000.0, pct(stats.lb_state_time, stats.lb_time));
-        printf("    - S-F:           %.4lf ms (%.2f%% of LB)\n", stats.lb_sf_time / 1000.0, pct(stats.lb_sf_time, stats.lb_time));
-        printf("    - U-U Label:     %.4lf ms (%.2f%% of LB)\n", stats.lb_uu_label_time / 1000.0, pct(stats.lb_uu_label_time, stats.lb_time));
-        printf("    - U-U Unsup:     %.4lf ms (%.2f%% of LB)\n", stats.lb_uu_unsupported_time / 1000.0, pct(stats.lb_uu_unsupported_time, stats.lb_time));
         printf("    - Light Spoke:   %.4lf ms (%.2f%% of LB)\n", stats.lb_light_spoke_time / 1000.0, pct(stats.lb_light_spoke_time, stats.lb_time));
         printf("    - Other:         %.4lf ms (%.2f%% of LB)\n", lb_other_time / 1000.0, pct(lb_other_time, stats.lb_time));
         printf("  - Frontier Time:   %.4lf ms (%.2f%% of Search)\n", stats.frontier_time / 1000.0, pct(stats.frontier_time, stats.dfs_time));
@@ -266,8 +236,6 @@ private:
     vector<MyBitset> candidates;
     vector<vector<ui>> Lq_counts, Lg_counts;
     vector<ui>  Lq_degrees, Lg_degrees;
-    vector<vector<ui>> Lq_residual_counts, Lg_residual_counts;
-    vector<ui>  Lq_residual_degrees, Lg_residual_degrees;
 
     vector<int> mapped_q;
     vector<int> mapped_g;
@@ -319,13 +287,6 @@ private:
     ui          lb_seen_token;
     vector<ui>  lb_data_frontier_mark;
     ui          lb_data_frontier_token;
-    vector<ui>  lb_component_mark;
-    ui          lb_component_token;
-    vector<int> lb_km_lx, lb_km_ly, lb_km_mx, lb_km_my;
-    vector<int> lb_km_slack, lb_km_slackmy;
-    vector<int> lb_km_prev, lb_km_queue;
-    vector<char> lb_km_vis_x, lb_km_vis_y;
-    vector<int> lb_v_to_col;
     vector<vector<ui>> lb_light_spoke_adj;
     vector<char> lb_light_spoke_is_bridge;
     vector<ui> lb_light_spoke_right_vertices;
@@ -377,45 +338,6 @@ private:
         }
     }
 
-    inline void insertXCand(ui u, ui v)
-    {
-        x_cand[u].insert(v);
-    }
-
-    inline void removeXCand(ui u, ui v)
-    {
-        x_cand[u].remove(v);
-    }
-
-    void updateResidualLabelCounts(const Graph *g, ui vertex, const vector<int> &mapped_status,
-        vector<vector<ui>> &counts, vector<ui> &degrees, bool is_add)
-    {
-        LabelID label = g->getVertexLabel(vertex);
-        if (label < 0 || (ui)label >= label_count) {
-            return;
-        }
-
-        ui deg = 0;
-        const ui *neighbors = g->getVertexNeighbors(vertex, deg);
-        for (ui i = 0; i < deg; ++i) {
-            ui neighbor = neighbors[i];
-            if (mapped_status[neighbor] != -1) {
-                continue;
-            }
-
-            if (is_add) {
-                counts[neighbor][(ui)label]++;
-                degrees[neighbor]++;
-            }
-            else {
-                assert(counts[neighbor][(ui)label] > 0);
-                assert(degrees[neighbor] > 0);
-                counts[neighbor][(ui)label]--;
-                degrees[neighbor]--;
-            }
-        }
-    }
-
     void resetState()
     {
         mapped_q.assign(qn, -1);
@@ -439,10 +361,6 @@ private:
         Lq_non_bridge_counts.clear();
         Lq_bridge_degrees.clear();
         Lq_non_bridge_degrees.clear();
-        Lq_residual_counts.clear();
-        Lg_residual_counts.clear();
-        Lq_residual_degrees.clear();
-        Lg_residual_degrees.clear();
 
         anchor_count.assign(qn, 0);
         frontier_pos.assign(qn, -1);
@@ -460,19 +378,6 @@ private:
         lb_seen_token = 1;
         lb_data_frontier_mark.assign(gn, 0);
         lb_data_frontier_token = 1;
-        lb_component_mark.assign(qn, 0);
-        lb_component_token = 1;
-        lb_km_lx.clear();
-        lb_km_ly.clear();
-        lb_km_mx.clear();
-        lb_km_my.clear();
-        lb_km_slack.clear();
-        lb_km_slackmy.clear();
-        lb_km_prev.clear();
-        lb_km_queue.clear();
-        lb_km_vis_x.clear();
-        lb_km_vis_y.clear();
-        lb_v_to_col.assign(gn, -1);
         lb_light_spoke_adj.assign(qn, vector<ui>());
         lb_light_spoke_is_bridge.assign(qn, 0);
         lb_light_spoke_right_vertices.clear();
@@ -616,6 +521,7 @@ private:
         }
     }
 
+    // Tarjan
     void dfsQueryBridges(ui u, ui parent, vector<int> &dfn, vector<int> &low, int &tim)
     {
         dfn[u] = low[u] = ++tim;
@@ -917,7 +823,7 @@ private:
 #endif
             }
             return diff;
-            }
+        }
 
         bool filterNLF()
         {
@@ -1375,7 +1281,7 @@ private:
             }
             fflush(stdout);
         }
-        };
+    };
 
     bool runCandidateFiltering()
     {
@@ -1721,7 +1627,7 @@ private:
             }
         }
 
-        };
+    };
 
     // ========================================================================
     // Lower Bound based Pruning
@@ -1881,1057 +1787,6 @@ private:
         }
     };
 
-    struct LowerBoundOptions {
-        bool use_sf_assignment = false;
-        bool use_uu_unsupported = false;
-        bool use_edge_labels = false;
-        bool restrict_data_neighbors_by_candidates = true;
-    };
-
-    struct LowerBoundComponentCache {
-        vector<ui> vertices;
-        vector<ui> frontier;
-        ui lb = 0;
-    };
-
-    struct LowerBoundState {
-        vector<LowerBoundComponentCache> components;
-
-        void clear()
-        {
-            components.clear();
-        }
-    };
-
-    struct LowerBoundPruner {
-        MatchingSolver &solver;
-
-        explicit LowerBoundPruner(MatchingSolver &solver) : solver(solver) {}
-
-        bool shouldPrune(ui current_miss, const vector<ui> &frontier_vertices,
-            const LowerBoundState *parent_cache = nullptr, LowerBoundState *out_cache = nullptr)
-        {
-            (void)frontier_vertices;
-            LowerBoundOptions options;
-            return computeLowerBound(current_miss, options, parent_cache, out_cache) > solver.threshold;
-        }
-
-    private:
-        ui boundInf() const
-        {
-            return (ui)INF;
-        }
-
-        ui addBound(ui lhs, ui rhs) const
-        {
-            if (lhs >= boundInf() || rhs >= boundInf()) {
-                return boundInf();
-            }
-            if (lhs > boundInf() - rhs) {
-                return boundInf();
-            }
-            return lhs + rhs;
-        }
-
-        bool isCandidateAvailable(ui u, ui v) const
-        {
-            return solver.mapped_g[v] == -1 && !solver.x_cand[u].contains(v);
-        }
-
-        bool hasAvailableCandidate(ui u) const
-        {
-            for (ui v : solver.candidates[u]) {
-                if (isCandidateAvailable(u, v)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        void collectLiveAnchors(ui u, vector<ui> &anchors) const
-        {
-            anchors.clear();
-            for (ui a : solver.q_neighbors[u]) {
-                if (solver.in_Mq[a] && !solver.is_excluded[u][a]) {
-                    anchors.push_back(a);
-                }
-            }
-        }
-
-        void collectActiveFrontier(vector<ui> &frontier_vertices) const
-        {
-            frontier_vertices.clear();
-            frontier_vertices.reserve(solver.active_frontier.size());
-            for (ui u : solver.active_frontier) {
-                if (!solver.in_Mq[u] && solver.frontier_pos[u] != -1) {
-                    frontier_vertices.push_back(u);
-                }
-            }
-        }
-
-        void collectUnmatched(vector<ui> &unmatched_vertices) const
-        {
-            unmatched_vertices.clear();
-            unmatched_vertices.reserve(solver.qn - (ui)solver.part_M.size());
-            for (ui u = 0; u < solver.qn; ++u) {
-                if (!solver.in_Mq[u]) {
-                    unmatched_vertices.push_back(u);
-                }
-            }
-        }
-
-        struct LBComponent {
-            vector<ui> vertices;
-            vector<ui> frontier;
-        };
-
-        ui doubledLimit(ui limit) const
-        {
-            if (limit >= boundInf() / 2) {
-                return boundInf();
-            }
-            return limit * 2;
-        }
-
-        bool doubledExceedsLimit(ui doubled_value, ui limit) const
-        {
-            if (doubled_value >= boundInf()) {
-                return true;
-            }
-            return (doubled_value + 1) / 2 > limit;
-        }
-
-        void nextComponentToken()
-        {
-            if (++solver.lb_component_token == 0) {
-                std::fill(solver.lb_component_mark.begin(), solver.lb_component_mark.end(), 0);
-                solver.lb_component_token = 1;
-            }
-        }
-
-        void nextDataFrontierToken()
-        {
-            if (++solver.lb_data_frontier_token == 0) {
-                std::fill(solver.lb_data_frontier_mark.begin(), solver.lb_data_frontier_mark.end(), 0);
-                solver.lb_data_frontier_token = 1;
-            }
-        }
-
-        void collectUnmatchedComponents(vector<LBComponent> &components)
-        {
-            components.clear();
-            nextComponentToken();
-
-            queue<ui> q;
-            for (ui u = 0; u < solver.qn; ++u) {
-                if (solver.in_Mq[u] || solver.lb_component_mark[u] == solver.lb_component_token) {
-                    continue;
-                }
-
-                components.push_back(LBComponent());
-                LBComponent &component = components.back();
-                solver.lb_component_mark[u] = solver.lb_component_token;
-                q.push(u);
-
-                while (!q.empty()) {
-                    ui curr = q.front();
-                    q.pop();
-
-                    component.vertices.push_back(curr);
-                    if (solver.frontier_pos[curr] != -1) {
-                        component.frontier.push_back(curr);
-                    }
-
-                    for (ui nbr : solver.q_neighbors[curr]) {
-                        if (solver.in_Mq[nbr] || solver.is_excluded[curr][nbr] ||
-                            solver.lb_component_mark[nbr] == solver.lb_component_token) {
-                            continue;
-                        }
-                        solver.lb_component_mark[nbr] = solver.lb_component_token;
-                        q.push(nbr);
-                    }
-                }
-
-                sort(component.vertices.begin(), component.vertices.end());
-                sort(component.frontier.begin(), component.frontier.end());
-            }
-        }
-
-        const LowerBoundComponentCache *findCachedComponent(
-            const LowerBoundState *parent_cache, const LBComponent &component) const
-        {
-            if (parent_cache == nullptr) {
-                return nullptr;
-            }
-
-            for (const LowerBoundComponentCache &cached : parent_cache->components) {
-                if (cached.vertices == component.vertices && cached.frontier == component.frontier) {
-                    return &cached;
-                }
-            }
-            return nullptr;
-        }
-
-        ui computeResidualLabelDeficit(ui u, ui v) const
-        {
-            ui deficit = 0;
-            for (ui label = 0; label < solver.label_count; ++label) {
-                ui q_count = solver.Lq_residual_counts[u][label];
-                ui g_count = solver.Lg_residual_counts[v][label];
-                if (q_count > g_count) {
-                    deficit += q_count - g_count;
-                }
-            }
-            return deficit;
-        }
-
-        ui computeRowDoubledCost(ui u, ui v, const vector<ui> &anchors) const
-        {
-            ui sf = computeAnchorCutDelta(v, anchors);
-            ui uu = computeResidualLabelDeficit(u, v);
-            ui doubled_sf = addBound(sf, sf);
-            return addBound(doubled_sf, uu);
-        }
-
-        ui computeRemainDoubled(const LBComponent &component, ui limit) const
-        {
-            ui sum = 0;
-            for (ui u : component.vertices) {
-                if (binary_search(component.frontier.begin(), component.frontier.end(), u)) {
-                    continue;
-                }
-
-                ui best = boundInf();
-                for (ui v : solver.candidates[u]) {
-                    if (!isCandidateAvailable(u, v)) {
-                        continue;
-                    }
-
-                    ui deficit = computeResidualLabelDeficit(u, v);
-                    if (deficit < best) {
-                        best = deficit;
-                        if (best == 0) {
-                            break;
-                        }
-                    }
-                }
-
-                if (best >= boundInf()) {
-                    return boundInf();
-                }
-
-                sum = addBound(sum, best);
-                if (doubledExceedsLimit(sum, limit)) {
-                    return boundInf();
-                }
-            }
-            return sum;
-        }
-
-        ui computeFrontierIndependentDoubled(const vector<ui> &rows,
-            const vector<vector<ui>> &anchors_by_row, ui limit) const
-        {
-            ui sum = 0;
-            for (ui i = 0; i < rows.size(); ++i) {
-                ui u = rows[i];
-                const vector<ui> &anchors = anchors_by_row[i];
-                ui best = boundInf();
-
-                for (ui v : solver.candidates[u]) {
-                    if (!isCandidateAvailable(u, v)) {
-                        continue;
-                    }
-
-                    ui cost = computeRowDoubledCost(u, v, anchors);
-                    if (cost < best) {
-                        best = cost;
-                        if (best == 0) {
-                            break;
-                        }
-                    }
-                }
-
-                if (best >= boundInf()) {
-                    return boundInf();
-                }
-
-                sum = addBound(sum, best);
-                if (doubledExceedsLimit(sum, limit)) {
-                    return boundInf();
-                }
-            }
-            return sum;
-        }
-
-        ui solveMWPM(const vector<vector<ui>> &cost_matrix, ui limit)
-        {
-            if (cost_matrix.empty()) {
-                return 0;
-            }
-
-            int n = (int)cost_matrix.size();
-            int m = (int)cost_matrix[0].size();
-            if (n > m) {
-                return limit + 1;
-            }
-
-            const int INF_INT = (int)boundInf();
-            if (solver.lb_km_lx.size() < (size_t)n) {
-                solver.lb_km_lx.resize(n);
-                solver.lb_km_mx.resize(n);
-                solver.lb_km_prev.resize(n);
-                solver.lb_km_queue.resize(n);
-                solver.lb_km_vis_x.resize(n);
-            }
-            if (solver.lb_km_ly.size() < (size_t)m) {
-                solver.lb_km_ly.resize(m);
-                solver.lb_km_my.resize(m);
-                solver.lb_km_slack.resize(m);
-                solver.lb_km_slackmy.resize(m);
-                solver.lb_km_vis_y.resize(m);
-            }
-
-            fill(solver.lb_km_lx.begin(), solver.lb_km_lx.begin() + n, 0);
-            fill(solver.lb_km_ly.begin(), solver.lb_km_ly.begin() + m, 0);
-            fill(solver.lb_km_mx.begin(), solver.lb_km_mx.begin() + n, -1);
-            fill(solver.lb_km_my.begin(), solver.lb_km_my.begin() + m, -1);
-
-            unsigned long long row_lb = 0;
-            for (int i = 0; i < n; ++i) {
-                int min_val = INF_INT;
-                for (int j = 0; j < m; ++j) {
-                    if ((int)cost_matrix[i][j] < min_val) {
-                        min_val = (int)cost_matrix[i][j];
-                    }
-                }
-                if (min_val >= INF_INT) {
-                    return limit + 1;
-                }
-                solver.lb_km_lx[i] = min_val;
-                row_lb += (unsigned int)min_val;
-                if (row_lb > limit) {
-                    return limit + 1;
-                }
-            }
-
-            for (int i = 0; i < n; ++i) {
-                for (int j = 0; j < m; ++j) {
-                    if (solver.lb_km_my[j] == -1 &&
-                        (int)cost_matrix[i][j] == solver.lb_km_lx[i]) {
-                        solver.lb_km_mx[i] = j;
-                        solver.lb_km_my[j] = i;
-                        break;
-                    }
-                }
-            }
-
-            for (int root = 0; root < n; ++root) {
-                if (solver.lb_km_mx[root] != -1) {
-                    continue;
-                }
-
-                fill(solver.lb_km_vis_x.begin(), solver.lb_km_vis_x.begin() + n, 0);
-                fill(solver.lb_km_vis_y.begin(), solver.lb_km_vis_y.begin() + m, 0);
-
-                for (int j = 0; j < m; ++j) {
-                    solver.lb_km_slack[j] =
-                        (int)cost_matrix[root][j] - solver.lb_km_lx[root] - solver.lb_km_ly[j];
-                    solver.lb_km_slackmy[j] = root;
-                }
-
-                solver.lb_km_vis_x[root] = 1;
-                int q_size = 0;
-                solver.lb_km_queue[q_size++] = root;
-                int target_y = -1;
-                int last_x = -1;
-
-                while (true) {
-                    int q_ptr = 0;
-                    while (q_ptr < q_size) {
-                        int x = solver.lb_km_queue[q_ptr++];
-                        for (int y = 0; y < m; ++y) {
-                            if (solver.lb_km_vis_y[y] ||
-                                (int)cost_matrix[x][y] != solver.lb_km_lx[x] + solver.lb_km_ly[y]) {
-                                continue;
-                            }
-
-                            if (solver.lb_km_my[y] == -1) {
-                                last_x = x;
-                                target_y = y;
-                                goto found_path;
-                            }
-
-                            solver.lb_km_vis_y[y] = 1;
-                            int next_x = solver.lb_km_my[y];
-                            if (solver.lb_km_vis_x[next_x]) {
-                                continue;
-                            }
-                            solver.lb_km_vis_x[next_x] = 1;
-                            solver.lb_km_prev[next_x] = x;
-                            solver.lb_km_queue[q_size++] = next_x;
-                            for (int k = 0; k < m; ++k) {
-                                int slack = (int)cost_matrix[next_x][k] -
-                                    solver.lb_km_lx[next_x] - solver.lb_km_ly[k];
-                                if (!solver.lb_km_vis_y[k] && slack < solver.lb_km_slack[k]) {
-                                    solver.lb_km_slack[k] = slack;
-                                    solver.lb_km_slackmy[k] = next_x;
-                                }
-                            }
-                        }
-                    }
-
-                    int delta = INF_INT;
-                    for (int y = 0; y < m; ++y) {
-                        if (!solver.lb_km_vis_y[y] && solver.lb_km_slack[y] < delta) {
-                            delta = solver.lb_km_slack[y];
-                        }
-                    }
-                    if (delta >= INF_INT) {
-                        return limit + 1;
-                    }
-
-                    for (int x = 0; x < n; ++x) {
-                        if (solver.lb_km_vis_x[x]) {
-                            solver.lb_km_lx[x] += delta;
-                        }
-                    }
-                    for (int y = 0; y < m; ++y) {
-                        if (solver.lb_km_vis_y[y]) {
-                            solver.lb_km_ly[y] -= delta;
-                        }
-                        else {
-                            solver.lb_km_slack[y] -= delta;
-                        }
-                    }
-
-                    q_size = 0;
-                    for (int y = 0; y < m; ++y) {
-                        if (solver.lb_km_vis_y[y] || solver.lb_km_slack[y] != 0) {
-                            continue;
-                        }
-
-                        if (solver.lb_km_my[y] == -1) {
-                            last_x = solver.lb_km_slackmy[y];
-                            target_y = y;
-                            goto found_path;
-                        }
-
-                        solver.lb_km_vis_y[y] = 1;
-                        int next_x = solver.lb_km_my[y];
-                        if (solver.lb_km_vis_x[next_x]) {
-                            continue;
-                        }
-                        solver.lb_km_vis_x[next_x] = 1;
-                        solver.lb_km_prev[next_x] = solver.lb_km_slackmy[y];
-                        solver.lb_km_queue[q_size++] = next_x;
-                        for (int k = 0; k < m; ++k) {
-                            int slack = (int)cost_matrix[next_x][k] -
-                                solver.lb_km_lx[next_x] - solver.lb_km_ly[k];
-                            if (!solver.lb_km_vis_y[k] && slack < solver.lb_km_slack[k]) {
-                                solver.lb_km_slack[k] = slack;
-                                solver.lb_km_slackmy[k] = next_x;
-                            }
-                        }
-                    }
-                }
-
-            found_path:
-                while (true) {
-                    int prev_y = solver.lb_km_mx[last_x];
-                    solver.lb_km_mx[last_x] = target_y;
-                    solver.lb_km_my[target_y] = last_x;
-                    if (last_x == root) {
-                        break;
-                    }
-                    target_y = prev_y;
-                    last_x = solver.lb_km_prev[last_x];
-                }
-            }
-
-            unsigned long long total_cost = 0;
-            for (int i = 0; i < n; ++i) {
-                if (solver.lb_km_mx[i] < 0) {
-                    return limit + 1;
-                }
-                total_cost += cost_matrix[i][solver.lb_km_mx[i]];
-                if (total_cost > limit) {
-                    return limit + 1;
-                }
-            }
-            return (ui)total_cost;
-        }
-
-        void resetDataColumns(const vector<ui> &cols)
-        {
-            for (ui v : cols) {
-                solver.lb_v_to_col[v] = -1;
-            }
-        }
-
-        ui computeFrontierMWPMDoubled(const LBComponent &component, ui limit)
-        {
-            if (component.frontier.empty()) {
-                return 0;
-            }
-
-            vector<pair<LabelID, ui>> labeled_rows;
-            labeled_rows.reserve(component.frontier.size());
-            for (ui u : component.frontier) {
-                labeled_rows.push_back({ solver.query_graph->getVertexLabel(u), u });
-            }
-            sort(labeled_rows.begin(), labeled_rows.end());
-
-            ui front_doubled = 0;
-            size_t ptr = 0;
-            while (ptr < labeled_rows.size()) {
-                LabelID label = labeled_rows[ptr].first;
-                size_t qtr = ptr;
-                while (qtr < labeled_rows.size() && labeled_rows[qtr].first == label) {
-                    qtr++;
-                }
-
-                vector<ui> rows;
-                vector<vector<ui>> anchors_by_row;
-                rows.reserve(qtr - ptr);
-                anchors_by_row.reserve(qtr - ptr);
-                for (size_t i = ptr; i < qtr; ++i) {
-                    rows.push_back(labeled_rows[i].second);
-                    anchors_by_row.push_back(vector<ui>());
-                    collectLiveAnchors(rows.back(), anchors_by_row.back());
-                }
-
-                nextDataFrontierToken();
-                vector<ui> v_list;
-                for (ui i = 0; i < rows.size(); ++i) {
-                    ui u = rows[i];
-                    for (ui anchor : anchors_by_row[i]) {
-                        assert(solver.mapped_q[anchor] >= 0);
-                        ui deg = 0;
-                        const ui *nbrs = solver.data_graph->getVertexNeighbors(
-                            (ui)solver.mapped_q[anchor], deg);
-                        for (ui j = 0; j < deg; ++j) {
-                            ui v = nbrs[j];
-                            if (solver.data_graph->getVertexLabel(v) != label ||
-                                !solver.candidates[u].contains(v) || !isCandidateAvailable(u, v)) {
-                                continue;
-                            }
-                            if (solver.lb_data_frontier_mark[v] != solver.lb_data_frontier_token) {
-                                solver.lb_data_frontier_mark[v] = solver.lb_data_frontier_token;
-                                solver.lb_v_to_col[v] = (int)v_list.size();
-                                v_list.push_back(v);
-                            }
-                        }
-                    }
-                }
-
-                bool over_cap = false;
-#if CDE_LB_MWPM_MAX_ROWS > 0
-                over_cap = over_cap || rows.size() > (size_t)CDE_LB_MWPM_MAX_ROWS;
-#endif
-#if CDE_LB_MWPM_MAX_COLS > 0
-                over_cap = over_cap || v_list.size() + rows.size() > (size_t)CDE_LB_MWPM_MAX_COLS;
-#endif
-                if (over_cap) {
-                    resetDataColumns(v_list);
-                    ui independent = computeFrontierIndependentDoubled(rows, anchors_by_row, limit);
-                    if (independent >= boundInf()) {
-                        return boundInf();
-                    }
-                    front_doubled = addBound(front_doubled, independent);
-                    if (doubledExceedsLimit(front_doubled, limit)) {
-                        return boundInf();
-                    }
-                    ptr = qtr;
-                    continue;
-                }
-
-                size_t row_n = rows.size();
-                size_t col_n = v_list.size() + row_n;
-                const ui INF_COST = boundInf();
-                vector<vector<ui>> cost_matrix(row_n, vector<ui>(col_n, INF_COST));
-
-                for (size_t i = 0; i < row_n; ++i) {
-                    ui u = rows[i];
-                    const vector<ui> &anchors = anchors_by_row[i];
-                    ui virtual_cost = boundInf();
-
-                    for (ui v : solver.candidates[u]) {
-                        if (!isCandidateAvailable(u, v)) {
-                            continue;
-                        }
-
-                        ui cost = computeRowDoubledCost(u, v, anchors);
-                        int col = solver.lb_v_to_col[v];
-                        if (col >= 0) {
-                            cost_matrix[i][(size_t)col] = std::min(cost_matrix[i][(size_t)col], cost);
-                        }
-                        else {
-                            virtual_cost = std::min(virtual_cost, cost);
-                        }
-                    }
-
-                    if (virtual_cost < INF_COST) {
-                        for (size_t k = 0; k < row_n; ++k) {
-                            cost_matrix[i][v_list.size() + k] = virtual_cost;
-                        }
-                    }
-                }
-
-                ui doubled_limit = doubledLimit(limit);
-                if (front_doubled > doubled_limit) {
-                    resetDataColumns(v_list);
-                    return boundInf();
-                }
-
-                ui local_limit = doubled_limit - front_doubled;
-                ui local_cost = solveMWPM(cost_matrix, local_limit);
-                resetDataColumns(v_list);
-                if (local_cost > local_limit) {
-                    return boundInf();
-                }
-
-                front_doubled = addBound(front_doubled, local_cost);
-                if (doubledExceedsLimit(front_doubled, limit)) {
-                    return boundInf();
-                }
-
-                ptr = qtr;
-            }
-            return front_doubled;
-        }
-
-        ui computeComponentMWPMLowerBound(const LBComponent &component, ui limit)
-        {
-            ui remain_doubled = computeRemainDoubled(component, limit);
-            if (remain_doubled >= boundInf()) {
-                return boundInf();
-            }
-
-            ui doubled_limit = doubledLimit(limit);
-            if (remain_doubled > doubled_limit) {
-                return boundInf();
-            }
-
-            ui front_limit = (doubled_limit - remain_doubled + 1) / 2;
-            ui front_doubled = computeFrontierMWPMDoubled(component, front_limit);
-            if (front_doubled >= boundInf()) {
-                return boundInf();
-            }
-
-            ui total_doubled = addBound(remain_doubled, front_doubled);
-            if (doubledExceedsLimit(total_doubled, limit)) {
-                return boundInf();
-            }
-            return (total_doubled + 1) / 2;
-        }
-
-        ui computeComponentMWPMLowerBound(ui current_miss,
-            const LowerBoundState *parent_cache, LowerBoundState *out_cache)
-        {
-            if (out_cache != nullptr) {
-                out_cache->clear();
-            }
-
-            if (current_miss > solver.threshold) {
-                return current_miss;
-            }
-
-            vector<LBComponent> components;
-            collectUnmatchedComponents(components);
-
-            ui residual_limit = solver.threshold - current_miss;
-            ui residual_lb = 0;
-            for (const LBComponent &component : components) {
-                ui component_limit = residual_limit >= residual_lb ? residual_limit - residual_lb : 0;
-                ui component_lb = boundInf();
-
-#ifdef CDE_LB_COMPONENT_MWPM_CACHE
-                const LowerBoundComponentCache *cached = findCachedComponent(parent_cache, component);
-                if (cached != nullptr) {
-                    component_lb = cached->lb;
-                }
-#else
-                (void)parent_cache;
-#endif
-                if (component_lb >= boundInf()) {
-                    component_lb = computeComponentMWPMLowerBound(component, component_limit);
-                }
-
-                if (out_cache != nullptr) {
-                    LowerBoundComponentCache cache_entry;
-                    cache_entry.vertices = component.vertices;
-                    cache_entry.frontier = component.frontier;
-                    cache_entry.lb = component_lb;
-                    out_cache->components.push_back(cache_entry);
-                }
-
-                residual_lb = addBound(residual_lb, component_lb);
-                if (residual_lb > residual_limit) {
-                    return addBound(current_miss, residual_lb);
-                }
-                }
-
-            return addBound(current_miss, residual_lb);
-            }
-
-        ui computeLowerBound(ui current_miss, const LowerBoundOptions &options,
-            const LowerBoundState *parent_cache, LowerBoundState *out_cache)
-        {
-            // The DFS cost already contains fixed S-S missing edges plus
-            // excluded S-F anchor edges. The lower bound below is residual:
-            // only live S-F anchors and U-U edges are estimated here.
-            (void)options.use_edge_labels; // Graph currently exposes vertex labels only.
-
-#ifdef CDE_LB_COMPONENT_MWPM
-            (void)options;
-            return computeComponentMWPMLowerBound(current_miss, parent_cache, out_cache);
-#else
-            (void)parent_cache;
-            (void)out_cache;
-
-            if (current_miss > solver.threshold) {
-                return current_miss;
-            }
-
-            Timer t_part;
-            vector<ui> unmatched_vertices;
-            collectUnmatched(unmatched_vertices);
-            for (ui u : unmatched_vertices) {
-                if (!hasAvailableCandidate(u)) {
-                    solver.stats.lb_state_time += t_part.elapsed();
-                    return boundInf();
-                }
-            }
-
-            vector<ui> frontier_vertices;
-            collectActiveFrontier(frontier_vertices);
-
-            vector<vector<ui>> anchors_by_frontier_idx(frontier_vertices.size());
-            for (ui i = 0; i < frontier_vertices.size(); ++i) {
-                collectLiveAnchors(frontier_vertices[i], anchors_by_frontier_idx[i]);
-            }
-            solver.stats.lb_state_time += t_part.elapsed();
-
-            t_part.restart();
-            ui sf_lb = options.use_sf_assignment
-                ? computeSFAssignmentLowerBound(frontier_vertices, anchors_by_frontier_idx)
-                : computeSFMinLowerBound(frontier_vertices, anchors_by_frontier_idx);
-            solver.stats.lb_sf_time += t_part.elapsed();
-            if (sf_lb >= boundInf()) {
-                return boundInf();
-            }
-
-            t_part.restart();
-            ui uu_lb = computeUULabelLowerBound(unmatched_vertices, options);
-            solver.stats.lb_uu_label_time += t_part.elapsed();
-            if (uu_lb >= boundInf()) {
-                return boundInf();
-            }
-
-            if (options.use_uu_unsupported) {
-                t_part.restart();
-                ui unsupported_lb = computeUUUnsupportedLowerBound(unmatched_vertices);
-                solver.stats.lb_uu_unsupported_time += t_part.elapsed();
-                if (unsupported_lb >= boundInf()) {
-                    return boundInf();
-                }
-                uu_lb = std::max(uu_lb, unsupported_lb);
-            }
-
-            return addBound(addBound(current_miss, sf_lb), uu_lb);
-#endif
-        }
-
-        ui computeAnchorCutDelta(ui v, const vector<ui> &anchors) const
-        {
-            ui delta = 0;
-            for (ui a : anchors) {
-                assert(solver.mapped_q[a] >= 0);
-                if (!solver.data_graph->hasEdge(v, (ui)solver.mapped_q[a])) {
-                    delta++;
-                }
-            }
-            return delta;
-        }
-
-        ui computeSFMinLowerBound(const vector<ui> &frontier_vertices,
-            const vector<vector<ui>> &anchors_by_frontier_idx) const
-        {
-            ui lb = 0;
-            for (ui i = 0; i < frontier_vertices.size(); ++i) {
-                ui u = frontier_vertices[i];
-                const vector<ui> &anchors = anchors_by_frontier_idx[i];
-                ui best_anchor_cut = boundInf();
-
-                for (ui v : solver.candidates[u]) {
-                    if (!isCandidateAvailable(u, v)) {
-                        continue;
-                    }
-
-                    ui alpha = computeAnchorCutDelta(v, anchors);
-                    best_anchor_cut = std::min(best_anchor_cut, alpha);
-                }
-
-                if (best_anchor_cut >= boundInf()) {
-                    return boundInf();
-                }
-
-                lb = addBound(lb, best_anchor_cut);
-                if (lb > solver.threshold) {
-                    return lb;
-                }
-            }
-            return lb;
-        }
-
-        bool findBudgetFeasibleAugment(ui left_idx, const vector<vector<ui>> &adj)
-        {
-            for (ui v : adj[left_idx]) {
-                if (solver.lb_seen_right[v] == solver.lb_seen_token) {
-                    continue;
-                }
-                solver.lb_seen_right[v] = solver.lb_seen_token;
-
-                if (solver.lb_match_right[v] < 0 ||
-                    findBudgetFeasibleAugment((ui)solver.lb_match_right[v], adj)) {
-                    solver.lb_match_right[v] = (int)left_idx;
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        ui computeSFAssignmentLowerBound(const vector<ui> &frontier_vertices,
-            const vector<vector<ui>> &anchors_by_frontier_idx)
-        {
-            ui frontier_size = (ui)frontier_vertices.size();
-            if (frontier_size == 0) {
-                return 0;
-            }
-            if (frontier_size == 1) {
-                return computeSFMinLowerBound(frontier_vertices, anchors_by_frontier_idx);
-            }
-
-            vector<vector<vector<ui>>> exact_adj(frontier_size, vector<vector<ui>>(solver.qn + 1));
-            vector<ui> right_vertices;
-            vector<char> has_left_candidate(frontier_size, 0);
-
-            if (++solver.lb_data_frontier_token == 0) {
-                std::fill(solver.lb_data_frontier_mark.begin(), solver.lb_data_frontier_mark.end(), 0);
-                solver.lb_data_frontier_token = 1;
-            }
-
-            for (ui i = 0; i < frontier_size; ++i) {
-                ui u = frontier_vertices[i];
-                const vector<ui> &anchors = anchors_by_frontier_idx[i];
-
-                for (ui v : solver.candidates[u]) {
-                    if (!isCandidateAvailable(u, v)) {
-                        continue;
-                    }
-
-                    ui alpha = computeAnchorCutDelta(v, anchors);
-                    assert(alpha <= solver.qn);
-                    exact_adj[i][alpha].push_back(v);
-                    has_left_candidate[i] = 1;
-                    if (solver.lb_data_frontier_mark[v] != solver.lb_data_frontier_token) {
-                        solver.lb_data_frontier_mark[v] = solver.lb_data_frontier_token;
-                        right_vertices.push_back(v);
-                    }
-                }
-
-                if (!has_left_candidate[i]) {
-                    return boundInf();
-                }
-            }
-
-            vector<vector<ui>> cumulative_adj(frontier_size);
-            ui assignment_lb = 0;
-
-            for (ui k = 0; k <= solver.qn; ++k) {
-                for (ui i = 0; i < frontier_size; ++i) {
-                    const vector<ui> &delta = exact_adj[i][k];
-                    cumulative_adj[i].insert(cumulative_adj[i].end(), delta.begin(), delta.end());
-                }
-
-                for (ui v : right_vertices) {
-                    solver.lb_match_right[v] = -1;
-                }
-
-                ui mu = 0;
-                for (ui i = 0; i < frontier_size; ++i) {
-                    if (++solver.lb_seen_token == 0) {
-                        std::fill(solver.lb_seen_right.begin(), solver.lb_seen_right.end(), 0);
-                        solver.lb_seen_token = 1;
-                    }
-
-                    if (findBudgetFeasibleAugment(i, cumulative_adj)) {
-                        mu++;
-                    }
-                }
-
-                ui deficit = frontier_size - mu;
-                if (k == solver.qn) {
-                    return deficit == 0 ? assignment_lb : boundInf();
-                }
-
-                assignment_lb = addBound(assignment_lb, deficit);
-                if (assignment_lb > solver.threshold) {
-                    return assignment_lb;
-                }
-            }
-
-            return assignment_lb;
-        }
-
-        void collectUUQueryCounts(ui u, vector<ui> &uu_neighbors,
-            vector<ui> &query_counts) const
-        {
-            uu_neighbors.clear();
-            std::fill(query_counts.begin(), query_counts.end(), 0);
-
-            for (ui w : solver.q_neighbors[u]) {
-                if (solver.in_Mq[w] || solver.is_excluded[u][w]) {
-                    continue;
-                }
-
-                uu_neighbors.push_back(w);
-                LabelID label = solver.query_graph->getVertexLabel(w);
-                if (label >= 0 && (ui)label < solver.label_count) {
-                    query_counts[(ui)label]++;
-                }
-            }
-        }
-
-        bool canSupportSomeUUNeighbor(ui data_vertex,
-            const vector<ui> &uu_neighbors) const
-        {
-            for (ui w : uu_neighbors) {
-                if (solver.candidates[w].contains(data_vertex) &&
-                    isCandidateAvailable(w, data_vertex)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        ui computeUUPairDeficit(ui u, ui v, const vector<ui> &uu_neighbors,
-            const vector<ui> &query_counts, const LowerBoundOptions &options,
-            vector<ui> &data_counts) const
-        {
-            (void)u;
-            std::fill(data_counts.begin(), data_counts.end(), 0);
-
-            ui deg = 0;
-            const ui *nbrs = solver.data_graph->getVertexNeighbors(v, deg);
-            for (ui i = 0; i < deg; ++i) {
-                ui t = nbrs[i];
-                if (t == v || solver.mapped_g[t] != -1) {
-                    continue;
-                }
-                if (options.restrict_data_neighbors_by_candidates &&
-                    !canSupportSomeUUNeighbor(t, uu_neighbors)) {
-                    continue;
-                }
-
-                LabelID label = solver.data_graph->getVertexLabel(t);
-                if (label >= 0 && (ui)label < solver.label_count) {
-                    data_counts[(ui)label]++;
-                }
-            }
-
-            ui deficit = 0;
-            for (ui label = 0; label < solver.label_count; ++label) {
-                if (query_counts[label] > data_counts[label]) {
-                    deficit += query_counts[label] - data_counts[label];
-                }
-            }
-            return deficit;
-        }
-
-        ui computeUULabelLowerBound(const vector<ui> &unmatched_vertices,
-            const LowerBoundOptions &options) const
-        {
-            vector<ui> uu_neighbors;
-            vector<ui> query_counts(solver.label_count, 0);
-            vector<ui> data_counts(solver.label_count, 0);
-            ui sum_def = 0;
-
-            for (ui u : unmatched_vertices) {
-                collectUUQueryCounts(u, uu_neighbors, query_counts);
-
-                ui best_deficit = boundInf();
-                for (ui v : solver.candidates[u]) {
-                    if (!isCandidateAvailable(u, v)) {
-                        continue;
-                    }
-
-                    ui deficit = computeUUPairDeficit(
-                        u, v, uu_neighbors, query_counts, options, data_counts);
-                    best_deficit = std::min(best_deficit, deficit);
-                }
-
-                if (best_deficit >= boundInf()) {
-                    return boundInf();
-                }
-
-                sum_def = addBound(sum_def, best_deficit);
-                if ((sum_def + 1) / 2 > solver.threshold) {
-                    return (sum_def + 1) / 2;
-                }
-            }
-
-            return (sum_def + 1) / 2;
-        }
-
-        bool hasSupportedUUCandidatePair(ui u, ui w) const
-        {
-            for (ui yu : solver.candidates[u]) {
-                if (!isCandidateAvailable(u, yu)) {
-                    continue;
-                }
-
-                ui deg = 0;
-                const ui *nbrs = solver.data_graph->getVertexNeighbors(yu, deg);
-                for (ui i = 0; i < deg; ++i) {
-                    ui yw = nbrs[i];
-                    if (yw == yu) {
-                        continue;
-                    }
-                    if (solver.candidates[w].contains(yw) &&
-                        isCandidateAvailable(w, yw)) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-
-        ui computeUUUnsupportedLowerBound(const vector<ui> &unmatched_vertices) const
-        {
-            (void)unmatched_vertices;
-            ui lb = 0;
-            for (ui u = 0; u < solver.qn; ++u) {
-                if (solver.in_Mq[u]) {
-                    continue;
-                }
-
-                for (ui w : solver.q_neighbors[u]) {
-                    if (u >= w || solver.in_Mq[w] || solver.is_excluded[u][w]) {
-                        continue;
-                    }
-
-                    if (!hasSupportedUUCandidatePair(u, w)) {
-                        lb++;
-                        if (lb > solver.threshold) {
-                            return lb;
-                        }
-                    }
-                }
-            }
-            return lb;
-        }
-        };
     // ========================================================================
 
     // =====================================================
@@ -2941,27 +1796,22 @@ private:
     // u_new: the most recently mapped query vertex (-1 means undefined)
     // X:     the set of excluded edges (u, ua)
     // =====================================================
-    void dfs(ui cost, int u_new, const FrontierState *parent_state,
-        const LowerBoundState *parent_lb_state)
+    void dfs(ui cost, int u_new, const FrontierState *parent_state)
     {
-        (void)parent_lb_state;
         assert(part_M.size() <= qn);
         assert(cost <= threshold);
 
         if (part_M.size() == qn) {
             stats.recursion_calls++;
+            stats.result_count++;
 #ifndef NDEBUG
             recordBranchOrderAnswerDebug();
-#endif
-#ifdef NDEBUG
-            stats.result_count++;
-#else
             results_ptr->push_back(part_M);
-            stats.result_count++;
 #endif
             return;
         }
 
+        // TODO
         if (active_frontier.empty()) return;
 
         stats.recursion_calls++;
@@ -2972,27 +1822,6 @@ private:
         const vector<ui> &U_frontier = current_state.component_frontier;
         assert(!U_frontier.empty());
         stats.frontier_time += t_frontier.elapsed();
-
-        const LowerBoundState *child_lb_state = nullptr;
-#if defined(LOWER_BOUND) && !defined(CDE_LB_LIGHTWEIGHT_SPOKE)
-        assert(threshold >= cost);
-        LowerBoundState current_lb_state;
-        LowerBoundState *current_lb_state_ptr = nullptr;
-#ifdef CDE_LB_COMPONENT_MWPM_CACHE
-        current_lb_state_ptr = &current_lb_state;
-        child_lb_state = current_lb_state_ptr;
-#endif
-        if (threshold - cost <= (ui)LOWER_BOUND_MISSING_GAP) {
-            Timer t_lb;
-            if (LowerBoundPruner(*this).shouldPrune(
-                cost, U_frontier, parent_lb_state, current_lb_state_ptr)) {
-                stats.lb_time += t_lb.elapsed();
-                stats.prun_calls++;
-                return;
-            }
-            stats.lb_time += t_lb.elapsed();
-        }
-#endif
 
         Timer t_branch;
         long long child_dfs_time = 0;
@@ -3056,10 +1885,6 @@ private:
 #ifndef NDEBUG
                     recordBranchOrderDebug(u);
 #endif
-                    updateResidualLabelCounts(query_graph, u, mapped_q,
-                        Lq_residual_counts, Lq_residual_degrees, false);
-                    updateResidualLabelCounts(data_graph, v, mapped_g,
-                        Lg_residual_counts, Lg_residual_degrees, false);
                     mapped_q[u] = (int)v;
                     mapped_g[v] = (int)u;
                     in_Mq[u] = 1;
@@ -3068,7 +1893,7 @@ private:
                     updateFrontier(u, true);
 
                     Timer t_child;
-                    dfs(current_cost + delta, (int)u, &current_state, child_lb_state);
+                    dfs(current_cost + delta, (int)u, &current_state);
                     child_dfs_time += t_child.elapsed();
 
                     updateFrontier(u, false);
@@ -3077,10 +1902,6 @@ private:
                     in_Mq[u] = 0;
                     mapped_g[v] = -1;
                     mapped_q[u] = -1;
-                    updateResidualLabelCounts(query_graph, u, mapped_q,
-                        Lq_residual_counts, Lq_residual_degrees, true);
-                    updateResidualLabelCounts(data_graph, v, mapped_g,
-                        Lg_residual_counts, Lg_residual_degrees, true);
                 }
 
                 // Exclude branch: keep this decision in the current frame, then
@@ -3103,7 +1924,7 @@ private:
 #endif
                 for (ui v : cand_v_list) {
                     if (!x_cand[u].contains(v)) {
-                        insertXCand(u, v);
+                        x_cand[u].insert(v);
                         local_x_cand.push_back({ u, v });
                     }
                 }
@@ -3121,8 +1942,8 @@ private:
                 ? branch_elapsed - excluded_time : 0;
         }
 
-        for (auto it = local_X.rbegin(); it != local_X.rend(); ++it) {
-            const pair<ui, ui> &e = *it;
+        // backtracking
+        for (auto &e : local_X) {
             is_excluded[e.first][e.second] = 0;
             is_excluded[e.second][e.first] = 0;
 
@@ -3133,12 +1954,12 @@ private:
             updateFrontierStatus(e.first);
         }
 
-        for (auto it = local_x_cand.rbegin(); it != local_x_cand.rend(); ++it) {
-            removeXCand(it->first, it->second);
+        for (auto &p : local_x_cand) {
+            x_cand[p.first].remove(p.second);
         }
     }
     // ========================================================================
-    };
+};
 
 // ============================================================
 // Top-level function: Approximate_CDE_EdgeIE

@@ -18,6 +18,7 @@
 #include <sys/time.h>
 #include <numeric>
 #include <chrono>
+#include <limits>
 #include "configuration/types.h"
 #include "configuration/config.h"
 
