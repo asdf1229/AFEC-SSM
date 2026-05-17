@@ -1,6 +1,7 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
+// --- filtering options ---
 // #define ENABLE_EDGE_LABEL
 #define ENABLE_ADVANCED_FILTERING
 #define ENABLE_SPOKE_FILTERING
@@ -11,6 +12,7 @@
 #define ENABLE_BRIDGE_FILTERING
 // #define ENABLE_FRONTIER_ORDERING
 
+// --- lower-bound options ---
 // #define LOWER_BOUND
 // Choose at most one LOWER_BOUND implementation.
 #define CDE_LB_LIGHTWEIGHT_SPOKE
@@ -30,6 +32,8 @@
 #ifndef LOWER_BOUND_MISSING_GAP
 #define LOWER_BOUND_MISSING_GAP 0
 #endif
-#define NDEBUG
+
+// --- other options ---
+// #define NDEBUG
 
 #endif //_CONFIG_H_

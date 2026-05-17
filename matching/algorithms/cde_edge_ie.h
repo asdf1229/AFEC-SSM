@@ -64,6 +64,7 @@ public:
         identifyQueryBridges();
         initQueryBridgeLabelCounts();
 #endif
+
         initGlobalLabelCounts(query_graph, Lq_counts, Lq_degrees);
         initGlobalLabelCounts(data_graph, Lg_counts, Lg_degrees);
         Lq_residual_counts = Lq_counts;
@@ -104,10 +105,8 @@ public:
 #ifndef NDEBUG
             recordBranchOrderDebug(root);
 #endif
-            updateResidualLabelCounts(query_graph, root, mapped_q,
-                Lq_residual_counts, Lq_residual_degrees, false);
-            updateResidualLabelCounts(data_graph, v0, mapped_g,
-                Lg_residual_counts, Lg_residual_degrees, false);
+            updateResidualLabelCounts(query_graph, root, mapped_q, Lq_residual_counts, Lq_residual_degrees, false);
+            updateResidualLabelCounts(data_graph, v0, mapped_g, Lg_residual_counts, Lg_residual_degrees, false);
             mapped_q[root] = (int)v0;
             mapped_g[v0] = (int)root;
             in_Mq[root] = 1;
@@ -123,10 +122,8 @@ public:
             mapped_g[v0] = -1;
             in_Mq[root] = 0;
             part_M.pop_back();
-            updateResidualLabelCounts(query_graph, root, mapped_q,
-                Lq_residual_counts, Lq_residual_degrees, true);
-            updateResidualLabelCounts(data_graph, v0, mapped_g,
-                Lg_residual_counts, Lg_residual_degrees, true);
+            updateResidualLabelCounts(query_graph, root, mapped_q, Lq_residual_counts, Lq_residual_degrees, true);
+            updateResidualLabelCounts(data_graph, v0, mapped_g, Lg_residual_counts, Lg_residual_degrees, true);
         }
 
         stats.dfs_time = t_search.elapsed();
@@ -193,12 +190,6 @@ public:
         printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
         printf("Search Time:         %.4lf ms\n", stats.dfs_time / 1000.0);
         printf("  - LowerBound Time: %.4lf ms\n", stats.lb_time / 1000.0);
-        printf("    - State:         %.4lf ms\n", stats.lb_state_time / 1000.0);
-        printf("    - S-F:           %.4lf ms\n", stats.lb_sf_time / 1000.0);
-        printf("    - U-U Label:     %.4lf ms\n", stats.lb_uu_label_time / 1000.0);
-        printf("    - U-U Unsup:     %.4lf ms\n", stats.lb_uu_unsupported_time / 1000.0);
-        printf("    - Light Spoke:   %.4lf ms\n", stats.lb_light_spoke_time / 1000.0);
-        printf("    - Other:         %.4lf ms\n", lb_other_time / 1000.0);
         printf("  - Frontier Time:   %.4lf ms\n", stats.frontier_time / 1000.0);
         printf("  - Branch Time:     %.4lf ms\n", stats.branch_time / 1000.0);
         printf("  - Search Other:    %.4lf ms\n", search_other_time / 1000.0);
@@ -625,20 +616,20 @@ private:
         }
     }
 
-    void dfsQueryBridges(ui u, ui parent, vector<int> &disc, vector<int> &low, int &timer)
+    void dfsQueryBridges(ui u, ui parent, vector<int> &dfn, vector<int> &low, int &tim)
     {
-        disc[u] = low[u] = ++timer;
+        dfn[u] = low[u] = ++tim;
 
         for (ui v : q_neighbors[u]) {
-            if (disc[v] == 0) {
-                dfsQueryBridges(v, u, disc, low, timer);
+            if (dfn[v] == 0) {
+                dfsQueryBridges(v, u, dfn, low, tim);
                 low[u] = std::min(low[u], low[v]);
-                if (low[v] > disc[u]) {
+                if (low[v] > dfn[u]) {
                     markQueryBridge(u, v);
                 }
             }
             else if (v != parent) {
-                low[u] = std::min(low[u], disc[v]);
+                low[u] = std::min(low[u], dfn[v]);
             }
         }
     }
@@ -648,13 +639,13 @@ private:
         q_bridge_matrix.assign(qn, vector<char>(qn, 0));
         q_bridge_edges.clear();
 
-        vector<int> disc(qn, 0);
+        vector<int> dfn(qn, 0);
         vector<int> low(qn, 0);
-        int timer = 0;
+        int tim = 0;
 
         for (ui u = 0; u < qn; ++u) {
-            if (disc[u] == 0) {
-                dfsQueryBridges(u, qn, disc, low, timer);
+            if (dfn[u] == 0) {
+                dfsQueryBridges(u, qn, dfn, low, tim);
             }
         }
     }
@@ -851,6 +842,7 @@ private:
         bool run()
         {
             Timer t;
+            // -- NLF Filtering --
             bool ok = filterNLF();
             solver.stats.filter_nlf_time += t.elapsed();
             if (!ok) return false;
@@ -860,7 +852,8 @@ private:
             solver.stats.filter_bridge_time += t.elapsed();
             if (!ok) return false;
 #endif
-#ifdef ENABLE_ADVANCED_FILTERING
+
+            // --- Spoke Filtering ---
 #ifdef ENABLE_SPOKE_FILTERING
             t.restart();
             ok = filterSpoke();
@@ -873,6 +866,8 @@ private:
             if (!ok) return false;
 #endif
 #endif
+
+            // --- One-Hop Filtering ---
 #ifdef ENABLE_ONEHOP_FILTERING
             t.restart();
             ok = filterOneHop();
@@ -883,7 +878,6 @@ private:
             ok = filterBridgeCandidates();
             solver.stats.filter_bridge_time += t.elapsed();
             if (!ok) return false;
-#endif
 #endif
 #endif
 
@@ -923,7 +917,7 @@ private:
 #endif
             }
             return diff;
-        }
+            }
 
         bool filterNLF()
         {
@@ -1381,7 +1375,7 @@ private:
             }
             fflush(stdout);
         }
-    };
+        };
 
     bool runCandidateFiltering()
     {
@@ -1727,7 +1721,7 @@ private:
             }
         }
 
-    };
+        };
 
     // ========================================================================
     // Lower Bound based Pruning
@@ -2575,10 +2569,10 @@ private:
                 if (residual_lb > residual_limit) {
                     return addBound(current_miss, residual_lb);
                 }
-            }
+                }
 
             return addBound(current_miss, residual_lb);
-        }
+            }
 
         ui computeLowerBound(ui current_miss, const LowerBoundOptions &options,
             const LowerBoundState *parent_cache, LowerBoundState *out_cache)
@@ -2937,7 +2931,7 @@ private:
             }
             return lb;
         }
-    };
+        };
     // ========================================================================
 
     // =====================================================
@@ -3003,8 +2997,8 @@ private:
         Timer t_branch;
         long long child_dfs_time = 0;
         long long local_lb_time = 0;
-        vector<pair<ui, ui>> local_X;
-        vector<pair<ui, ui>> local_x_cand;
+        vector<pair<ui, ui>> local_X;       // Records changes to is_excluded
+        vector<pair<ui, ui>> local_x_cand;  // Records changes to x_cand
         vector<ui> cand_v_list;
 #if defined(LOWER_BOUND) && defined(CDE_LB_LIGHTWEIGHT_SPOKE)
         LightweightSpokeLowerBound light_lb(*this);
@@ -3144,7 +3138,7 @@ private:
         }
     }
     // ========================================================================
-};
+    };
 
 // ============================================================
 // Top-level function: Approximate_CDE_EdgeIE

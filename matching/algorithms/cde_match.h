@@ -193,12 +193,6 @@ public:
         printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
         printf("Search Time:         %.4lf ms\n", stats.dfs_time / 1000.0);
         printf("  - LowerBound Time: %.4lf ms\n", stats.lb_time / 1000.0);
-        printf("    - State:         %.4lf ms\n", stats.lb_state_time / 1000.0);
-        printf("    - S-F:           %.4lf ms\n", stats.lb_sf_time / 1000.0);
-        printf("    - U-U Label:     %.4lf ms\n", stats.lb_uu_label_time / 1000.0);
-        printf("    - U-U Unsup:     %.4lf ms\n", stats.lb_uu_unsupported_time / 1000.0);
-        printf("    - Light Spoke:   %.4lf ms\n", stats.lb_light_spoke_time / 1000.0);
-        printf("    - Other:         %.4lf ms\n", lb_other_time / 1000.0);
         printf("  - Frontier Time:   %.4lf ms\n", stats.frontier_time / 1000.0);
         printf("  - Branch Time:     %.4lf ms\n", stats.branch_time / 1000.0);
         printf("  - Search Other:    %.4lf ms\n", search_other_time / 1000.0);
@@ -250,6 +244,14 @@ private:
     enum { kDebugBranchOrderDepth = 1 };
 #endif
 
+    struct ActiveEdge {
+        ui u = 0;       // unmatched endpoint
+        ui anchor = 0;  // matched endpoint
+        ui anchor_support = std::numeric_limits<ui>::max();
+        ui live_anchor_count = 0;
+        ui query_degree = 0;
+    };
+
     const Graph *query_graph;
     const Graph *data_graph;
     vector<vector<pair<ui, ui>>> *results_ptr;
@@ -300,14 +302,6 @@ private:
         bool best_anchor_support_ready = false;
         bool live_candidate_count_ready = false;
         bool query_degree_ready = false;
-    };
-
-    struct ActiveEdge {
-        ui u = 0;
-        ui anchor = 0;
-        ui anchor_support = std::numeric_limits<ui>::max();
-        ui live_anchor_count = 0;
-        ui query_degree = 0;
     };
 
     // Frontier state for the selected unmatched query component in the current DFS step.
