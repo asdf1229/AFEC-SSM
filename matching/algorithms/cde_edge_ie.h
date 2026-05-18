@@ -7,6 +7,24 @@
 #include "utility/mybitset.h"
 using namespace std;
 
+// Anchor-support scoring defaults to the current maintained-score path.
+// Define CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT to use the older on-demand path:
+// every score reads the current candidates and recomputes support.
+#if defined(CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT) && defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT)
+#error "Choose only one cde_edge_ie anchor-support mode."
+#endif
+#ifndef CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT
+#define CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
+#endif
+
+// In maintained mode, define ENABLE_EXCLUDED_EDGE_SUPPORT to make excluded-edge
+// decisions shrink maintained anchor-support scores. Leaving it undefined keeps
+// the cheaper support score that ignores excluded candidates.
+// In maintained mode, define ENABLE_MAPPED_VERTEX_SUPPORT to also remove
+// already-mapped data vertices from maintained anchor-support scores.
+// Recompute mode always filters both mapped data vertices and excluded
+// candidates because it computes from the current search state.
+
 // ============================================================================
 // MatchingSolver Implementation
 // ============================================================================
@@ -90,6 +108,9 @@ public:
 #ifndef NDEBUG
             recordBranchOrderDebug(root);
 #endif
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_MAPPED_VERTEX_SUPPORT)
+            adjustSupportForMappedDataVertex(v0, false);
+#endif
             mapped_q[root] = (int)v0;
             mapped_g[v0] = (int)root;
             part_M.push_back({ root, v0 });
@@ -99,9 +120,16 @@ public:
             dfs(0);
 
             part_M.pop_back();
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_MAPPED_VERTEX_SUPPORT)
+            mapped_q[root] = -1;
+            updateFrontier(root, false);
+            mapped_g[v0] = -1;
+            adjustSupportForMappedDataVertex(v0, true);
+#else
             mapped_g[v0] = -1;
             mapped_q[root] = -1;
             updateFrontier(root, false);
+#endif
         }
 
         stats.dfs_time = t_search.elapsed();
@@ -228,11 +256,13 @@ private:
         ui query_degree = 0;
     };
 
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_EXCLUDED_EDGE_SUPPORT)
     struct SupportDelta {
         ui u = 0;
         ui anchor = 0;
         ui amount = 0;
     };
+#endif
 
     struct EdgeScoreCache {
         vector<vector<ActiveEdge>> active_edges_by_vertex;
@@ -282,7 +312,9 @@ private:
     vector<pair<ui, ui>> part_M;
 
     vector<ui> anchor_count;
+#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
     vector<vector<ui>> support;
+#endif
     vector<int> frontier_pos;
     vector<ui> active_frontier;
 #ifndef NDEBUG
@@ -342,26 +374,38 @@ private:
             return 0;
         }
 
-        // Support is only an ordering score; mapped_g is filtered during expansion.
         ui count = 0;
         ui deg = 0;
         const ui *nbrs = data_graph->getVertexNeighbors((ui)mapped_q[anchor], deg);
         for (ui i = 0; i < deg; ++i) {
             ui v = nbrs[i];
-            if (candidates[u].contains(v) && !excluded_cands[u].contains(v)) count++;
+            if (!candidates[u].contains(v)) continue;
+#if defined(CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT) || defined(ENABLE_MAPPED_VERTEX_SUPPORT)
+            if (mapped_g[v] != -1) continue;
+#endif
+#if defined(CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT) || defined(ENABLE_EXCLUDED_EDGE_SUPPORT)
+            if (excluded_cands[u].contains(v)) continue;
+#endif
+            count++;
         }
         return count;
     }
 
     inline void clearFrontierEdgeSupport(ui u, ui anchor)
     {
+#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
         if (u < qn && anchor < qn) {
             support[u][anchor] = 0;
         }
+#else
+        (void)u;
+        (void)anchor;
+#endif
     }
 
     inline void refreshFrontierEdgeSupport(ui u, ui anchor)
     {
+#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
         if (u >= qn || anchor >= qn) {
             return;
         }
@@ -372,10 +416,15 @@ private:
         else {
             support[u][anchor] = 0;
         }
+#else
+        (void)u;
+        (void)anchor;
+#endif
     }
 
     void refreshFrontierVertexSupport(ui u)
     {
+#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
         if (u >= qn) {
             return;
         }
@@ -388,16 +437,23 @@ private:
         for (ui anchor : q_neighbors[u]) {
             refreshFrontierEdgeSupport(u, anchor);
         }
+#else
+        (void)u;
+#endif
     }
 
     void clearFrontierVertexSupport(ui u)
     {
+#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
         if (u < qn) {
             std::fill(support[u].begin(), support[u].end(), 0);
         }
+#else
+        (void)u;
+#endif
     }
 
-    // Update active_frontier and the maintained frontier-edge scores.
+    // Update active_frontier and, in maintained mode, frontier-edge scores.
     inline void updateFrontierStatus(ui u)
     {
         // Should u be in frontier?
@@ -473,6 +529,37 @@ private:
         updateFrontierStatus(u);
     }
 
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_MAPPED_VERTEX_SUPPORT)
+    void adjustSupportForMappedDataVertex(ui v, bool restore)
+    {
+        if (v >= gn) {
+            return;
+        }
+
+        for (ui u : active_frontier) {
+            if (u >= qn || mapped_q[u] != -1) continue;
+            if (!candidates[u].contains(v)) continue;
+#ifdef ENABLE_EXCLUDED_EDGE_SUPPORT
+            if (excluded_cands[u].contains(v)) continue;
+#endif
+
+            for (ui anchor : q_neighbors[u]) {
+                if (mapped_q[anchor] == -1 || excluded_edges[u][anchor]) continue;
+                if (!data_graph->hasEdge(v, (ui)mapped_q[anchor])) continue;
+
+                if (restore) {
+                    support[u][anchor]++;
+                }
+                else {
+                    assert(support[u][anchor] > 0);
+                    support[u][anchor]--;
+                }
+            }
+        }
+    }
+#endif
+
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_EXCLUDED_EDGE_SUPPORT)
     void decrementSupportForExcludedCandidate(ui u, ui excluded_anchor, ui v,
         vector<SupportDelta> &support_deltas)
     {
@@ -498,6 +585,7 @@ private:
             support[it->u][it->anchor] += it->amount;
         }
     }
+#endif
 
     void resetState()
     {
@@ -526,7 +614,9 @@ private:
 #endif
 
         anchor_count.assign(qn, 0);
+#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
         support.assign(qn, vector<ui>(qn, 0));
+#endif
         frontier_pos.assign(qn, -1);
         active_frontier.clear();
 #ifndef NDEBUG
@@ -754,11 +844,15 @@ private:
             return 0;
         }
 
+#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
         return support[u][anchor];
+#else
+        return computeEdgeSupport(u, anchor);
+#endif
     }
 
     // Active-edge scoring order:
-    // 1. Smaller maintained edge support for this frontier-anchor edge.
+    // 1. Smaller anchor support for this frontier-anchor edge.
     // 2. More live anchors.
     // 3. Higher query degree.
     // 4. Smaller id.
@@ -1701,7 +1795,7 @@ private:
         }
 
         // More live anchors, higher query degree, smaller vertex id.
-        // Edge support itself is maintained per frontier edge and used by collectTopActiveEdges.
+        // Edge support itself is scored per frontier edge in collectTopActiveEdges.
         bool isBetterFrontier(FrontierScore &lhs, FrontierScore &rhs) const
         {
             ui lhs_live_anchor_count = cachedLiveAnchorCount(lhs);
@@ -1921,7 +2015,9 @@ private:
         vector<ActiveEdge> top_edges;
         vector<pair<ui, ui>> local_excluded_edges;
         vector<pair<ui, ui>> local_excluded_cands;
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_EXCLUDED_EDGE_SUPPORT)
         vector<SupportDelta> local_support_deltas;
+#endif
         BranchSelector branch_selector;
 #ifdef CDE_LB_LIGHTWEIGHT_SPOKE
         LightweightSpokeLowerBound light_lb;
@@ -1954,7 +2050,9 @@ private:
         workspace.top_edges.reserve(budget_window);
         workspace.local_excluded_edges.reserve(budget_window);
         workspace.local_excluded_cands.reserve(excludedCandReserveSize());
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_EXCLUDED_EDGE_SUPPORT)
         workspace.local_support_deltas.reserve(excludedCandReserveSize());
+#endif
     }
 
     void prepareDfsWorkspaces()
@@ -1998,6 +2096,7 @@ private:
         }
 
         // TODO
+        assert(!active_frontier.empty());
         if (active_frontier.empty()) return;
 
         stats.recursion_calls++;
@@ -2016,10 +2115,14 @@ private:
         long long local_lb_time = 0;
         vector<pair<ui, ui>> &local_excluded_edges = workspace.local_excluded_edges;  // Records changes to excluded_edges
         vector<pair<ui, ui>> &local_excluded_cands = workspace.local_excluded_cands;  // Records changes to excluded_cands
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_EXCLUDED_EDGE_SUPPORT)
         vector<SupportDelta> &local_support_deltas = workspace.local_support_deltas;
+#endif
         local_excluded_edges.clear();
         local_excluded_cands.clear();
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_EXCLUDED_EDGE_SUPPORT)
         local_support_deltas.clear();
+#endif
         vector<ui> cand_v_list;
         cand_v_list.reserve(max_g_deg);
 
@@ -2067,6 +2170,9 @@ private:
                 recordBranchOrderDebug(u);
 #endif
 
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_MAPPED_VERTEX_SUPPORT)
+                adjustSupportForMappedDataVertex(v, false);
+#endif
                 mapped_q[u] = (int)v;
                 mapped_g[v] = (int)u;
                 part_M.push_back({ u, v });
@@ -2078,10 +2184,17 @@ private:
                 child_dfs_time += t_child.elapsed();
 
                 part_M.pop_back();
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_MAPPED_VERTEX_SUPPORT)
+                mapped_q[u] = -1;
+                updateFrontier(u, false);
+                mapped_g[v] = -1;
+                adjustSupportForMappedDataVertex(v, true);
+#else
                 mapped_g[v] = -1;
                 mapped_q[u] = -1;
 
                 updateFrontier(u, false);
+#endif
             }
 
             // Exclude branch: keep this decision in the current frame, then
@@ -2102,7 +2215,9 @@ private:
                 if (!excluded_cands[u].contains(v)) {
                     excluded_cands[u].insert(v);
                     local_excluded_cands.push_back({ u, v });
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_EXCLUDED_EDGE_SUPPORT)
                     decrementSupportForExcludedCandidate(u, ua, v, local_support_deltas);
+#endif
                 }
             }
         }
@@ -2119,7 +2234,9 @@ private:
             excluded_cands[p.first].remove(p.second);
         }
 
+#if defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT) && defined(ENABLE_EXCLUDED_EDGE_SUPPORT)
         restoreSupportDeltas(local_support_deltas);
+#endif
 
         for (auto it = local_excluded_edges.rbegin(); it != local_excluded_edges.rend(); ++it) {
             const auto &e = *it;

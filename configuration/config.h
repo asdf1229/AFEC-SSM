@@ -16,4 +16,11 @@
 // --- other options ---
 // #define NDEBUG
 
+// --- cde_edge_ie anchor-support options ---
+// Default: dynamically maintain anchor-support. Define this to recompute
+// anchor-support from the current search state every time it is scored.
+// #define CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT
+#define ENABLE_EXCLUDED_EDGE_SUPPORT
+// #define ENABLE_MAPPED_VERTEX_SUPPORT
+
 #endif //_CONFIG_H_
