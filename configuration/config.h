@@ -14,6 +14,6 @@
 #define CDE_LB_LIGHTWEIGHT_SPOKE
 
 // --- other options ---
-#define NDEBUG
+// #define NDEBUG
 
 #endif //_CONFIG_H_
