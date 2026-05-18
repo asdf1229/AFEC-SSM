@@ -141,11 +141,9 @@ public:
 
     void printStats() const
     {
-#ifndef NDEBUG
         auto pct = [](long long part, long long whole) -> double {
             return whole > 0 ? (double)part / whole * 100.0 : 0.0;
             };
-#endif
 
 #if defined(CDE_LB_LIGHTWEIGHT_SPOKE) && !defined(NDEBUG)
         long long lb_accounted_time = stats.lb_light_spoke_time;
@@ -162,16 +160,16 @@ public:
         printf("\n--- CDE-Edge-IE Time Analysis ---\n");
 #ifdef NDEBUG
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
-        printf("Init Time:           %.4lf ms\n", stats.init_time / 1000.0);
+        printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
         printf("  - Filter Time:     %.4lf ms\n", stats.filter_time / 1000.0);
         printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
-        printf("Search Time:         %.4lf ms\n", stats.dfs_time / 1000.0);
+        printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, pct(stats.dfs_time, stats.total_time));
 #ifdef CDE_LB_LIGHTWEIGHT_SPOKE
-        printf("  - LowerBound Time: %.4lf ms\n", stats.lb_time / 1000.0);
+        printf("  - LowerBound Time: %.4lf ms (%.2f%% of Search)\n", stats.lb_time / 1000.0, pct(stats.lb_time, stats.dfs_time));
 #endif
-        printf("  - Frontier Time:   %.4lf ms\n", stats.frontier_time / 1000.0);
-        printf("  - Branch Time:     %.4lf ms\n", stats.branch_time / 1000.0);
-        printf("  - Search Other:    %.4lf ms\n", search_other_time / 1000.0);
+        printf("  - Frontier Time:   %.4lf ms (%.2f%% of Search)\n", stats.frontier_time / 1000.0, pct(stats.frontier_time, stats.dfs_time));
+        printf("  - Branch Time:     %.4lf ms (%.2f%% of Search)\n", stats.branch_time / 1000.0, pct(stats.branch_time, stats.dfs_time));
+        printf("  - Search Other:    %.4lf ms (%.2f%% of Search)\n", search_other_time / 1000.0, pct(search_other_time, stats.dfs_time));
 #else
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
         printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
@@ -215,7 +213,7 @@ public:
 #endif
         printf("-----------------------------------------------------------\n");
         fflush(stdout);
-    }
+            }
 
 private:
 #ifndef NDEBUG
@@ -964,9 +962,9 @@ private:
 #else
                 if (solver.Lq_counts[u][i] > solver.Lg_counts[v][i]) {
                     diff += (solver.Lq_counts[u][i] - solver.Lg_counts[v][i]);
-                }
-#endif
             }
+#endif
+        }
             return diff;
         }
 
@@ -1050,7 +1048,7 @@ private:
             }
 #endif
             return solver.query_index.q_degree[u] <= solver.threshold;
-        }
+            }
 
         bool dfsMatchSpoke(ui left_idx, const vector<vector<ui>> &adj)
         {
@@ -1136,8 +1134,8 @@ private:
                     if (solver.candidates[u1].contains(v1)) {
                         spoke_matrix[i].push_back(j);
                     }
-                }
             }
+        }
 
 #ifdef ENABLE_BRIDGE_FILTERING
             ui missing_non_bridge = 0;
@@ -1149,7 +1147,7 @@ private:
             ui match_size = computeMaxMatchSpoke(spoke_matrix, deg_u, deg_v);
             return deg_u - match_size;
 #endif
-        }
+            }
 
         bool filterSpoke()
         {
@@ -1891,8 +1889,8 @@ private:
 
             return left_size - match_size;
 #endif
-        }
-    };
+                }
+            };
 #endif
 
     struct DfsWorkspace {
@@ -1909,7 +1907,8 @@ private:
 #ifdef CDE_LB_LIGHTWEIGHT_SPOKE
             , light_lb(solver)
 #endif
-        {}
+        {
+        }
     };
 
     vector<DfsWorkspace> workspace_by_depth;
@@ -2080,9 +2079,9 @@ private:
                         excluded_cands[u].insert(v);
                         local_excluded_cands.push_back({ u, v });
                     }
-                }
             }
         }
+    }
 
         {
             long long branch_elapsed = t_branch.elapsed();
@@ -2108,9 +2107,9 @@ private:
         for (auto &p : local_excluded_cands) {
             excluded_cands[p.first].remove(p.second);
         }
-    }
+        }
     // ========================================================================
-};
+    };
 
 // ============================================================
 // Top-level function: Approximate_CDE_EdgeIE
