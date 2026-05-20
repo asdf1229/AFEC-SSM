@@ -256,6 +256,40 @@ namespace {
     }
 #endif
 
+    bool is_connected_graph(const Graph *graph)
+    {
+        ui n = graph->getVerticesCount();
+        if (n == 0) return false;
+        if (n == 1) return true;
+
+        vector<bool> visited(n, false);
+        queue<ui> q;
+
+        q.push(0);
+        visited[0] = true;
+
+        ui visited_count = 0;
+
+        while (!q.empty()) {
+            ui u = q.front();
+            q.pop();
+            visited_count++;
+
+            ui deg;
+            const ui *nbrs = graph->getVertexNeighbors(u, deg);
+
+            for (ui i = 0; i < deg; ++i) {
+                ui v = nbrs[i];
+                if (!visited[v]) {
+                    visited[v] = true;
+                    q.push(v);
+                }
+            }
+        }
+
+        return visited_count == n;
+    }
+
     double to_ms(long long us)
     {
         return us / 1000.0;
@@ -327,6 +361,12 @@ namespace ssm_ged {
 
         t.restart();
         load_graph(query_graph_file, query_graph, vM, eM);
+        if (!is_connected_graph(query_graph)) {
+            printf("!!! Query graph is disconnected! Exit !!!\n");
+            delete query_graph;
+            delete data_graph;
+            return 1;
+        }
         load_graph(data_graph_file, data_graph, vM, eM);
 
         assert(query_graph->getEdgesCount() % 2 == 0);

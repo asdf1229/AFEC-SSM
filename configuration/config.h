@@ -7,8 +7,10 @@
 #ifndef ONEHOP_FILTER_MISSING_GAP
 #define ONEHOP_FILTER_MISSING_GAP 2
 #endif
-#define ENABLE_BRIDGE_FILTERING
-// #define ENABLE_FRONTIER_ORDERING
+
+#if defined(ENABLE_ONEHOP_FILTERING) && !defined(ENABLE_SPOKE_FILTERING)
+#error "ENABLE_ONEHOP_FILTERING requires ENABLE_SPOKE_FILTERING because OneHop consumes spoke-stage records."
+#endif
 
 // --- cde_edge_ie lower-bound options ---
 #define CDE_LB_LIGHTWEIGHT_SPOKE
