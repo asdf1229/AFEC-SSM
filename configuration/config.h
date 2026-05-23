@@ -16,13 +16,12 @@
 #define CDE_LB_LIGHTWEIGHT_SPOKE
 
 // --- other options ---
-// #define NDEBUG
+#define NDEBUG
 
 // --- cde_edge_ie anchor-support options ---
-// Default: dynamically maintain anchor-support. Define this to recompute
-// anchor-support from the current search state every time it is scored.
-// #define CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT
-#define ENABLE_EXCLUDED_EDGE_SUPPORT
-// #define ENABLE_MAPPED_VERTEX_SUPPORT
+// Recompute anchor-support from the current search state when it is scored.
+// This avoids expensive support maintenance in updateFrontier on high-result cases.
+#define CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT
+// #define ENABLE_EXCLUDED_EDGE_SUPPORT
 
 #endif //_CONFIG_H_
