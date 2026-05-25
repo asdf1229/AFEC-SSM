@@ -16,7 +16,7 @@
 #define CDE_LB_LIGHTWEIGHT_SPOKE
 
 // --- other options ---
-#define NDEBUG
+// #define NDEBUG
 
 // --- cde_edge_ie anchor-support options ---
 // Recompute anchor-support from the current search state when it is scored.

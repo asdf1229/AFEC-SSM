@@ -1292,8 +1292,12 @@ private:
 
         bool restrictTopEdgesToCoveredComponent(vector<ActiveEdge> &top_edges,
             EdgeScoreCache &edge_score_cache, vector<ui> &component_frontier,
-            vector<ActiveEdge> &component_edges) const
+            vector<ActiveEdge> &component_edges, vector<ActiveEdge> &best_component_edges,
+            size_t &best_support_sum, bool &has_zero_support_component) const
         {
+            best_component_edges.clear();
+            best_support_sum = std::numeric_limits<size_t>::max();
+            has_zero_support_component = false;
             if (top_edges.empty()) {
                 return false;
             }
@@ -1309,6 +1313,15 @@ private:
                     continue;
                 }
 
+                size_t support_sum = 0;
+                for (const ActiveEdge &component_edge : component_edges) {
+                    support_sum += component_edge.anchor_support;
+                }
+                if (support_sum == 0) {
+                    has_zero_support_component = true;
+                    return false;
+                }
+
                 bool covered = true;
                 for (const ActiveEdge &component_edge : component_edges) {
                     if (!containsActiveEdge(top_edges, component_edge)) {
@@ -1318,12 +1331,19 @@ private:
                 }
 
                 if (covered) {
-                    top_edges = component_edges;
-                    return true;
+                    if (best_component_edges.empty() || support_sum < best_support_sum) {
+                        best_component_edges = component_edges;
+                        best_support_sum = support_sum;
+                    }
                 }
             }
 
-            return false;
+            if (best_component_edges.empty()) {
+                return false;
+            }
+
+            top_edges = best_component_edges;
+            return true;
         }
 
     private:
@@ -1810,6 +1830,7 @@ private:
     struct DfsBuffer {
         vector<ActiveEdge> top_edges;
         vector<ActiveEdge> component_edges;
+        vector<ActiveEdge> best_component_edges;
         vector<ui> candidate_vertices;
         vector<ui> candidate_anchor_counts;
         vector<ui> component_frontier;
@@ -1830,6 +1851,7 @@ private:
         {
             top_edges.reserve((size_t)threshold + 1);
             component_edges.reserve((size_t)threshold + 1);
+            best_component_edges.reserve((size_t)threshold + 1);
             candidate_vertices.reserve(max_g_deg);
             candidate_anchor_counts.reserve(max_g_deg);
             local_excluded_edges.reserve((size_t)threshold + 1);
@@ -1846,6 +1868,7 @@ private:
                 edge_score_cache.active_edges_cached.end(), 0);
             component_frontier.clear();
             component_edges.clear();
+            best_component_edges.clear();
             local_excluded_edges.clear();
             local_excluded_cands.clear();
         }
@@ -1939,6 +1962,9 @@ private:
         vector<ui> &candidate_anchor_counts = buf.candidate_anchor_counts;
         vector<ActiveEdge> &top_edges = buf.top_edges;
         ui current_cost = cost;
+        size_t selected_component_support_sum = std::numeric_limits<size_t>::max();
+        bool selected_covered_component = false;
+        bool has_zero_support_component = false;
 
         Timer t_frontier;
         ui max_branch_edges = threshold - current_cost + 1;
@@ -1956,17 +1982,31 @@ private:
 #endif
         }
 
+        if (top_edges.back().anchor_support == 0) {
+            stats.frontier_time += t_frontier.elapsed();
+            stats.prun_calls++;
+            return;
+        }
+
         {
 #ifndef NDEBUG
             Timer t_component;
 #endif
-            buf.branch_selector.restrictTopEdgesToCoveredComponent(top_edges,
-                buf.edge_score_cache, buf.component_frontier, buf.component_edges);
+            selected_covered_component = buf.branch_selector.restrictTopEdgesToCoveredComponent(top_edges,
+                buf.edge_score_cache, buf.component_frontier, buf.component_edges,
+                buf.best_component_edges, selected_component_support_sum,
+                has_zero_support_component);
 #ifndef NDEBUG
             stats.frontier_component_time += t_component.elapsed();
 #endif
         }
         stats.frontier_time += t_frontier.elapsed();
+
+        if (has_zero_support_component ||
+            (selected_covered_component && selected_component_support_sum == 0)) {
+            stats.prun_calls++;
+            return;
+        }
 
 #ifndef NDEBUG
         branch_timing_depth++;
@@ -1975,8 +2015,38 @@ private:
         long long child_dfs_time = 0;
         long long local_lb_time = 0;
 
+        ui first_branch_edge = 0;
+        bool pruned_by_forced_zero = false;
+        for (; first_branch_edge < top_edges.size(); ++first_branch_edge) {
+            const ActiveEdge &edge = top_edges[first_branch_edge];
+            if (edge.anchor_support != 0) break;
 
-        for (const ActiveEdge &edge : top_edges) {
+            ui u = edge.u;
+            ui ua = edge.anchor;
+            assert(u < qn && ua < qn);
+            assert(mapped_q[ua] != -1 && mapped_q[u] == -1);
+            assert(!excluded_edges[u][ua] && frontier_pos[u] != -1);
+            assert(q_matrix[u][ua]);
+
+#ifndef NDEBUG
+            Timer t_exclude_update;
+#endif
+            current_cost++;
+            excludeFrontierEdge(u, ua);
+            buf.recordExcludedEdge(u, ua);
+#ifndef NDEBUG
+            stats.exclude_update_time += t_exclude_update.elapsed();
+#endif
+
+            if (current_cost > threshold) {
+                stats.prun_calls++;
+                pruned_by_forced_zero = true;
+                break;
+            }
+        }
+
+        for (ui edge_idx = first_branch_edge; !pruned_by_forced_zero && edge_idx < top_edges.size(); ++edge_idx) {
+            const ActiveEdge &edge = top_edges[edge_idx];
             if (current_cost > threshold) break;
 
             ui u = edge.u;
