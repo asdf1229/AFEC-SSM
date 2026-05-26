@@ -7,14 +7,20 @@
 #include "utility/mybitset.h"
 using namespace std;
 
-// Anchor-support scoring defaults to the current maintained-score path.
-// Define CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT to use the older on-demand path:
+// Anchor-support scoring defaults to the cached-score path.
+// Define CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT to use the on-demand path:
 // every score reads the current candidates and recomputes support.
-#if defined(CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT) && defined(CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT)
+#if defined(CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT) && defined(CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT)
 #error "Choose only one cde_edge_ie anchor-support mode."
 #endif
-#ifndef CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT
-#define CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
+#if !defined(CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT) && !defined(CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT)
+#define CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
+#endif
+
+// Only run the optional search-time lower bound when the current branch cost is
+// close enough to the threshold. A value of 0 means remaining budget == 0.
+#ifndef CDE_EDGE_IE_LB_THRESHOLD_GAP
+#define CDE_EDGE_IE_LB_THRESHOLD_GAP 0
 #endif
 
 // ============================================================================
@@ -247,6 +253,15 @@ private:
         vector<char> active_edges_cached;
     };
 
+#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
+    struct SupportSnapshot {
+        ui u = 0;
+        ui anchor = 0;
+        ui value = 0;
+        char dirty = 0;
+    };
+#endif
+
     const Graph *query_graph;
     const Graph *data_graph;
     vector<vector<pair<ui, ui>>> *results_ptr;
@@ -268,8 +283,10 @@ private:
     vector<pair<ui, ui>> part_M;
 
     vector<ui> anchor_count;
-#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
+#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
     vector<vector<ui>> support;
+    vector<vector<char>> support_dirty;
+    vector<SupportSnapshot> *active_support_snapshots = nullptr;
 #endif
     vector<int> frontier_pos;
     vector<ui> active_frontier;
@@ -306,8 +323,10 @@ private:
         q_neighbor_is_bridge.clear();
 
         anchor_count.assign(qn, 0);
-#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
+#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
         support.assign(qn, vector<ui>(qn, 0));
+        support_dirty.assign(qn, vector<char>(qn, 1));
+        active_support_snapshots = nullptr;
 #endif
         frontier_pos.assign(qn, -1);
         active_frontier.clear();
@@ -1360,11 +1379,35 @@ private:
 
         ui countEdgeSupport(ui u, ui anchor) const
         {
-            if (u >= solver.qn || anchor >= solver.qn || solver.mapped_q[anchor] == -1) {
+            if (u >= solver.qn || anchor >= solver.qn ||
+                solver.mapped_q[anchor] == -1 || solver.excluded_edges[u][anchor]) {
                 return 0;
             }
 
-#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
+#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
+            if (solver.support_dirty[u][anchor]) {
+#ifndef NDEBUG
+                Timer t_score;
+#endif
+                solver.recordSupportSnapshot(u, anchor);
+                solver.support[u][anchor] = solver.calEdgeSupport(u, anchor, [](ui) {});
+                solver.support_dirty[u][anchor] = 0;
+#ifndef NDEBUG
+                long long elapsed = t_score.elapsed();
+                solver.stats.frontier_score_anchor_support_time += elapsed;
+                solver.stats.frontier_score_time += elapsed;
+#endif
+            }
+#ifndef NDEBUG
+            else {
+                Timer t_score;
+                ui exact_count = solver.calEdgeSupport(u, anchor, [](ui) {});
+                long long elapsed = t_score.elapsed();
+                solver.stats.frontier_score_anchor_support_time += elapsed;
+                solver.stats.frontier_score_time += elapsed;
+                assert(solver.support[u][anchor] >= exact_count);
+            }
+#endif
             return solver.support[u][anchor];
 #else
 #ifndef NDEBUG
@@ -1721,25 +1764,39 @@ private:
         return count;
     }
 
-#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
-    // refresh the support for edge (u, anchor) when u is in frontier and anchor is matched.
-    inline void updateSupport(ui u, ui anchor)
+#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
+    inline void recordSupportSnapshot(ui u, ui anchor)
     {
-#ifndef NDEBUG
-        Timer t_support;
-#endif
-        if (frontier_pos[u] != -1 && mapped_q[anchor] != -1 && !excluded_edges[u][anchor]) {
-            support[u][anchor] = calEdgeSupport(u, anchor, [](ui) {});
+        if (active_support_snapshots == nullptr) {
+            return;
         }
-        else {
-            support[u][anchor] = 0;
+        SupportSnapshot snapshot;
+        snapshot.u = u;
+        snapshot.anchor = anchor;
+        snapshot.value = support[u][anchor];
+        snapshot.dirty = support_dirty[u][anchor];
+        active_support_snapshots->push_back(snapshot);
+    }
+
+    inline void markSupportDirty(ui u, ui anchor)
+    {
+        if (u >= qn || anchor >= qn || support_dirty[u][anchor]) {
+            return;
         }
-#ifndef NDEBUG
-        long long elapsed = t_support.elapsed();
-        if (branch_timing_depth > 0) {
-            stats.support_update_time += elapsed;
+        recordSupportSnapshot(u, anchor);
+        support_dirty[u][anchor] = 1;
+    }
+
+    inline void markLiveAnchorSupportDirty(ui u)
+    {
+        if (u >= qn || mapped_q[u] != -1 || frontier_pos[u] == -1) {
+            return;
         }
-#endif
+        for (ui anchor : q_neighbors[u]) {
+            if (mapped_q[anchor] != -1 && !excluded_edges[u][anchor]) {
+                markSupportDirty(u, anchor);
+            }
+        }
     }
 #endif
 
@@ -1753,9 +1810,6 @@ private:
             // add u to frontier
             frontier_pos[u] = active_frontier.size();
             active_frontier.push_back(u);
-#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
-            for(ui anchor : q_neighbors[u]) updateSupport(u, anchor);
-#endif
         }
         else if (!should_be && is_in) {
             // remove u from frontier
@@ -1778,16 +1832,13 @@ private:
             if(excluded_edges[u][u1]) continue;
 
             if (matched) {
-#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
-                bool was_frontier = (frontier_pos[u1] != -1);
-#endif
-
                 anchor_count[u1]++;
                 updateFrontierStatus(u1);
 
-#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
-                // if u1 was in frontier, update support[u1][u]
-                if (was_frontier) updateSupport(u1, u);
+#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
+                if (mapped_q[u1] == -1 && frontier_pos[u1] != -1) {
+                    markSupportDirty(u1, u);
+                }
 #endif
             }
             else {
@@ -1807,6 +1858,9 @@ private:
         assert(anchor_count[u] > 0);
         anchor_count[u]--;
         if(anchor_count[u] == 0) updateFrontierStatus(u);
+#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
+        markLiveAnchorSupportDirty(u);
+#endif
     }
 
     // restore (u, anchor), update anchor_count[u], active_frontier and anchor_support
@@ -1816,12 +1870,33 @@ private:
         excluded_edges[anchor][u] = 0;
         anchor_count[u]++;
         if(anchor_count[u] == 1) updateFrontierStatus(u);
-        else {
-#ifdef CDE_EDGE_IE_MAINTAIN_ANCHOR_SUPPORT
-            updateSupport(u, anchor);
-#endif
-        }
     }
+
+#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
+    struct SupportUndoScope {
+        MatchingSolver &solver;
+        vector<SupportSnapshot> *previous_snapshots;
+        vector<SupportSnapshot> &snapshots;
+
+        SupportUndoScope(MatchingSolver &solver, vector<SupportSnapshot> &snapshots)
+            : solver(solver),
+            previous_snapshots(solver.active_support_snapshots),
+            snapshots(snapshots)
+        {
+            solver.active_support_snapshots = &snapshots;
+        }
+
+        ~SupportUndoScope()
+        {
+            for (auto it = snapshots.rbegin(); it != snapshots.rend(); ++it) {
+                solver.support[it->u][it->anchor] = it->value;
+                solver.support_dirty[it->u][it->anchor] = it->dirty;
+            }
+            snapshots.clear();
+            solver.active_support_snapshots = previous_snapshots;
+        }
+    };
+#endif
     // ========================================================================
 
     // ========================================================================
@@ -1836,6 +1911,9 @@ private:
         vector<ui> component_frontier;
         EdgeScoreCache edge_score_cache;
         BranchSelector branch_selector;
+#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
+        vector<SupportSnapshot> local_support_snapshots;
+#endif
 #ifdef CDE_LB_LIGHTWEIGHT_SPOKE
         LightweightSpokeLowerBound light_lb;
 #endif
@@ -1871,6 +1949,9 @@ private:
             best_component_edges.clear();
             local_excluded_edges.clear();
             local_excluded_cands.clear();
+#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
+            local_support_snapshots.clear();
+#endif
         }
 
         void recordExcludedEdge(ui u, ui anchor)
@@ -1958,6 +2039,9 @@ private:
 
         DfsBuffer &buf = dfsBufferForDepth(part_M.size());
         buf.clearLocal();
+#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
+        SupportUndoScope support_undo_scope(*this, buf.local_support_snapshots);
+#endif
         vector<ui> &candidate_vertices = buf.candidate_vertices;
         vector<ui> &candidate_anchor_counts = buf.candidate_anchor_counts;
         vector<ActiveEdge> &top_edges = buf.top_edges;
@@ -2089,10 +2173,11 @@ private:
             for (ui i = 0; i < candidate_vertices.size(); ++i) {
                 ui v = candidate_vertices[i];
                 ui delta = anchor_num - candidate_anchor_counts[i];
-                if (current_cost + delta > threshold) continue;
+                ui next_cost = current_cost + delta;
+                if (next_cost > threshold) continue;
 
 #ifdef CDE_LB_LIGHTWEIGHT_SPOKE
-                {
+                if (threshold - next_cost <= (ui)CDE_EDGE_IE_LB_THRESHOLD_GAP) {
                     Timer t_lb;
                     ui light_spoke_lb = buf.light_lb.computeLightSpokeLB(u, v);
                     long long elapsed = t_lb.elapsed();
@@ -2101,7 +2186,7 @@ private:
                     stats.lb_light_spoke_time += elapsed;
 #endif
                     local_lb_time += elapsed;
-                    if (light_spoke_lb > threshold - (current_cost + delta)) {
+                    if (light_spoke_lb > threshold - next_cost) {
                         stats.prun_calls++;
                         continue;
                     }
@@ -2125,7 +2210,7 @@ private:
 #endif
 
                 Timer t_child;
-                dfs(current_cost + delta);
+                dfs(next_cost);
                 child_dfs_time += t_child.elapsed();
 
                 part_M.pop_back();

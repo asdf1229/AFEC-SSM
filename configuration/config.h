@@ -13,14 +13,19 @@
 #endif
 
 // --- cde_edge_ie lower-bound options ---
-#define CDE_LB_LIGHTWEIGHT_SPOKE
+// Disabled by default: current experiments show the search-time lower bound
+// costs more than it prunes.
+// #define CDE_LB_LIGHTWEIGHT_SPOKE
 
 // --- other options ---
-// #define NDEBUG
+#define NDEBUG
 
 // --- cde_edge_ie anchor-support options ---
+// Cached anchor-support is the default. It reuses support across child states
+// and only recomputes entries marked dirty by search-state changes.
+// #define CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
 // Recompute anchor-support from the current search state when it is scored.
-// This avoids expensive support maintenance in updateFrontier on high-result cases.
+// This is the exact baseline for comparing cache behavior.
 #define CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT
 // #define ENABLE_EXCLUDED_EDGE_SUPPORT
 
