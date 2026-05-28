@@ -3,9 +3,12 @@
 
 // --- cde_edge_ie filtering options ---
 #define ENABLE_SPOKE_FILTERING
-#define ENABLE_ONEHOP_FILTERING
+// #define ENABLE_ONEHOP_FILTERING
 #ifndef ONEHOP_FILTER_MISSING_GAP
 #define ONEHOP_FILTER_MISSING_GAP 2
+#endif
+#ifndef ONEHOP_FILTER_MAX_QDEG
+#define ONEHOP_FILTER_MAX_QDEG 8
 #endif
 
 #if defined(ENABLE_ONEHOP_FILTERING) && !defined(ENABLE_SPOKE_FILTERING)
@@ -23,10 +26,10 @@
 // --- cde_edge_ie anchor-support options ---
 // Cached anchor-support is the default. It reuses support across child states
 // and only recomputes entries marked dirty by search-state changes.
-// #define CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
+#define CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
 // Recompute anchor-support from the current search state when it is scored.
 // This is the exact baseline for comparing cache behavior.
-#define CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT
+// #define CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT
 // #define ENABLE_EXCLUDED_EDGE_SUPPORT
 
 #endif //_CONFIG_H_

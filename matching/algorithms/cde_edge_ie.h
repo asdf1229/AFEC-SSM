@@ -699,43 +699,37 @@ private:
             Lq_bridge_label_counts.assign(solver.qn, vector<BridgeLabelCount>());
             Lq_bridge_degrees.assign(solver.qn, 0);
             Lq_non_bridge_degrees.assign(solver.qn, 0);
+            vector<ui> bridge_counts(solver.label_count, 0);
+            vector<ui> non_bridge_counts(solver.label_count, 0);
 
             for (ui u = 0; u < solver.qn; ++u) {
-                vector<pair<LabelID, char>> labels;
-                labels.reserve(solver.q_degree[u]);
+                Lq_bridge_label_counts[u].reserve(std::min(solver.q_degree[u], solver.label_count));
 
                 for (ui i = 0; i < solver.q_degree[u]; ++i) {
                     ui u1 = solver.q_neighbors[u][i];
                     LabelID label = solver.query_graph->getVertexLabel(u1);
                     assert(label >= 0 && (ui)label < solver.label_count);
+                    ui label_idx = (ui)label;
 
                     if (solver.q_neighbor_is_bridge[u][i]) {
                         Lq_bridge_degrees[u]++;
-                        labels.push_back({ label, 1 });
+                        bridge_counts[label_idx]++;
                     }
                     else {
                         Lq_non_bridge_degrees[u]++;
-                        labels.push_back({ label, 0 });
+                        non_bridge_counts[label_idx]++;
                     }
                 }
 
-                std::sort(labels.begin(), labels.end(),
-                    [](const pair<LabelID, char> &lhs, const pair<LabelID, char> &rhs) {
-                        return lhs.first < rhs.first;
-                    });
-
-                for (const auto &entry : labels) {
-                    if (Lq_bridge_label_counts[u].empty() ||
-                        Lq_bridge_label_counts[u].back().label != entry.first) {
-                        Lq_bridge_label_counts[u].push_back({ entry.first, 0, 0 });
-                    }
-
-                    BridgeLabelCount &count = Lq_bridge_label_counts[u].back();
-                    if (entry.second) {
-                        count.bridge_count++;
-                    }
-                    else {
-                        count.non_bridge_count++;
+                for (ui label = 0; label < solver.label_count; ++label) {
+                    ui bridge_count = bridge_counts[label];
+                    ui non_bridge_count = non_bridge_counts[label];
+                    if (bridge_count != 0 || non_bridge_count != 0) {
+                        Lq_bridge_label_counts[u].push_back({
+                            (LabelID)label, bridge_count, non_bridge_count
+                        });
+                        bridge_counts[label] = 0;
+                        non_bridge_counts[label] = 0;
                     }
                 }
             }
@@ -745,27 +739,25 @@ private:
         {
             Lg_counts.assign(solver.gn, vector<LabelCount>());
             Lg_degrees.assign(solver.gn, 0);
+            vector<ui> label_counts(solver.label_count, 0);
 
             for (ui u = 0; u < solver.gn; ++u) {
                 ui deg = 0;
                 const ui *neighbors = solver.data_graph->getVertexNeighbors(u, deg);
                 Lg_degrees[u] = deg;
-                vector<LabelID> labels;
-                labels.reserve(deg);
+                Lg_counts[u].reserve(std::min(deg, solver.label_count));
 
                 for (ui i = 0; i < deg; ++i) {
                     LabelID label = solver.data_graph->getVertexLabel(neighbors[i]);
                     assert(label >= 0 && (ui)label < solver.label_count);
-                    labels.push_back(label);
+                    label_counts[(ui)label]++;
                 }
 
-                std::sort(labels.begin(), labels.end());
-                for (LabelID label : labels) {
-                    if (Lg_counts[u].empty() || Lg_counts[u].back().label != label) {
-                        Lg_counts[u].push_back({ label, 1 });
-                    }
-                    else {
-                        Lg_counts[u].back().count++;
+                for (ui label = 0; label < solver.label_count; ++label) {
+                    ui count = label_counts[label];
+                    if (count != 0) {
+                        Lg_counts[u].push_back({ (LabelID)label, count });
+                        label_counts[label] = 0;
                     }
                 }
             }
@@ -1065,8 +1057,8 @@ private:
         }
 
         // DFS for one-hop matching
-        // Branch 1: skip u1, adding one missing spoke edge
-        // Branch 2: match u1 to v1, adding newly missing inner edges
+        // Branch 1: match u1 to v1, adding newly missing inner edges
+        // Branch 2: skip u1, adding one missing spoke edge
         bool dfsOneHop(ui pos, vector<int> &state, ui cost,
             const vector<ui> &ord, const vector<ui> &u_neighbors,
             const vector<vector<ui>> &cand, const vector<char> &spoke_bridge)
@@ -1080,17 +1072,7 @@ private:
             ui i = ord[pos];
             ui u1 = u_neighbors[i];
 
-            // branch 1: skip u1
-            bool can_skip_spoke = (spoke_bridge[i] == 0);
-            if (can_skip_spoke) {
-                state[i] = -1;
-                if (dfsOneHop(pos + 1, state, cost + 1, ord, u_neighbors, cand, spoke_bridge)) {
-                    state[i] = -2;
-                    return true;
-                }
-            }
-
-            // branch 2: match u1 to v1
+            // branch 1: match u1 to v1
             for (ui v1 : cand[i]) {
                 if (onehop_vis.contains(v1)) continue;
 
@@ -1125,6 +1107,16 @@ private:
 
                 onehop_vis.remove(v1);
                 state[i] = -2;
+            }
+
+            // branch 2: skip u1
+            bool can_skip_spoke = (spoke_bridge[i] == 0);
+            if (can_skip_spoke) {
+                state[i] = -1;
+                if (dfsOneHop(pos + 1, state, cost + 1, ord, u_neighbors, cand, spoke_bridge)) {
+                    state[i] = -2;
+                    return true;
+                }
             }
 
             state[i] = -2;
@@ -1172,6 +1164,7 @@ private:
                 ui u = cand.u, v = cand.v;
                 if(!solver.candidates[u].contains(v)) continue;
                 if (solver.q_degree[u] <= 1) continue;
+                if (solver.q_degree[u] > (ui)ONEHOP_FILTER_MAX_QDEG) continue;
                 if (onehop_inner_edges[u] == 0) continue;
                 if (!checkOneHop(u, v)) {
                     to_remove.push_back({ u, v });
