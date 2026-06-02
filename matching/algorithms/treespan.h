@@ -74,6 +74,8 @@ public:
 
         ui start_u = seq->S[0];
         for (ui v : candidates[start_u]) {
+            if (outputLimitReached()) break;
+
             mapped_q[start_u] = (int)v;
             mapped_g[v] = (int)start_u;
 
@@ -81,6 +83,8 @@ public:
 
             mapped_q[start_u] = -1;
             mapped_g[v] = -1;
+
+            if (outputLimitReached()) break;
         }
 
         stats.search_time = t_search.elapsed();
@@ -100,6 +104,7 @@ public:
         long long enum_call_count = 0;
         long long duplicate_results = 0;
         size_t result_count = 0;
+        bool output_limit_reached = false;
     } stats;
 
     void printStats() const
@@ -121,6 +126,11 @@ public:
         printf("[hasEdge] Calls:     %lld\n", stats.has_edge_calls);
         printf("Duplicate Results:   %lld\n", stats.duplicate_results);
         printf("Results Found:       %zu\n", stats.result_count);
+#if MATCH_OUTPUT_LIMIT > 0
+        printf("Output Limit:        %zu%s\n",
+            (size_t)MATCH_OUTPUT_LIMIT,
+            stats.output_limit_reached ? " (reached)" : "");
+#endif
         printf("---------------------------------------\n");
     }
 
@@ -206,6 +216,19 @@ private:
     TreeState initial_tree;
     map<string, QISequence> sequence_cache;
     unordered_set<string> result_keys;
+
+    bool outputLimitReached() const
+    {
+        return (size_t)MATCH_OUTPUT_LIMIT > 0 &&
+            stats.result_count >= (size_t)MATCH_OUTPUT_LIMIT;
+    }
+
+    void noteOutputLimitIfReached()
+    {
+        if (outputLimitReached()) {
+            stats.output_limit_reached = true;
+        }
+    }
 
     void resetAll()
     {
@@ -531,6 +554,11 @@ private:
 
     void SimSearchOnDemand(ui h, const TreeState &state, ui gamma)
     {
+        if (outputLimitReached()) {
+            stats.output_limit_reached = true;
+            return;
+        }
+
         stats.recursion_calls++;
         stats.enum_call_count++;
 
@@ -599,9 +627,11 @@ private:
 
             mapped_q[u_curr] = -1;
             mapped_g[v_curr] = -1;
+
+            if (outputLimitReached()) break;
         }
 
-        if (gamma < threshold && h > 0) {
+        if (!outputLimitReached() && gamma < threshold && h > 0) {
             TreeState next_state;
             ui current_tree_edge_pos = h - 1;
             if (replaceAndReorder(state, current_tree_edge_pos, next_state)) {
@@ -646,17 +676,16 @@ private:
             return;
         }
 
-#ifdef NDEBUG
-        stats.result_count++;
-#else
+#ifndef NDEBUG
         vector<pair<ui, ui>> res;
         res.reserve(qn);
         for (ui u = 0; u < qn; ++u) {
             res.push_back({ u, (ui)mapped_q[u] });
         }
         results_ptr->push_back(res);
-        stats.result_count++;
 #endif
+        stats.result_count++;
+        noteOutputLimitIfReached();
 
         stats.verify_time += t_verify.elapsed();
     }

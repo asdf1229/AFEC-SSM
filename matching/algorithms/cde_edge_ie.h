@@ -97,6 +97,7 @@ public:
 #endif
 
         for (ui v0 : candidates[root]) {
+            if (outputLimitReached()) break;
 #ifndef NDEBUG
             recordBranchOrderDebug(root);
 #endif
@@ -114,6 +115,8 @@ public:
             mapped_g[v0] = -1;
             mapped_q[root] = -1;
             updateFrontier(root, false);
+
+            if (outputLimitReached()) break;
         }
 
         stats.dfs_time = t_search.elapsed();
@@ -153,6 +156,7 @@ public:
         long long recursion_calls = 0;
         long long prun_calls = 0;
         size_t result_count = 0;
+        bool output_limit_reached = false;
     } stats;
 
     void printStats() const
@@ -227,6 +231,11 @@ public:
         printf("Recursion Calls:     %lld\n", stats.recursion_calls);
         printf("Pruning Calls:       %lld\n", stats.prun_calls);
         printf("Results Found:       %zu\n", stats.result_count);
+#if MATCH_OUTPUT_LIMIT > 0
+        printf("Output Limit:        %zu%s\n",
+            (size_t)MATCH_OUTPUT_LIMIT,
+            stats.output_limit_reached ? " (reached)" : "");
+#endif
 #ifndef NDEBUG
         printBranchOrderDebugStats();
 #endif
@@ -302,6 +311,19 @@ private:
     map<vector<ui>, unsigned long long> branch_order_prefix_reach_counts;
     map<vector<ui>, unsigned long long> branch_order_prefix_answer_counts;
 #endif
+
+    bool outputLimitReached() const
+    {
+        return (size_t)MATCH_OUTPUT_LIMIT > 0 &&
+            stats.result_count >= (size_t)MATCH_OUTPUT_LIMIT;
+    }
+
+    void noteOutputLimitIfReached()
+    {
+        if (outputLimitReached()) {
+            stats.output_limit_reached = true;
+        }
+    }
 
     void resetState()
     {
@@ -2012,12 +2034,18 @@ private:
     // =====================================================
     void dfs(ui cost)
     {
+        if (outputLimitReached()) {
+            stats.output_limit_reached = true;
+            return;
+        }
+
         assert(part_M.size() <= qn);
         assert(cost <= threshold);
 
         if (part_M.size() == qn) {
             stats.recursion_calls++;
             stats.result_count++;
+            noteOutputLimitIfReached();
 #ifndef NDEBUG
             recordBranchOrderAnswerDebug();
             results_ptr->push_back(part_M);
@@ -2217,6 +2245,8 @@ private:
 #ifndef NDEBUG
                 candidate_support_update_time += stats.support_update_time - support_update_before;
 #endif
+
+                if (outputLimitReached()) break;
             }
 #ifndef NDEBUG
             {
@@ -2229,6 +2259,8 @@ private:
                     ? candidate_elapsed - candidate_excluded_time : 0;
             }
 #endif
+
+            if (outputLimitReached()) break;
 
             // Exclude branch: skip this edge, no recursion, just update cost and state.
 #ifndef NDEBUG

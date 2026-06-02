@@ -23,6 +23,16 @@
 // --- other options ---
 #define NDEBUG
 
+// --- output options ---
+// 0 means unlimited. A positive value stops recursive enumeration after that
+// many results have been found.
+#ifndef MATCH_OUTPUT_LIMIT
+#define MATCH_OUTPUT_LIMIT 0
+#endif
+#if MATCH_OUTPUT_LIMIT < 0
+#error "MATCH_OUTPUT_LIMIT must be non-negative."
+#endif
+
 // --- cde_edge_ie anchor-support options ---
 // Cached anchor-support is the default. It reuses support across child states
 // and only recomputes entries marked dirty by search-state changes.
