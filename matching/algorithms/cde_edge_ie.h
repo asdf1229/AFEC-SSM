@@ -7,26 +7,9 @@
 #include "utility/mybitset.h"
 using namespace std;
 
-// Anchor-support scoring defaults to the cached-score path.
-// Define CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT to use the on-demand path:
-// every score reads the current candidates and recomputes support.
-#if defined(CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT) && defined(CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT)
-#error "Choose only one cde_edge_ie anchor-support mode."
-#endif
-#if !defined(CDE_EDGE_IE_RECOMPUTE_ANCHOR_SUPPORT) && !defined(CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT)
-#define CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
-#endif
-
-// Only run the optional search-time lower bound when the current branch cost is
-// close enough to the threshold. A value of 0 means remaining budget == 0.
-#ifndef CDE_EDGE_IE_LB_THRESHOLD_GAP
-#define CDE_EDGE_IE_LB_THRESHOLD_GAP 0
-#endif
-
 // ============================================================================
 // MatchingSolver Implementation
 // ============================================================================
-
 class MatchingSolver {
 public:
     MatchingSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr) {}
@@ -76,6 +59,7 @@ public:
 
         BranchSelector branch_selector(*this);
         ui root = branch_selector.selectInitialRoot();
+#ifndef NDEBUG
         const char *forced_root_env = std::getenv("CDE_EDGE_IE_ROOT");
         if (forced_root_env != nullptr && forced_root_env[0] != '\0') {
             char *end = nullptr;
@@ -88,20 +72,35 @@ public:
                 fprintf(stderr, "Ignoring invalid CDE_EDGE_IE_ROOT=%s\n", forced_root_env);
             }
         }
-#ifndef NDEBUG
+        ui forced_root_data = 0;
+        bool has_forced_root_data = parseEnvUi("CDE_EDGE_IE_ROOT_DATA", forced_root_data);
+        ui forced_root_cand_index = 0;
+        bool has_forced_root_cand_index =
+            parseEnvUi("CDE_EDGE_IE_ROOT_CAND_INDEX", forced_root_cand_index);
         // if (kDebugInitialRoot >= 0) {
         //     assert((ui)kDebugInitialRoot < qn);
         //     root = (ui)kDebugInitialRoot;
         // }
         printf("Selected initial root: u=%u with %zu candidates\n", root, (size_t)candidates[root].size());
+        printBranchProfileConfig(root, has_forced_root_data, forced_root_data,
+            has_forced_root_cand_index, forced_root_cand_index);
+        ui root_cand_index = 0;
 #endif
 
         for (ui v0 : candidates[root]) {
+#ifndef NDEBUG
+            ui this_root_cand_index = root_cand_index++;
+            if (has_forced_root_data && v0 != forced_root_data) continue;
+            if (has_forced_root_cand_index && this_root_cand_index != forced_root_cand_index) continue;
+#endif
             if (outputLimitReached()) break;
 #ifndef NDEBUG
             recordBranchOrderDebug(root);
 #endif
 
+#ifndef NDEBUG
+            recordBranchProfileRootStart(root, v0);
+#endif
             mapped_q[root] = (int)v0;
             mapped_g[v0] = (int)root;
             part_M.push_back({ root, v0 });
@@ -115,6 +114,9 @@ public:
             mapped_g[v0] = -1;
             mapped_q[root] = -1;
             updateFrontier(root, false);
+#ifndef NDEBUG
+            recordBranchProfileRootFinish(root, v0);
+#endif
 
             if (outputLimitReached()) break;
         }
@@ -135,8 +137,6 @@ public:
         ui filter_candidate_count = 0;
         // search breakdown
         long long dfs_time = 0;
-        long long lb_time = 0;       // computeLowerBound
-        long long lb_light_spoke_time = 0;
         long long frontier_time = 0; // building and ordering U_frontier
         long long frontier_select_time = 0;
         long long frontier_component_time = 0;
@@ -157,6 +157,12 @@ public:
         long long prun_calls = 0;
         size_t result_count = 0;
         bool output_limit_reached = false;
+#ifndef NDEBUG
+        unsigned long long terminal_tail_calls = 0;
+        unsigned long long terminal_prune_calls = 0;
+        unsigned long long terminal_delayed_vertices = 0;
+        unsigned long long terminal_bucket_candidate_checks = 0;
+#endif
     } stats;
 
     void printStats() const
@@ -165,15 +171,7 @@ public:
             return whole > 0 ? (double)part / whole * 100.0 : 0.0;
             };
 
-#if defined(CDE_LB_LIGHTWEIGHT_SPOKE) && !defined(NDEBUG)
-        long long lb_accounted_time = stats.lb_light_spoke_time;
-        long long lb_other_time = stats.lb_time > lb_accounted_time
-            ? stats.lb_time - lb_accounted_time : 0;
-#endif
         long long search_accounted_time = stats.frontier_time + stats.branch_time;
-#ifdef CDE_LB_LIGHTWEIGHT_SPOKE
-        search_accounted_time += stats.lb_time;
-#endif
         long long search_other_time = stats.dfs_time > search_accounted_time
             ? stats.dfs_time - search_accounted_time : 0;
 
@@ -184,9 +182,6 @@ public:
         printf("  - Filter Time:     %.4lf ms\n", stats.filter_time / 1000.0);
         printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
         printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, pct(stats.dfs_time, stats.total_time));
-#ifdef CDE_LB_LIGHTWEIGHT_SPOKE
-        printf("  - LowerBound Time: %.4lf ms (%.2f%% of Search)\n", stats.lb_time / 1000.0, pct(stats.lb_time, stats.dfs_time));
-#endif
         printf("  - Frontier Time:   %.4lf ms (%.2f%% of Search)\n", stats.frontier_time / 1000.0, pct(stats.frontier_time, stats.dfs_time));
         printf("  - Branch Time:     %.4lf ms (%.2f%% of Search)\n", stats.branch_time / 1000.0, pct(stats.branch_time, stats.dfs_time));
         printf("  - Search Other:    %.4lf ms (%.2f%% of Search)\n", search_other_time / 1000.0, pct(search_other_time, stats.dfs_time));
@@ -204,11 +199,6 @@ public:
 #endif
         printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
         printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, pct(stats.dfs_time, stats.total_time));
-#ifdef CDE_LB_LIGHTWEIGHT_SPOKE
-        printf("  - LowerBound Time: %.4lf ms (%.2f%% of Search)\n", stats.lb_time / 1000.0, pct(stats.lb_time, stats.dfs_time));
-        printf("    - Light Spoke:   %.4lf ms (%.2f%% of LB)\n", stats.lb_light_spoke_time / 1000.0, pct(stats.lb_light_spoke_time, stats.lb_time));
-        printf("    - Other:         %.4lf ms (%.2f%% of LB)\n", lb_other_time / 1000.0, pct(lb_other_time, stats.lb_time));
-#endif
         printf("  - Frontier Time:   %.4lf ms (%.2f%% of Search)\n", stats.frontier_time / 1000.0, pct(stats.frontier_time, stats.dfs_time));
         printf("    - Select Best:   %.4lf ms (%.2f%% of Frontier)\n", stats.frontier_select_time / 1000.0, pct(stats.frontier_select_time, stats.frontier_time));
         printf("    - Component:     %.4lf ms (%.2f%% of Frontier)\n", stats.frontier_component_time / 1000.0, pct(stats.frontier_component_time, stats.frontier_time));
@@ -230,6 +220,12 @@ public:
 #endif
         printf("Recursion Calls:     %lld\n", stats.recursion_calls);
         printf("Pruning Calls:       %lld\n", stats.prun_calls);
+#ifndef NDEBUG
+        printf("Terminal Tail Calls: %llu\n", stats.terminal_tail_calls);
+        printf("Terminal Prunes:     %llu\n", stats.terminal_prune_calls);
+        printf("Terminal Delayed:    %llu\n", stats.terminal_delayed_vertices);
+        printf("Terminal Cand Checks:%llu\n", stats.terminal_bucket_candidate_checks);
+#endif
         printf("Results Found:       %zu\n", stats.result_count);
 #if MATCH_OUTPUT_LIMIT > 0
         printf("Output Limit:        %zu%s\n",
@@ -238,6 +234,7 @@ public:
 #endif
 #ifndef NDEBUG
         printBranchOrderDebugStats();
+        printBranchProfileStats("final", branch_profile_timer.elapsed());
 #endif
         printf("-----------------------------------------------------------\n");
         fflush(stdout);
@@ -262,14 +259,12 @@ private:
         vector<char> active_edges_cached;
     };
 
-#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
     struct SupportSnapshot {
         ui u = 0;
         ui anchor = 0;
         ui value = 0;
         char dirty = 0;
     };
-#endif
 
     const Graph *query_graph;
     const Graph *data_graph;
@@ -292,21 +287,107 @@ private:
     vector<pair<ui, ui>> part_M;
 
     vector<ui> anchor_count;
-#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
     vector<vector<ui>> support;
     vector<vector<char>> support_dirty;
     vector<SupportSnapshot> *active_support_snapshots = nullptr;
-#endif
     vector<int> frontier_pos;
     vector<ui> active_frontier;
     vector<ui> data_vertex_mark;
     vector<ui> data_vertex_mark_pos;
+#ifndef NDEBUG
+    vector<char> delayed_query_vertices;
+    vector<char> preferred_query_vertices;
+#endif
+    bool terminal_buckets_enabled = true;
     ui data_vertex_mark_token = 0;
     int branch_timing_depth = 0;
 
     vector<ui> frontier_visit;
     ui frontier_token;
+
+    struct TerminalScan {
+        ui unmatched_count = 0;
+        ui terminal_count = 0;
+        ui terminal_frontier_count = 0;
+        ui nonterminal_frontier_count = 0;
+
+        bool allRemainingTerminal() const
+        {
+            return unmatched_count > 0 && unmatched_count == terminal_count;
+        }
+
+        bool hasNonterminalFrontier() const
+        {
+            return nonterminal_frontier_count > 0;
+        }
+    };
+
+    struct TerminalTailVertex {
+        ui u = 0;
+        ui feasible_count = 0;
+        ui min_delta = std::numeric_limits<ui>::max();
+        vector<vector<ui>> buckets;
+    };
+
 #ifndef NDEBUG
+    struct BranchProfileCounter {
+        unsigned long long root_enters = 0;
+        unsigned long long root_finishes = 0;
+        unsigned long long dfs_calls = 0;
+        unsigned long long dfs_returns = 0;
+        unsigned long long selected_edges = 0;
+        unsigned long long support_candidates = 0;
+        unsigned long long include_considered = 0;
+        unsigned long long include_taken = 0;
+        unsigned long long include_cost_pruned = 0;
+        unsigned long long exclude_taken = 0;
+        unsigned long long exclude_over_budget = 0;
+        unsigned long long forced_zero_excludes = 0;
+        unsigned long long prunes = 0;
+        unsigned long long answers = 0;
+    };
+
+    struct SecondBranchKey {
+        ui root_v = 0;
+        ui u = 0;
+        ui v = 0;
+
+        bool operator<(const SecondBranchKey &other) const
+        {
+            if (root_v != other.root_v) return root_v < other.root_v;
+            if (u != other.u) return u < other.u;
+            return v < other.v;
+        }
+    };
+
+    struct RootEdgeBranchKey {
+        ui root_v = 0;
+        ui u = 0;
+        ui anchor = 0;
+
+        bool operator<(const RootEdgeBranchKey &other) const
+        {
+            if (root_v != other.root_v) return root_v < other.root_v;
+            if (u != other.u) return u < other.u;
+            return anchor < other.anchor;
+        }
+    };
+
+    bool branch_profile_enabled = false;
+    ui branch_profile_root = std::numeric_limits<ui>::max();
+    ui branch_profile_top_n = 20;
+    ui branch_profile_path_depth = 0;
+    long long branch_profile_interval_us = 2000000;
+    unsigned long long branch_profile_event_ticks = 0;
+    mutable Timer branch_profile_timer;
+    mutable long long branch_profile_last_dump_us = 0;
+    ui active_branch_profile_root_v = std::numeric_limits<ui>::max();
+    map<ui, BranchProfileCounter> root_branch_profiles;
+    map<SecondBranchKey, BranchProfileCounter> second_branch_profiles;
+    map<RootEdgeBranchKey, BranchProfileCounter> root_edge_branch_profiles;
+    map<vector<pair<ui, ui>>, BranchProfileCounter> path_branch_profiles;
+    map<pair<ui, ui>, BranchProfileCounter> extension_depth_profiles;
+    vector<char> profile_query_vertices;
     map<vector<ui>, unsigned long long> branch_order_prefix_counts;
     map<vector<ui>, unsigned long long> branch_order_prefix_reach_counts;
     map<vector<ui>, unsigned long long> branch_order_prefix_answer_counts;
@@ -345,15 +426,18 @@ private:
         q_neighbor_is_bridge.clear();
 
         anchor_count.assign(qn, 0);
-#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
         support.assign(qn, vector<ui>(qn, 0));
         support_dirty.assign(qn, vector<char>(qn, 1));
         active_support_snapshots = nullptr;
-#endif
         frontier_pos.assign(qn, -1);
         active_frontier.clear();
         data_vertex_mark.assign(gn, 0);
         data_vertex_mark_pos.assign(gn, 0);
+#ifndef NDEBUG
+        delayed_query_vertices.assign(qn, 0);
+        preferred_query_vertices.assign(qn, 0);
+        profile_query_vertices.assign(qn, 0);
+#endif
         data_vertex_mark_token = 0;
         branch_timing_depth = 0;
 #ifndef NDEBUG
@@ -364,16 +448,828 @@ private:
         frontier_visit.assign(qn, 0);
         frontier_token = 1;
 
-#ifdef CDE_LB_LIGHTWEIGHT_SPOKE
-        lb_match_right.assign(max_g_deg, -1);
-        lb_match_left.assign(qn, -1);
-        lb_light_spoke_vis.assign(max_g_deg, 0);
-        lb_light_spoke_adj.assign(qn, vector<ui>());
-        lb_light_spoke_is_bridge.assign(qn, 0);
+        stats = TimeStats();
+        initTerminalTailConfig();
+#ifndef NDEBUG
+        initBranchProfileConfig();
+        initDelayedQueryVertices();
+#endif
+    }
+
+#ifndef NDEBUG
+    static bool parseEnvUi(const char *name, ui &value)
+    {
+        const char *env = std::getenv(name);
+        if (env == nullptr || env[0] == '\0') {
+            return false;
+        }
+        char *end = nullptr;
+        unsigned long parsed = std::strtoul(env, &end, 10);
+        if (end == env || *end != '\0') {
+            fprintf(stderr, "Ignoring invalid %s=%s\n", name, env);
+            return false;
+        }
+        value = (ui)parsed;
+        return true;
+    }
+
+    bool parseQueryVertexListEnv(const char *name, vector<char> &marks)
+    {
+        const char *env = std::getenv(name);
+        if (env == nullptr || env[0] == '\0') {
+            return false;
+        }
+
+        bool parsed_any = false;
+        const char *p = env;
+        while (*p != '\0') {
+            while (*p == ',' || *p == ' ' || *p == '\t') {
+                p++;
+            }
+            if (*p == '\0') {
+                break;
+            }
+
+            char *end = nullptr;
+            unsigned long parsed = std::strtoul(p, &end, 10);
+            if (end == p) {
+                fprintf(stderr, "Ignoring invalid %s near: %s\n", name, p);
+                break;
+            }
+            if (parsed < qn) {
+                marks[(ui)parsed] = 1;
+                parsed_any = true;
+            }
+            else {
+                fprintf(stderr, "Ignoring out-of-range query vertex in %s: %lu\n", name, parsed);
+            }
+            p = end;
+        }
+        return parsed_any;
+    }
+
+    void initDelayedQueryVertices()
+    {
+        parseQueryVertexListEnv("CDE_EDGE_IE_DELAY_VERTICES", delayed_query_vertices);
+        parseQueryVertexListEnv("CDE_EDGE_IE_PREFER_VERTICES", preferred_query_vertices);
+    }
 #endif
 
-        stats = TimeStats();
+    void initTerminalTailConfig()
+    {
+        terminal_buckets_enabled = true;
+        const char *env = std::getenv("CDE_EDGE_IE_TERMINAL_BUCKETS");
+        if (env != nullptr && env[0] != '\0') {
+            terminal_buckets_enabled =
+                !(std::strcmp(env, "0") == 0 ||
+                    std::strcmp(env, "false") == 0 ||
+                    std::strcmp(env, "FALSE") == 0 ||
+                    std::strcmp(env, "off") == 0 ||
+                    std::strcmp(env, "OFF") == 0);
+        }
     }
+
+#ifndef NDEBUG
+    static unsigned long long branchProfileBranchTotal(const BranchProfileCounter &counter)
+    {
+        return counter.include_taken + counter.exclude_taken + counter.forced_zero_excludes;
+    }
+
+    void initBranchProfileConfig()
+    {
+        root_branch_profiles.clear();
+        second_branch_profiles.clear();
+        root_edge_branch_profiles.clear();
+        path_branch_profiles.clear();
+        extension_depth_profiles.clear();
+        branch_profile_enabled = false;
+        branch_profile_root = std::numeric_limits<ui>::max();
+        branch_profile_top_n = 20;
+        branch_profile_path_depth = 0;
+        branch_profile_interval_us = 2000000;
+        branch_profile_event_ticks = 0;
+        active_branch_profile_root_v = std::numeric_limits<ui>::max();
+
+        const char *profile_env = std::getenv("CDE_EDGE_IE_PROFILE");
+        if (profile_env != nullptr && profile_env[0] != '\0' &&
+            std::strcmp(profile_env, "0") != 0) {
+            branch_profile_enabled = true;
+        }
+
+        ui parsed = 0;
+        if (parseEnvUi("CDE_EDGE_IE_PROFILE_ROOT", parsed)) {
+            branch_profile_enabled = true;
+            branch_profile_root = parsed;
+        }
+        else if (branch_profile_enabled && parseEnvUi("CDE_EDGE_IE_ROOT", parsed)) {
+            branch_profile_root = parsed;
+        }
+
+        if (parseEnvUi("CDE_EDGE_IE_PROFILE_TOP_N", parsed) && parsed > 0) {
+            branch_profile_top_n = parsed;
+        }
+        if (parseEnvUi("CDE_EDGE_IE_PROFILE_DEPTH", parsed)) {
+            branch_profile_enabled = true;
+            branch_profile_path_depth = std::min(parsed, qn);
+        }
+        else if (branch_profile_enabled) {
+            branch_profile_path_depth = std::min((ui)2, qn);
+        }
+        if (parseQueryVertexListEnv("CDE_EDGE_IE_PROFILE_VERTICES", profile_query_vertices)) {
+            branch_profile_enabled = true;
+        }
+        if (parseEnvUi("CDE_EDGE_IE_PROFILE_INTERVAL_MS", parsed)) {
+            branch_profile_interval_us = (long long)parsed * 1000;
+        }
+
+        branch_profile_timer.restart();
+        branch_profile_last_dump_us = 0;
+    }
+
+    bool shouldProfileRoot(ui root) const
+    {
+        return branch_profile_enabled &&
+            (branch_profile_root == std::numeric_limits<ui>::max() ||
+                branch_profile_root == root);
+    }
+
+    bool shouldProfileCurrentBranch() const
+    {
+        return branch_profile_enabled && !part_M.empty() &&
+            shouldProfileRoot(part_M[0].first);
+    }
+
+    BranchProfileCounter *currentRootProfile()
+    {
+        if (!shouldProfileCurrentBranch()) {
+            return nullptr;
+        }
+        return &root_branch_profiles[part_M[0].second];
+    }
+
+    BranchProfileCounter *currentSecondProfile()
+    {
+        if (!shouldProfileCurrentBranch() || part_M.size() < 2) {
+            return nullptr;
+        }
+        SecondBranchKey key;
+        key.root_v = part_M[0].second;
+        key.u = part_M[1].first;
+        key.v = part_M[1].second;
+        return &second_branch_profiles[key];
+    }
+
+    BranchProfileCounter *currentRootEdgeProfile(ui u, ui anchor)
+    {
+        if (!shouldProfileCurrentBranch() || part_M.size() != 1) {
+            return nullptr;
+        }
+        RootEdgeBranchKey key;
+        key.root_v = part_M[0].second;
+        key.u = u;
+        key.anchor = anchor;
+        return &root_edge_branch_profiles[key];
+    }
+
+    template <typename Updater>
+    void updateBranchProfilePaths(Updater updater)
+    {
+        if (!shouldProfileCurrentBranch() || branch_profile_path_depth == 0) {
+            return;
+        }
+
+        ui limit = std::min(branch_profile_path_depth, (ui)part_M.size());
+        vector<pair<ui, ui>> prefix;
+        prefix.reserve(limit);
+        for (ui i = 0; i < limit; ++i) {
+            prefix.push_back(part_M[i]);
+            updater(path_branch_profiles[prefix]);
+            updater(extension_depth_profiles[{ (ui)prefix.size(), prefix.back().first }]);
+        }
+    }
+
+    void maybePrintBranchProfile()
+    {
+        if (!branch_profile_enabled || branch_profile_interval_us <= 0) {
+            return;
+        }
+        branch_profile_event_ticks++;
+        if ((branch_profile_event_ticks & 0x3fffULL) != 0) {
+            return;
+        }
+
+        long long elapsed_us = branch_profile_timer.elapsed();
+        if (elapsed_us - branch_profile_last_dump_us >= branch_profile_interval_us) {
+            branch_profile_last_dump_us = elapsed_us;
+            printBranchProfileStats("partial", elapsed_us);
+        }
+    }
+
+    void printBranchProfileConfig(ui root, bool has_forced_root_data, ui forced_root_data,
+        bool has_forced_root_cand_index, ui forced_root_cand_index)
+    {
+        if (!shouldProfileRoot(root)) {
+            return;
+        }
+
+        printf("\n--- CDE Root Branch Profile Enabled ---\n");
+        printf("Profile Query Root:  u=%u\n", root);
+        printf("Root Candidates:     %zu\n", (size_t)candidates[root].size());
+        printf("Top Rows:            %u\n", branch_profile_top_n);
+        printf("Path Depth:          %u\n", branch_profile_path_depth);
+        printf("Interval:            %.3lf ms\n", branch_profile_interval_us / 1000.0);
+        bool has_profile_focus = false;
+        for (ui u = 0; u < profile_query_vertices.size(); ++u) {
+            if (profile_query_vertices[u]) {
+                has_profile_focus = true;
+                break;
+            }
+        }
+        if (has_profile_focus) {
+            printf("Profile Vertices:");
+            for (ui u = 0; u < profile_query_vertices.size(); ++u) {
+                if (profile_query_vertices[u]) {
+                    printf(" u%u", u);
+                }
+            }
+            printf("\n");
+        }
+        bool has_preferred_vertices = false;
+        for (ui u = 0; u < preferred_query_vertices.size(); ++u) {
+            if (preferred_query_vertices[u]) {
+                has_preferred_vertices = true;
+                break;
+            }
+        }
+        if (has_preferred_vertices) {
+            printf("Preferred Vertices:");
+            for (ui u = 0; u < preferred_query_vertices.size(); ++u) {
+                if (preferred_query_vertices[u]) {
+                    printf(" u%u", u);
+                }
+            }
+            printf("\n");
+        }
+        if (has_forced_root_data) {
+            printf("Root Data Filter:    v=%u\n", forced_root_data);
+        }
+        if (has_forced_root_cand_index) {
+            printf("Root Index Filter:   #%u\n", forced_root_cand_index);
+        }
+        printf("Root Candidate Order:");
+        ui idx = 0;
+        for (ui v : candidates[root]) {
+            if (has_forced_root_data && v != forced_root_data) {
+                idx++;
+                continue;
+            }
+            if (has_forced_root_cand_index && idx != forced_root_cand_index) {
+                idx++;
+                continue;
+            }
+            printf(" #%u=%u", idx, v);
+            idx++;
+        }
+        printf("\n-----------------------------------------------------------\n");
+        fflush(stdout);
+    }
+
+    void recordBranchProfileRootStart(ui root, ui v0)
+    {
+        if (!shouldProfileRoot(root)) {
+            return;
+        }
+        active_branch_profile_root_v = v0;
+        root_branch_profiles[v0].root_enters++;
+        maybePrintBranchProfile();
+    }
+
+    void recordBranchProfileRootFinish(ui root, ui v0)
+    {
+        if (!shouldProfileRoot(root)) {
+            return;
+        }
+        root_branch_profiles[v0].root_finishes++;
+        active_branch_profile_root_v = std::numeric_limits<ui>::max();
+        maybePrintBranchProfile();
+    }
+
+    void recordBranchProfileDfsEnter()
+    {
+        BranchProfileCounter *root_counter = currentRootProfile();
+        if (root_counter == nullptr) {
+            return;
+        }
+        root_counter->dfs_calls++;
+        BranchProfileCounter *second_counter = currentSecondProfile();
+        if (second_counter != nullptr) {
+            second_counter->dfs_calls++;
+        }
+        updateBranchProfilePaths([](BranchProfileCounter &counter) {
+            counter.dfs_calls++;
+        });
+        maybePrintBranchProfile();
+    }
+
+    void recordBranchProfileDfsReturn()
+    {
+        BranchProfileCounter *root_counter = currentRootProfile();
+        if (root_counter == nullptr) {
+            return;
+        }
+        root_counter->dfs_returns++;
+        BranchProfileCounter *second_counter = currentSecondProfile();
+        if (second_counter != nullptr) {
+            second_counter->dfs_returns++;
+        }
+        updateBranchProfilePaths([](BranchProfileCounter &counter) {
+            counter.dfs_returns++;
+        });
+        maybePrintBranchProfile();
+    }
+
+    struct BranchProfileDfsScope {
+        MatchingSolver &solver;
+
+        explicit BranchProfileDfsScope(MatchingSolver &solver)
+            : solver(solver)
+        {}
+
+        ~BranchProfileDfsScope()
+        {
+            solver.recordBranchProfileDfsReturn();
+        }
+    };
+
+    void recordBranchProfilePrune()
+    {
+        BranchProfileCounter *root_counter = currentRootProfile();
+        if (root_counter == nullptr) {
+            return;
+        }
+        root_counter->prunes++;
+        BranchProfileCounter *second_counter = currentSecondProfile();
+        if (second_counter != nullptr) {
+            second_counter->prunes++;
+        }
+        updateBranchProfilePaths([](BranchProfileCounter &counter) {
+            counter.prunes++;
+        });
+        maybePrintBranchProfile();
+    }
+
+    void recordBranchProfileAnswer()
+    {
+        BranchProfileCounter *root_counter = currentRootProfile();
+        if (root_counter == nullptr) {
+            return;
+        }
+        root_counter->answers++;
+        BranchProfileCounter *second_counter = currentSecondProfile();
+        if (second_counter != nullptr) {
+            second_counter->answers++;
+        }
+        updateBranchProfilePaths([](BranchProfileCounter &counter) {
+            counter.answers++;
+        });
+        maybePrintBranchProfile();
+    }
+
+    void recordBranchProfileSelectedEdge(ui u, ui anchor, size_t support_count)
+    {
+        BranchProfileCounter *root_counter = currentRootProfile();
+        if (root_counter == nullptr) {
+            return;
+        }
+        root_counter->selected_edges++;
+        root_counter->support_candidates += support_count;
+        BranchProfileCounter *second_counter = currentSecondProfile();
+        if (second_counter != nullptr) {
+            second_counter->selected_edges++;
+            second_counter->support_candidates += support_count;
+        }
+        BranchProfileCounter *edge_counter = currentRootEdgeProfile(u, anchor);
+        if (edge_counter != nullptr) {
+            edge_counter->selected_edges++;
+            edge_counter->support_candidates += support_count;
+        }
+        updateBranchProfilePaths([support_count](BranchProfileCounter &counter) {
+            counter.selected_edges++;
+            counter.support_candidates += support_count;
+        });
+        maybePrintBranchProfile();
+    }
+
+    void recordBranchProfileForcedZeroExclude(ui u, ui anchor)
+    {
+        BranchProfileCounter *root_counter = currentRootProfile();
+        if (root_counter == nullptr) {
+            return;
+        }
+        root_counter->forced_zero_excludes++;
+        BranchProfileCounter *second_counter = currentSecondProfile();
+        if (second_counter != nullptr) {
+            second_counter->forced_zero_excludes++;
+        }
+        BranchProfileCounter *edge_counter = currentRootEdgeProfile(u, anchor);
+        if (edge_counter != nullptr) {
+            edge_counter->forced_zero_excludes++;
+        }
+        updateBranchProfilePaths([](BranchProfileCounter &counter) {
+            counter.forced_zero_excludes++;
+        });
+        maybePrintBranchProfile();
+    }
+
+    void recordBranchProfileIncludeConsidered(ui u, ui anchor)
+    {
+        BranchProfileCounter *root_counter = currentRootProfile();
+        if (root_counter == nullptr) {
+            return;
+        }
+        root_counter->include_considered++;
+        BranchProfileCounter *second_counter = currentSecondProfile();
+        if (second_counter != nullptr) {
+            second_counter->include_considered++;
+        }
+        BranchProfileCounter *edge_counter = currentRootEdgeProfile(u, anchor);
+        if (edge_counter != nullptr) {
+            edge_counter->include_considered++;
+        }
+        updateBranchProfilePaths([](BranchProfileCounter &counter) {
+            counter.include_considered++;
+        });
+        maybePrintBranchProfile();
+    }
+
+    void recordBranchProfileIncludeTaken(ui u, ui anchor)
+    {
+        BranchProfileCounter *root_counter = currentRootProfile();
+        if (root_counter == nullptr) {
+            return;
+        }
+        root_counter->include_taken++;
+        BranchProfileCounter *second_counter = currentSecondProfile();
+        if (second_counter != nullptr) {
+            second_counter->include_taken++;
+        }
+        BranchProfileCounter *edge_counter = currentRootEdgeProfile(u, anchor);
+        if (edge_counter != nullptr) {
+            edge_counter->include_taken++;
+        }
+        updateBranchProfilePaths([](BranchProfileCounter &counter) {
+            counter.include_taken++;
+        });
+        maybePrintBranchProfile();
+    }
+
+    void recordBranchProfileIncludeCostPruned(ui u, ui anchor)
+    {
+        BranchProfileCounter *root_counter = currentRootProfile();
+        if (root_counter == nullptr) {
+            return;
+        }
+        root_counter->include_cost_pruned++;
+        BranchProfileCounter *second_counter = currentSecondProfile();
+        if (second_counter != nullptr) {
+            second_counter->include_cost_pruned++;
+        }
+        BranchProfileCounter *edge_counter = currentRootEdgeProfile(u, anchor);
+        if (edge_counter != nullptr) {
+            edge_counter->include_cost_pruned++;
+        }
+        updateBranchProfilePaths([](BranchProfileCounter &counter) {
+            counter.include_cost_pruned++;
+        });
+        maybePrintBranchProfile();
+    }
+
+    void recordBranchProfileExclude(ui u, ui anchor, bool over_budget)
+    {
+        BranchProfileCounter *root_counter = currentRootProfile();
+        if (root_counter == nullptr) {
+            return;
+        }
+        root_counter->exclude_taken++;
+        if (over_budget) {
+            root_counter->exclude_over_budget++;
+        }
+        BranchProfileCounter *second_counter = currentSecondProfile();
+        if (second_counter != nullptr) {
+            second_counter->exclude_taken++;
+            if (over_budget) {
+                second_counter->exclude_over_budget++;
+            }
+        }
+        BranchProfileCounter *edge_counter = currentRootEdgeProfile(u, anchor);
+        if (edge_counter != nullptr) {
+            edge_counter->exclude_taken++;
+            if (over_budget) {
+                edge_counter->exclude_over_budget++;
+            }
+        }
+        updateBranchProfilePaths([over_budget](BranchProfileCounter &counter) {
+            counter.exclude_taken++;
+            if (over_budget) {
+                counter.exclude_over_budget++;
+            }
+        });
+        maybePrintBranchProfile();
+    }
+
+    void printBranchProfileCounter(const BranchProfileCounter &counter) const
+    {
+        unsigned long long open_dfs =
+            counter.dfs_calls >= counter.dfs_returns ?
+                counter.dfs_calls - counter.dfs_returns : 0;
+        printf("branches=%llu, dfs=%llu, done=%llu, open=%llu, edge_select=%llu, support_sum=%llu, "
+            "inc_considered=%llu, inc_taken=%llu, inc_cost_pruned=%llu, "
+            "exclude=%llu, exclude_over=%llu, "
+            "forced0=%llu, prunes=%llu, answers=%llu",
+            branchProfileBranchTotal(counter), counter.dfs_calls,
+            counter.dfs_returns, open_dfs,
+            counter.selected_edges, counter.support_candidates,
+            counter.include_considered, counter.include_taken,
+            counter.include_cost_pruned, counter.exclude_taken, counter.exclude_over_budget,
+            counter.forced_zero_excludes, counter.prunes, counter.answers);
+    }
+
+    void printBranchProfilePath(const vector<pair<ui, ui>> &path) const
+    {
+        printf("[");
+        for (ui i = 0; i < path.size(); ++i) {
+            if (i > 0) printf(",");
+            printf("u%u->v%u", path[i].first, path[i].second);
+        }
+        printf("]");
+    }
+
+    void printBranchProfileStats(const char *phase, long long elapsed_us) const
+    {
+        if (!branch_profile_enabled) {
+            return;
+        }
+
+        printf("\n--- CDE Root Branch Profile (%s, %.3lf ms) ---\n",
+            phase, elapsed_us / 1000.0);
+        printf("Results Found So Far:%zu\n", stats.result_count);
+        printf("Recursion So Far:    %lld\n", stats.recursion_calls);
+        if (active_branch_profile_root_v != std::numeric_limits<ui>::max()) {
+            printf("Active Root Data:    v=%u\n", active_branch_profile_root_v);
+        }
+
+        vector<pair<ui, BranchProfileCounter>> root_rows;
+        root_rows.reserve(root_branch_profiles.size());
+        for (map<ui, BranchProfileCounter>::const_iterator it = root_branch_profiles.begin();
+            it != root_branch_profiles.end(); ++it) {
+            root_rows.push_back(*it);
+        }
+        std::sort(root_rows.begin(), root_rows.end(),
+            [](const pair<ui, BranchProfileCounter> &a,
+                const pair<ui, BranchProfileCounter> &b) {
+                unsigned long long ab = branchProfileBranchTotal(a.second);
+                unsigned long long bb = branchProfileBranchTotal(b.second);
+                if (ab != bb) return ab > bb;
+                if (a.second.dfs_calls != b.second.dfs_calls) {
+                    return a.second.dfs_calls > b.second.dfs_calls;
+                }
+                return a.first < b.first;
+            });
+
+        printf("Root candidate rows:\n");
+        ui printed = 0;
+        for (vector<pair<ui, BranchProfileCounter>>::const_iterator it = root_rows.begin();
+            it != root_rows.end() && printed < branch_profile_top_n; ++it, ++printed) {
+            const BranchProfileCounter &counter = it->second;
+            printf("  v10=%u, state=%s, enters=%llu, finishes=%llu, ",
+                it->first,
+                (it->first == active_branch_profile_root_v ? "active" :
+                    (counter.root_finishes > 0 ? "done" : "pending")),
+                counter.root_enters, counter.root_finishes);
+            printBranchProfileCounter(counter);
+            printf("\n");
+        }
+        if (root_rows.empty()) {
+            printf("  <none>\n");
+        }
+
+        struct EdgeRow {
+            RootEdgeBranchKey key;
+            BranchProfileCounter counter;
+        };
+        vector<EdgeRow> edge_rows;
+        edge_rows.reserve(root_edge_branch_profiles.size());
+        for (map<RootEdgeBranchKey, BranchProfileCounter>::const_iterator it =
+            root_edge_branch_profiles.begin(); it != root_edge_branch_profiles.end(); ++it) {
+            EdgeRow row;
+            row.key = it->first;
+            row.counter = it->second;
+            edge_rows.push_back(row);
+        }
+        std::sort(edge_rows.begin(), edge_rows.end(),
+            [](const EdgeRow &a, const EdgeRow &b) {
+                unsigned long long ab = branchProfileBranchTotal(a.counter);
+                unsigned long long bb = branchProfileBranchTotal(b.counter);
+                if (ab != bb) return ab > bb;
+                if (a.counter.support_candidates != b.counter.support_candidates) {
+                    return a.counter.support_candidates > b.counter.support_candidates;
+                }
+                if (a.key.root_v != b.key.root_v) return a.key.root_v < b.key.root_v;
+                if (a.key.u != b.key.u) return a.key.u < b.key.u;
+                return a.key.anchor < b.key.anchor;
+            });
+
+        printf("Root-depth edge rows:\n");
+        printed = 0;
+        for (vector<EdgeRow>::const_iterator it = edge_rows.begin();
+            it != edge_rows.end() && printed < branch_profile_top_n; ++it, ++printed) {
+            printf("  v10=%u, edge=(u%u-u%u), ",
+                it->key.root_v, it->key.u, it->key.anchor);
+            printBranchProfileCounter(it->counter);
+            printf("\n");
+        }
+        if (edge_rows.empty()) {
+            printf("  <none>\n");
+        }
+
+        struct SecondRow {
+            SecondBranchKey key;
+            BranchProfileCounter counter;
+        };
+        vector<SecondRow> second_rows;
+        second_rows.reserve(second_branch_profiles.size());
+        for (map<SecondBranchKey, BranchProfileCounter>::const_iterator it =
+            second_branch_profiles.begin(); it != second_branch_profiles.end(); ++it) {
+            SecondRow row;
+            row.key = it->first;
+            row.counter = it->second;
+            second_rows.push_back(row);
+        }
+        std::sort(second_rows.begin(), second_rows.end(),
+            [](const SecondRow &a, const SecondRow &b) {
+                unsigned long long ab = branchProfileBranchTotal(a.counter);
+                unsigned long long bb = branchProfileBranchTotal(b.counter);
+                if (ab != bb) return ab > bb;
+                if (a.counter.dfs_calls != b.counter.dfs_calls) {
+                    return a.counter.dfs_calls > b.counter.dfs_calls;
+                }
+                if (a.key.root_v != b.key.root_v) return a.key.root_v < b.key.root_v;
+                if (a.key.u != b.key.u) return a.key.u < b.key.u;
+                return a.key.v < b.key.v;
+            });
+
+        printf("Second-extension rows:\n");
+        printed = 0;
+        for (vector<SecondRow>::const_iterator it = second_rows.begin();
+            it != second_rows.end() && printed < branch_profile_top_n; ++it, ++printed) {
+            printf("  v10=%u, second=(u%u->v%u), ",
+                it->key.root_v, it->key.u, it->key.v);
+            printBranchProfileCounter(it->counter);
+            printf("\n");
+        }
+        if (second_rows.empty()) {
+            printf("  <none>\n");
+        }
+
+        struct PathRow {
+            vector<pair<ui, ui>> path;
+            BranchProfileCounter counter;
+        };
+        vector<PathRow> path_rows;
+        path_rows.reserve(path_branch_profiles.size());
+        for (map<vector<pair<ui, ui>>, BranchProfileCounter>::const_iterator it =
+            path_branch_profiles.begin(); it != path_branch_profiles.end(); ++it) {
+            PathRow row;
+            row.path = it->first;
+            row.counter = it->second;
+            path_rows.push_back(row);
+        }
+        std::sort(path_rows.begin(), path_rows.end(),
+            [](const PathRow &a, const PathRow &b) {
+                unsigned long long ab = branchProfileBranchTotal(a.counter);
+                unsigned long long bb = branchProfileBranchTotal(b.counter);
+                if (ab != bb) return ab > bb;
+                if (a.counter.dfs_calls != b.counter.dfs_calls) {
+                    return a.counter.dfs_calls > b.counter.dfs_calls;
+                }
+                return a.path < b.path;
+            });
+
+        printf("Path-prefix rows:\n");
+        if (branch_profile_path_depth == 0) {
+            printf("  <disabled>\n");
+        }
+        for (ui depth = 1; depth <= branch_profile_path_depth; ++depth) {
+            ui depth_printed = 0;
+            bool depth_header_printed = false;
+            for (vector<PathRow>::const_iterator it = path_rows.begin();
+                it != path_rows.end() && depth_printed < branch_profile_top_n; ++it) {
+                if (it->path.size() != depth) {
+                    continue;
+                }
+                if (!depth_header_printed) {
+                    printf("  Depth %u:\n", depth);
+                    depth_header_printed = true;
+                }
+                printf("    ");
+                printBranchProfilePath(it->path);
+                printf(", ");
+                printBranchProfileCounter(it->counter);
+                printf("\n");
+                depth_printed++;
+            }
+            if (!depth_header_printed && !path_rows.empty()) {
+                printf("  Depth %u: <none>\n", depth);
+            }
+        }
+
+        bool has_profile_focus = false;
+        for (ui u = 0; u < profile_query_vertices.size(); ++u) {
+            if (profile_query_vertices[u]) {
+                has_profile_focus = true;
+                break;
+            }
+        }
+
+        struct ExtensionDepthRow {
+            ui depth = 0;
+            ui u = 0;
+            BranchProfileCounter counter;
+        };
+        vector<ExtensionDepthRow> extension_rows;
+        extension_rows.reserve(extension_depth_profiles.size());
+        for (map<pair<ui, ui>, BranchProfileCounter>::const_iterator it =
+            extension_depth_profiles.begin(); it != extension_depth_profiles.end(); ++it) {
+            if (has_profile_focus && !profile_query_vertices[it->first.second]) {
+                continue;
+            }
+            ExtensionDepthRow row;
+            row.depth = it->first.first;
+            row.u = it->first.second;
+            row.counter = it->second;
+            extension_rows.push_back(row);
+        }
+        std::sort(extension_rows.begin(), extension_rows.end(),
+            [](const ExtensionDepthRow &a, const ExtensionDepthRow &b) {
+                if (a.depth != b.depth) return a.depth < b.depth;
+                unsigned long long ab = branchProfileBranchTotal(a.counter);
+                unsigned long long bb = branchProfileBranchTotal(b.counter);
+                if (ab != bb) return ab > bb;
+                if (a.counter.dfs_calls != b.counter.dfs_calls) {
+                    return a.counter.dfs_calls > b.counter.dfs_calls;
+                }
+                return a.u < b.u;
+            });
+
+        printf("Extension-depth rows%s:\n", has_profile_focus ? " (focused)" : "");
+        if (branch_profile_path_depth == 0) {
+            printf("  <disabled>\n");
+        }
+        else if (extension_rows.empty()) {
+            printf("  <none>\n");
+        }
+        for (ui depth = 1; depth <= branch_profile_path_depth; ++depth) {
+            ui depth_printed = 0;
+            bool depth_header_printed = false;
+            for (vector<ExtensionDepthRow>::const_iterator it = extension_rows.begin();
+                it != extension_rows.end() && depth_printed < branch_profile_top_n; ++it) {
+                if (it->depth != depth) {
+                    continue;
+                }
+                if (!depth_header_printed) {
+                    printf("  Depth %u:\n", depth);
+                    depth_header_printed = true;
+                }
+                printf("    u%u, ", it->u);
+                printBranchProfileCounter(it->counter);
+                printf("\n");
+                depth_printed++;
+            }
+            if (!depth_header_printed && !extension_rows.empty()) {
+                printf("  Depth %u: <none>\n", depth);
+            }
+        }
+        printf("-----------------------------------------------------------\n");
+        fflush(stdout);
+    }
+#else
+    void recordBranchProfileRootStart(ui, ui) {}
+    void recordBranchProfileRootFinish(ui, ui) {}
+    void recordBranchProfileDfsEnter() {}
+
+    struct BranchProfileDfsScope {
+        explicit BranchProfileDfsScope(MatchingSolver &) {}
+    };
+
+    void recordBranchProfilePrune() {}
+    void recordBranchProfileAnswer() {}
+    void recordBranchProfileSelectedEdge(ui, ui, size_t) {}
+    void recordBranchProfileForcedZeroExclude(ui, ui) {}
+    void recordBranchProfileIncludeConsidered(ui, ui) {}
+    void recordBranchProfileIncludeTaken(ui, ui) {}
+    void recordBranchProfileIncludeCostPruned(ui, ui) {}
+    void recordBranchProfileExclude(ui, ui, bool) {}
+#endif
 
     // init q_matrix and q_neighbors
     void initQueryGraphIndex()
@@ -649,7 +1545,7 @@ private:
                 solver.stats.filter_candidate_count += (ui)solver.candidates[u].size();
             }
 
-#ifdef ENABLE_CAND_STATS
+#if defined(ENABLE_CAND_STATS) && !defined(NDEBUG)
             printCandStats();
 #endif
             return true;
@@ -948,7 +1844,7 @@ private:
 
         // If u is matched to v, compute the minimum number of spoke edges
         // from u to its neighbors that cannot be supported by neighbors of v.
-        ui computeLBSpoke(ui u, ui v)
+        ui computeMinimumMissingSpokes(ui u, ui v)
         {
             // build bipartite graph
             const vector<ui> &u_neighbors = solver.q_neighbors[u];
@@ -976,6 +1872,12 @@ private:
             return missing_non_bridge;
         }
 
+        ui maxMissingIncidentEdges(ui u) const
+        {
+            if (solver.q_degree[u] == 0) return 0;
+            return std::min(solver.threshold, solver.q_degree[u] - 1);
+        }
+
         bool filterSpoke()
         {
             queue<ui> q;
@@ -986,12 +1888,12 @@ private:
                 ui u = q.front(); q.pop();
                 in_q[u] = 0;
 
-                if(Lq_bridge_degrees[u] == 0 && solver.q_degree[u] <= solver.threshold) continue;
+                ui max_missing_edges = maxMissingIncidentEdges(u);
 
                 vector<ui> to_remove;
                 for (ui v : solver.candidates[u]) {
-                    ui missing_edges = computeLBSpoke(u, v);
-                    if(missing_edges > solver.threshold) {
+                    ui missing_edges = computeMinimumMissingSpokes(u, v);
+                    if(missing_edges > max_missing_edges) {
                         to_remove.push_back(v);
                     }
 #ifdef ENABLE_ONEHOP_FILTERING
@@ -1058,7 +1960,7 @@ private:
             return ord;
         }
 
-        ui computeRemainLBOneHop(ui pos, const vector<ui> &ord, const vector<vector<ui>> &cand, const vector<char> &spoke_bridge) const
+        ui computeRemainingForcedSkips(ui pos, const vector<ui> &ord, const vector<vector<ui>> &cand, const vector<char> &spoke_bridge) const
         {
             ui rem = 0;
             for (ui p = pos; p < ord.size(); ++p) {
@@ -1088,8 +1990,8 @@ private:
             if (cost > solver.threshold) return false;
             if (pos == ord.size()) return true;
 
-            ui rem_lb = computeRemainLBOneHop(pos, ord, cand, spoke_bridge);
-            if (cost + rem_lb > solver.threshold) return false;
+            ui remaining_forced_skips = computeRemainingForcedSkips(pos, ord, cand, spoke_bridge);
+            if (cost + remaining_forced_skips > solver.threshold) return false;
 
             ui i = ord[pos];
             ui u1 = u_neighbors[i];
@@ -1203,7 +2105,7 @@ private:
             return true;
         }
 
-#ifdef ENABLE_CAND_STATS
+#if defined(ENABLE_CAND_STATS) && !defined(NDEBUG)
         void printCandStats()
         {
             vector<ui> missing_edges_dist(solver.threshold + 1, 0);
@@ -1214,7 +2116,7 @@ private:
                 total_candidates_count += solver.candidates[u].size();
 
                 for (ui v : solver.candidates[u]) {
-                    ui min_missing_edges = computeLBSpoke(u, v);
+                    ui min_missing_edges = computeMinimumMissingSpokes(u, v);
                     if (min_missing_edges <= solver.threshold) {
                         missing_edges_dist[min_missing_edges]++;
                         vertex_missing_edges_dist[u][min_missing_edges]++;
@@ -1284,7 +2186,8 @@ private:
         }
 
         bool collectTopActiveEdges(const vector<ui> &component_frontier, ui max_count,
-            vector<ActiveEdge> &top_edges, EdgeScoreCache *edge_score_cache = nullptr) const
+            vector<ActiveEdge> &top_edges, EdgeScoreCache *edge_score_cache = nullptr,
+            const vector<char> *skip_query_vertices = nullptr) const
         {
             top_edges.clear();
             if (max_count == 0) {
@@ -1294,6 +2197,9 @@ private:
             vector<ActiveEdge> uncached_edges;
             for (ui u : component_frontier) {
                 if (u >= solver.qn) {
+                    continue;
+                }
+                if (shouldSkipQueryVertex(u, skip_query_vertices)) {
                     continue;
                 }
                 if (edge_score_cache != nullptr) {
@@ -1327,7 +2233,8 @@ private:
         bool restrictTopEdgesToCoveredComponent(vector<ActiveEdge> &top_edges,
             EdgeScoreCache &edge_score_cache, vector<ui> &component_frontier,
             vector<ActiveEdge> &component_edges, vector<ActiveEdge> &best_component_edges,
-            size_t &best_support_sum, bool &has_zero_support_component) const
+            size_t &best_support_sum, bool &has_zero_support_component,
+            const vector<char> *skip_query_vertices = nullptr) const
         {
             best_component_edges.clear();
             best_support_sum = std::numeric_limits<size_t>::max();
@@ -1337,13 +2244,14 @@ private:
             }
 
             for (const ActiveEdge &edge : top_edges) {
-                collectComponentFrontier(edge.u, component_frontier);
+                collectComponentFrontier(edge.u, component_frontier, skip_query_vertices);
                 if (component_frontier.empty()) {
                     continue;
                 }
 
                 if (!collectTopActiveEdges(component_frontier,
-                    std::numeric_limits<ui>::max(), component_edges, &edge_score_cache)) {
+                    std::numeric_limits<ui>::max(), component_edges, &edge_score_cache,
+                    skip_query_vertices)) {
                     continue;
                 }
 
@@ -1381,6 +2289,12 @@ private:
         }
 
     private:
+        bool shouldSkipQueryVertex(ui u, const vector<char> *skip_query_vertices) const
+        {
+            return skip_query_vertices != nullptr &&
+                u < skip_query_vertices->size() && (*skip_query_vertices)[u];
+        }
+
         ui countLiveAnchors(ui u) const
         {
             ui count = 0;
@@ -1399,7 +2313,6 @@ private:
                 return 0;
             }
 
-#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
             if (solver.support_dirty[u][anchor]) {
 #ifndef NDEBUG
                 Timer t_score;
@@ -1424,22 +2337,22 @@ private:
             }
 #endif
             return solver.support[u][anchor];
-#else
-#ifndef NDEBUG
-            Timer t_score;
-            ui count = solver.calEdgeSupport(u, anchor, [](ui) {});
-            long long elapsed = t_score.elapsed();
-            solver.stats.frontier_score_anchor_support_time += elapsed;
-            solver.stats.frontier_score_time += elapsed;
-            return count;
-#else
-            return solver.calEdgeSupport(u, anchor, [](ui) {});
-#endif
-#endif
         }
 
         bool isBetterActiveEdge(const ActiveEdge &lhs, const ActiveEdge &rhs) const
         {
+#ifndef NDEBUG
+            char lhs_preferred = solver.preferred_query_vertices.empty() ? 0 : solver.preferred_query_vertices[lhs.u];
+            char rhs_preferred = solver.preferred_query_vertices.empty() ? 0 : solver.preferred_query_vertices[rhs.u];
+            if (lhs_preferred != rhs_preferred) {
+                return lhs_preferred > rhs_preferred;
+            }
+            char lhs_delayed = solver.delayed_query_vertices.empty() ? 0 : solver.delayed_query_vertices[lhs.u];
+            char rhs_delayed = solver.delayed_query_vertices.empty() ? 0 : solver.delayed_query_vertices[rhs.u];
+            if (lhs_delayed != rhs_delayed) {
+                return lhs_delayed < rhs_delayed;
+            }
+#endif
             if (lhs.anchor_support != rhs.anchor_support) {
                 return lhs.anchor_support < rhs.anchor_support;
             }
@@ -1514,11 +2427,13 @@ private:
             }
         }
 
-        void collectComponentFrontier(ui best_u, vector<ui> &component_frontier) const
+        void collectComponentFrontier(ui best_u, vector<ui> &component_frontier,
+            const vector<char> *skip_query_vertices) const
         {
             component_frontier.clear();
 
-            if (solver.mapped_q[best_u] != -1) {
+            if (solver.mapped_q[best_u] != -1 ||
+                shouldSkipQueryVertex(best_u, skip_query_vertices)) {
                 return;
             }
 
@@ -1532,12 +2447,15 @@ private:
                 ui curr = q.front();
                 q.pop();
 
-                if (solver.frontier_pos[curr] != -1) {
+                if (solver.frontier_pos[curr] != -1 &&
+                    !shouldSkipQueryVertex(curr, skip_query_vertices)) {
                     component_frontier.push_back(curr);
                 }
 
                 for (ui nbr : solver.q_neighbors[curr]) {
-                    if (solver.mapped_q[nbr] == -1 && solver.frontier_visit[nbr] != solver.frontier_token) {
+                    if (solver.mapped_q[nbr] == -1 &&
+                        solver.frontier_visit[nbr] != solver.frontier_token &&
+                        !shouldSkipQueryVertex(nbr, skip_query_vertices)) {
                         solver.frontier_visit[nbr] = solver.frontier_token;
                         q.push(nbr);
                     }
@@ -1546,117 +2464,6 @@ private:
         }
 
     };
-
-    // ========================================================================
-    // Lower Bound based Pruning
-    // ========================================================================
-#ifdef CDE_LB_LIGHTWEIGHT_SPOKE
-    vector<int> lb_match_right;
-    vector<int> lb_match_left;
-    vector<char> lb_light_spoke_vis;
-    vector<vector<ui>> lb_light_spoke_adj;
-    vector<char> lb_light_spoke_is_bridge;
-
-    struct LightweightSpokeLowerBound {
-        MatchingSolver &solver;
-
-        explicit LightweightSpokeLowerBound(MatchingSolver &solver) : solver(solver) {}
-
-        bool dfsMatchLightSpoke(ui left_idx, const vector<vector<ui>> &adj)
-        {
-            for (ui right_idx : adj[left_idx]) {
-                if (solver.lb_light_spoke_vis[right_idx]) continue;
-                solver.lb_light_spoke_vis[right_idx] = 1;
-                if (solver.lb_match_right[right_idx] < 0 ||
-                    dfsMatchLightSpoke((ui)solver.lb_match_right[right_idx], adj)) {
-                    solver.lb_match_right[right_idx] = (int)left_idx;
-                    solver.lb_match_left[left_idx] = (int)right_idx;
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        bool maxMatchLightSpokeWithBridge(const vector<vector<ui>> &adj, ui left_size, ui right_size, ui &missing_non_bridge)
-        {
-            std::fill(solver.lb_match_right.begin(),
-                solver.lb_match_right.begin() + right_size, -1);
-            std::fill(solver.lb_match_left.begin(),
-                solver.lb_match_left.begin() + left_size, -1);
-
-            ui non_bridge_count = 0;
-            for (ui i = 0; i < left_size; ++i) {
-                if (solver.lb_light_spoke_is_bridge[i]) {
-                    std::fill(solver.lb_light_spoke_vis.begin(), solver.lb_light_spoke_vis.begin() + right_size, 0);
-                    if (!dfsMatchLightSpoke(i, adj)) return false;
-                }
-                else {
-                    non_bridge_count++;
-                }
-            }
-
-            ui non_bridge_match = 0;
-            for (ui i = 0; i < left_size; ++i) {
-                if (solver.lb_light_spoke_is_bridge[i]) {
-                    continue;
-                }
-
-                std::fill(solver.lb_light_spoke_vis.begin(),
-                    solver.lb_light_spoke_vis.begin() + right_size, 0);
-                if (dfsMatchLightSpoke(i, adj)) {
-                    non_bridge_match++;
-                }
-            }
-
-            missing_non_bridge = non_bridge_count - non_bridge_match;
-            return true;
-        }
-
-        ui computeLightSpokeLB(ui u, ui v)
-        {
-            const vector<ui> &u_neighbors = solver.q_neighbors[u];
-            ui deg_v = 0;
-            const ui *v_neighbors = solver.data_graph->getVertexNeighbors(v, deg_v);
-
-            ui left_size = 0;
-            for (ui i = 0; i < solver.q_degree[u]; ++i) {
-                ui u1 = u_neighbors[i];
-                if (solver.mapped_q[u1] != -1 || solver.excluded_edges[u][u1]) {
-                    continue;
-                }
-
-                vector<ui> &adj = solver.lb_light_spoke_adj[left_size];
-                adj.clear();
-                solver.lb_light_spoke_is_bridge[left_size] =
-                    solver.q_neighbor_is_bridge[u][i];
-
-                for (ui j = 0; j < deg_v; ++j) {
-                    ui v1 = v_neighbors[j];
-                    if (v1 == v || solver.mapped_g[v1] != -1 ||
-                        solver.excluded_cands[u1].contains(v1) ||
-                        !solver.candidates[u1].contains(v1)) {
-                        continue;
-                    }
-                    adj.push_back(j);
-                }
-
-                left_size++;
-            }
-
-            if (left_size == 0) {
-                return 0;
-            }
-
-            ui missing_non_bridge = 0;
-            if (!maxMatchLightSpokeWithBridge(solver.lb_light_spoke_adj,
-                left_size, deg_v, missing_non_bridge)) {
-                return (ui)INF;
-            }
-            return missing_non_bridge;
-        }
-    };
-#endif
-    // ========================================================================
 
     ui countAnchorsByMark(ui u, ui selected_anchor, const vector<ui> &candidate_vertices, vector<ui> &anchor_counts)
     {
@@ -1779,7 +2586,6 @@ private:
         return count;
     }
 
-#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
     inline void recordSupportSnapshot(ui u, ui anchor)
     {
         if (active_support_snapshots == nullptr) {
@@ -1813,7 +2619,6 @@ private:
             }
         }
     }
-#endif
 
     // update active_frontier, frontier_pos, anchor_support
     inline void updateFrontierStatus(ui u)
@@ -1850,11 +2655,9 @@ private:
                 anchor_count[u1]++;
                 updateFrontierStatus(u1);
 
-#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
                 if (mapped_q[u1] == -1 && frontier_pos[u1] != -1) {
                     markSupportDirty(u1, u);
                 }
-#endif
             }
             else {
                 anchor_count[u1]--;
@@ -1873,9 +2676,7 @@ private:
         assert(anchor_count[u] > 0);
         anchor_count[u]--;
         if(anchor_count[u] == 0) updateFrontierStatus(u);
-#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
         markLiveAnchorSupportDirty(u);
-#endif
     }
 
     // restore (u, anchor), update anchor_count[u], active_frontier and anchor_support
@@ -1887,7 +2688,6 @@ private:
         if(anchor_count[u] == 1) updateFrontierStatus(u);
     }
 
-#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
     struct SupportUndoScope {
         MatchingSolver &solver;
         vector<SupportSnapshot> *previous_snapshots;
@@ -1911,7 +2711,6 @@ private:
             solver.active_support_snapshots = previous_snapshots;
         }
     };
-#endif
     // ========================================================================
 
     // ========================================================================
@@ -1924,29 +2723,29 @@ private:
         vector<ui> candidate_vertices;
         vector<ui> candidate_anchor_counts;
         vector<ui> component_frontier;
+        vector<char> terminal_skip;
+        vector<ui> terminal_vertices;
+        vector<ui> active_terminal_vertices;
+        vector<TerminalTailVertex> terminal_tail_vertices;
         EdgeScoreCache edge_score_cache;
         BranchSelector branch_selector;
-#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
         vector<SupportSnapshot> local_support_snapshots;
-#endif
-#ifdef CDE_LB_LIGHTWEIGHT_SPOKE
-        LightweightSpokeLowerBound light_lb;
-#endif
         explicit DfsBuffer(MatchingSolver &solver)
             : branch_selector(solver)
-#ifdef CDE_LB_LIGHTWEIGHT_SPOKE
-            , light_lb(solver)
-#endif
         {}
 
         // reserve space for dfs buffers
-        void reserve(ui threshold, ui max_g_deg, ui gn)
+        void reserve(ui threshold, ui max_g_deg, ui qn, ui gn)
         {
             top_edges.reserve((size_t)threshold + 1);
             component_edges.reserve((size_t)threshold + 1);
             best_component_edges.reserve((size_t)threshold + 1);
             candidate_vertices.reserve(max_g_deg);
             candidate_anchor_counts.reserve(max_g_deg);
+            terminal_skip.reserve(qn);
+            terminal_vertices.reserve(qn);
+            active_terminal_vertices.reserve(qn);
+            terminal_tail_vertices.reserve(qn);
             local_excluded_edges.reserve((size_t)threshold + 1);
             size_t cand_size = std::min((size_t)gn, ((size_t)threshold + 1) * (size_t)max_g_deg);
             local_excluded_cands.reserve(cand_size);
@@ -1962,11 +2761,12 @@ private:
             component_frontier.clear();
             component_edges.clear();
             best_component_edges.clear();
+            terminal_vertices.clear();
+            active_terminal_vertices.clear();
+            terminal_tail_vertices.clear();
             local_excluded_edges.clear();
             local_excluded_cands.clear();
-#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
             local_support_snapshots.clear();
-#endif
         }
 
         void recordExcludedEdge(ui u, ui anchor)
@@ -2005,7 +2805,7 @@ private:
 
     void reserveDfsBuffer(DfsBuffer &buf) const
     {
-        buf.reserve(threshold, max_g_deg, gn);
+        buf.reserve(threshold, max_g_deg, qn, gn);
     }
 
     void initDfsBuffer()
@@ -2026,6 +2826,297 @@ private:
     }
     // ========================================================================
 
+    // ========================================================================
+    // Terminal-tail enumeration
+    // ========================================================================
+    bool isTerminalQueryVertex(ui u) const
+    {
+        if (u >= qn || mapped_q[u] != -1 || anchor_count[u] == 0) {
+            return false;
+        }
+
+        for (ui nbr : q_neighbors[u]) {
+            if (excluded_edges[u][nbr]) {
+                continue;
+            }
+            if (mapped_q[nbr] == -1) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    ui terminalLiveAnchorCount(ui u) const
+    {
+        ui count = 0;
+        for (ui anchor : q_neighbors[u]) {
+            if (!excluded_edges[u][anchor] && mapped_q[anchor] != -1) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    TerminalScan markTerminalVertices(DfsBuffer &buf)
+    {
+        TerminalScan scan;
+        if (buf.terminal_skip.size() != qn) {
+            buf.terminal_skip.assign(qn, 0);
+        }
+        else {
+            std::fill(buf.terminal_skip.begin(), buf.terminal_skip.end(), 0);
+        }
+        buf.terminal_vertices.clear();
+        buf.active_terminal_vertices.clear();
+
+        for (ui u = 0; u < qn; ++u) {
+            if (mapped_q[u] != -1) {
+                continue;
+            }
+
+            scan.unmatched_count++;
+            if (isTerminalQueryVertex(u)) {
+                scan.terminal_count++;
+                buf.terminal_vertices.push_back(u);
+                if (frontier_pos[u] != -1) {
+                    buf.terminal_skip[u] = 1;
+                    buf.active_terminal_vertices.push_back(u);
+                    scan.terminal_frontier_count++;
+                }
+            }
+            else if (frontier_pos[u] != -1) {
+                scan.nonterminal_frontier_count++;
+            }
+        }
+        return scan;
+    }
+
+    ui terminalMissingDelta(ui u, ui v, ui limit = std::numeric_limits<ui>::max()) const
+    {
+        ui delta = 0;
+        for (ui anchor : q_neighbors[u]) {
+            if (excluded_edges[u][anchor] || mapped_q[anchor] == -1) {
+                continue;
+            }
+            if (!data_graph->hasEdge(v, (ui)mapped_q[anchor])) {
+                delta++;
+                if (delta > limit) {
+                    return delta;
+                }
+            }
+        }
+        return delta;
+    }
+
+    template <typename Visitor>
+    bool visitTerminalSupportedCandidates(ui u, Visitor visit)
+    {
+        if (++data_vertex_mark_token == 0) {
+            std::fill(data_vertex_mark.begin(), data_vertex_mark.end(), 0);
+            data_vertex_mark_token = 1;
+        }
+        ui token = data_vertex_mark_token;
+
+        for (ui anchor : q_neighbors[u]) {
+            if (excluded_edges[u][anchor] || mapped_q[anchor] == -1) {
+                continue;
+            }
+
+            ui deg = 0;
+            const ui *nbrs = data_graph->getVertexNeighbors((ui)mapped_q[anchor], deg);
+            for (ui i = 0; i < deg; ++i) {
+                ui v = nbrs[i];
+                if (data_vertex_mark[v] == token) {
+                    continue;
+                }
+                data_vertex_mark[v] = token;
+#ifndef NDEBUG
+                stats.terminal_bucket_candidate_checks++;
+#endif
+
+                if (!candidates[u].contains(v)) {
+                    continue;
+                }
+                if (mapped_g[v] != -1) {
+                    continue;
+                }
+                if (excluded_cands[u].contains(v)) {
+                    continue;
+                }
+                if (!visit(v)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    bool buildTerminalCandidateBuckets(ui u, ui cost, vector<vector<ui>> &buckets,
+        ui &feasible_count, ui &min_delta)
+    {
+        assert(cost <= threshold);
+        ui remaining_budget = threshold - cost;
+        buckets.assign((size_t)remaining_budget + 1, vector<ui>());
+        feasible_count = 0;
+        min_delta = std::numeric_limits<ui>::max();
+        ui live_anchor_count = terminalLiveAnchorCount(u);
+        if (live_anchor_count == 0) {
+            return false;
+        }
+
+        visitTerminalSupportedCandidates(u, [&](ui v) -> bool {
+            ui missing_delta = terminalMissingDelta(u, v, remaining_budget);
+            if (missing_delta > remaining_budget) {
+                return true;
+            }
+            if (missing_delta >= live_anchor_count) {
+                return true;
+            }
+
+            buckets[missing_delta].push_back(v);
+            feasible_count++;
+            if (missing_delta < min_delta) {
+                min_delta = missing_delta;
+            }
+            return true;
+        });
+
+        return feasible_count > 0;
+    }
+
+    bool terminalVertexHasFeasibleCandidate(ui u, ui cost)
+    {
+        assert(cost <= threshold);
+        ui remaining_budget = threshold - cost;
+        ui live_anchor_count = terminalLiveAnchorCount(u);
+        if (live_anchor_count == 0) {
+            return false;
+        }
+
+        bool found = false;
+        visitTerminalSupportedCandidates(u, [&](ui v) -> bool {
+            ui missing_delta = terminalMissingDelta(u, v, remaining_budget);
+            if (missing_delta <= remaining_budget &&
+                missing_delta < live_anchor_count) {
+                found = true;
+                return false;
+            }
+            return true;
+        });
+        return found;
+    }
+
+    bool activeTerminalVerticesHaveCandidate(const vector<ui> &terminal_vertices,
+        ui cost)
+    {
+        for (ui u : terminal_vertices) {
+            if (!terminalVertexHasFeasibleCandidate(u, cost)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool buildTerminalTailVertices(const vector<ui> &terminal_vertices, ui cost,
+        vector<TerminalTailVertex> &tail_vertices)
+    {
+        tail_vertices.clear();
+        tail_vertices.reserve(terminal_vertices.size());
+
+        for (ui u : terminal_vertices) {
+            TerminalTailVertex tail_vertex;
+            tail_vertex.u = u;
+            if (!buildTerminalCandidateBuckets(u, cost, tail_vertex.buckets,
+                tail_vertex.feasible_count, tail_vertex.min_delta)) {
+                return false;
+            }
+            tail_vertices.push_back(std::move(tail_vertex));
+        }
+
+        std::sort(tail_vertices.begin(), tail_vertices.end(),
+            [this](const TerminalTailVertex &lhs, const TerminalTailVertex &rhs) {
+                if (lhs.feasible_count != rhs.feasible_count) {
+                    return lhs.feasible_count < rhs.feasible_count;
+                }
+                if (lhs.min_delta != rhs.min_delta) {
+                    return lhs.min_delta < rhs.min_delta;
+                }
+                if (q_degree[lhs.u] != q_degree[rhs.u]) {
+                    return q_degree[lhs.u] > q_degree[rhs.u];
+                }
+                return lhs.u < rhs.u;
+            });
+        return true;
+    }
+
+    void recordTerminalPrune()
+    {
+        stats.prun_calls++;
+#ifndef NDEBUG
+        stats.terminal_prune_calls++;
+#endif
+        recordBranchProfilePrune();
+    }
+
+    void enumerateTerminalTail(size_t pos, ui cost,
+        vector<TerminalTailVertex> &tail_vertices)
+    {
+        if (outputLimitReached()) {
+            stats.output_limit_reached = true;
+            return;
+        }
+
+#ifndef NDEBUG
+        stats.terminal_tail_calls++;
+#endif
+        assert(cost <= threshold);
+
+        if (pos == tail_vertices.size()) {
+            assert(part_M.size() == qn);
+            stats.result_count++;
+            noteOutputLimitIfReached();
+            recordBranchProfileAnswer();
+#ifndef NDEBUG
+            recordBranchOrderAnswerDebug();
+            results_ptr->push_back(part_M);
+#endif
+            return;
+        }
+
+        TerminalTailVertex &tail_vertex = tail_vertices[pos];
+        ui u = tail_vertex.u;
+        assert(mapped_q[u] == -1);
+
+        ui remaining_budget = threshold - cost;
+        ui max_delta = std::min((ui)tail_vertex.buckets.size() - 1, remaining_budget);
+        for (ui missing_delta = 0; missing_delta <= max_delta; ++missing_delta) {
+            const vector<ui> &bucket = tail_vertex.buckets[missing_delta];
+            for (ui v : bucket) {
+                if (mapped_g[v] != -1) {
+                    continue;
+                }
+
+#ifndef NDEBUG
+                recordBranchOrderDebug(u);
+#endif
+                mapped_q[u] = (int)v;
+                mapped_g[v] = (int)u;
+                part_M.push_back({ u, v });
+
+                enumerateTerminalTail(pos + 1, cost + missing_delta, tail_vertices);
+
+                part_M.pop_back();
+                mapped_g[v] = -1;
+                mapped_q[u] = -1;
+
+                if (outputLimitReached()) {
+                    return;
+                }
+            }
+        }
+    }
+    // ========================================================================
+
     // =====================================================
     // Procedure DFS(M_part, cost, X)
     //
@@ -2034,6 +3125,7 @@ private:
     // =====================================================
     void dfs(ui cost)
     {
+        // printf("part_M.size() = %zu, cost = %u\n", part_M.size(), cost);
         if (outputLimitReached()) {
             stats.output_limit_reached = true;
             return;
@@ -2042,10 +3134,13 @@ private:
         assert(part_M.size() <= qn);
         assert(cost <= threshold);
 
+        recordBranchProfileDfsEnter();
+        BranchProfileDfsScope branch_profile_dfs_scope(*this);
         if (part_M.size() == qn) {
             stats.recursion_calls++;
             stats.result_count++;
             noteOutputLimitIfReached();
+            recordBranchProfileAnswer();
 #ifndef NDEBUG
             recordBranchOrderAnswerDebug();
             results_ptr->push_back(part_M);
@@ -2053,16 +3148,11 @@ private:
             return;
         }
 
-        assert(!active_frontier.empty());
-        // if (active_frontier.empty()) return;
-
         stats.recursion_calls++;
 
         DfsBuffer &buf = dfsBufferForDepth(part_M.size());
         buf.clearLocal();
-#ifdef CDE_EDGE_IE_CACHE_ANCHOR_SUPPORT
         SupportUndoScope support_undo_scope(*this, buf.local_support_snapshots);
-#endif
         vector<ui> &candidate_vertices = buf.candidate_vertices;
         vector<ui> &candidate_anchor_counts = buf.candidate_anchor_counts;
         vector<ActiveEdge> &top_edges = buf.top_edges;
@@ -2070,6 +3160,37 @@ private:
         size_t selected_component_support_sum = std::numeric_limits<size_t>::max();
         bool selected_covered_component = false;
         bool has_zero_support_component = false;
+        const vector<char> *terminal_skip_vertices = nullptr;
+
+        if (terminal_buckets_enabled) {
+            TerminalScan terminal_scan = markTerminalVertices(buf);
+
+            if (terminal_scan.allRemainingTerminal()) {
+                if (!buildTerminalTailVertices(buf.terminal_vertices, current_cost,
+                    buf.terminal_tail_vertices)) {
+                    recordTerminalPrune();
+                    return;
+                }
+
+                enumerateTerminalTail(0, current_cost, buf.terminal_tail_vertices);
+                return;
+            }
+
+            if (terminal_scan.terminal_frontier_count > 0) {
+                if (!activeTerminalVerticesHaveCandidate(buf.active_terminal_vertices,
+                    current_cost)) {
+                    recordTerminalPrune();
+                    return;
+                }
+
+                if (terminal_scan.hasNonterminalFrontier()) {
+                    terminal_skip_vertices = &buf.terminal_skip;
+#ifndef NDEBUG
+                    stats.terminal_delayed_vertices += terminal_scan.terminal_frontier_count;
+#endif
+                }
+            }
+        }
 
         Timer t_frontier;
         ui max_branch_edges = threshold - current_cost + 1;
@@ -2078,7 +3199,8 @@ private:
             Timer t_select;
 #endif
             if (!buf.branch_selector.collectTopActiveEdges(active_frontier,
-                max_branch_edges, top_edges, &buf.edge_score_cache)) {
+                max_branch_edges, top_edges, &buf.edge_score_cache,
+                terminal_skip_vertices)) {
                 stats.frontier_time += t_frontier.elapsed();
                 return;
             }
@@ -2090,6 +3212,7 @@ private:
         if (top_edges.back().anchor_support == 0) {
             stats.frontier_time += t_frontier.elapsed();
             stats.prun_calls++;
+            recordBranchProfilePrune();
             return;
         }
 
@@ -2100,7 +3223,7 @@ private:
             selected_covered_component = buf.branch_selector.restrictTopEdgesToCoveredComponent(top_edges,
                 buf.edge_score_cache, buf.component_frontier, buf.component_edges,
                 buf.best_component_edges, selected_component_support_sum,
-                has_zero_support_component);
+                has_zero_support_component, terminal_skip_vertices);
 #ifndef NDEBUG
             stats.frontier_component_time += t_component.elapsed();
 #endif
@@ -2110,6 +3233,7 @@ private:
         if (has_zero_support_component ||
             (selected_covered_component && selected_component_support_sum == 0)) {
             stats.prun_calls++;
+            recordBranchProfilePrune();
             return;
         }
 
@@ -2118,7 +3242,6 @@ private:
 #endif
         Timer t_branch;
         long long child_dfs_time = 0;
-        long long local_lb_time = 0;
 
         ui first_branch_edge = 0;
         bool pruned_by_forced_zero = false;
@@ -2139,12 +3262,14 @@ private:
             current_cost++;
             excludeFrontierEdge(u, ua);
             buf.recordExcludedEdge(u, ua);
+            recordBranchProfileForcedZeroExclude(u, ua);
 #ifndef NDEBUG
             stats.exclude_update_time += t_exclude_update.elapsed();
 #endif
 
             if (current_cost > threshold) {
                 stats.prun_calls++;
+                recordBranchProfilePrune();
                 pruned_by_forced_zero = true;
                 break;
             }
@@ -2172,6 +3297,7 @@ private:
 #else
             calEdgeSupport(u, ua, [&](ui v) {candidate_vertices.push_back(v);});
 #endif
+            recordBranchProfileSelectedEdge(u, ua, candidate_vertices.size());
             // number of live anchors of u excluding anchor ua
             ui anchor_num = 0;
 #ifndef NDEBUG
@@ -2188,31 +3314,19 @@ private:
 #ifndef NDEBUG
             Timer t_candidate_loop;
             long long candidate_child_time_before = child_dfs_time;
-            long long candidate_lb_time_before = local_lb_time;
             long long candidate_support_update_time = 0;
 #endif
             for (ui i = 0; i < candidate_vertices.size(); ++i) {
                 ui v = candidate_vertices[i];
+                recordBranchProfileIncludeConsidered(u, ua);
                 ui delta = anchor_num - candidate_anchor_counts[i];
                 ui next_cost = current_cost + delta;
-                if (next_cost > threshold) continue;
-
-#ifdef CDE_LB_LIGHTWEIGHT_SPOKE
-                if (threshold - next_cost <= (ui)CDE_EDGE_IE_LB_THRESHOLD_GAP) {
-                    Timer t_lb;
-                    ui light_spoke_lb = buf.light_lb.computeLightSpokeLB(u, v);
-                    long long elapsed = t_lb.elapsed();
-                    stats.lb_time += elapsed;
-#ifndef NDEBUG
-                    stats.lb_light_spoke_time += elapsed;
-#endif
-                    local_lb_time += elapsed;
-                    if (light_spoke_lb > threshold - next_cost) {
-                        stats.prun_calls++;
-                        continue;
-                    }
+                if (next_cost > threshold) {
+                    recordBranchProfileIncludeCostPruned(u, ua);
+                    continue;
                 }
-#endif
+
+                recordBranchProfileIncludeTaken(u, ua);
 
 #ifndef NDEBUG
                 recordBranchOrderDebug(u);
@@ -2253,7 +3367,6 @@ private:
                 long long candidate_elapsed = t_candidate_loop.elapsed();
                 long long candidate_excluded_time =
                     (child_dfs_time - candidate_child_time_before) +
-                    (local_lb_time - candidate_lb_time_before) +
                     candidate_support_update_time;
                 stats.candidate_loop_time += candidate_elapsed > candidate_excluded_time
                     ? candidate_elapsed - candidate_excluded_time : 0;
@@ -2271,11 +3384,13 @@ private:
             buf.recordExcludedEdge(u, ua);
 
             if (current_cost > threshold) {
+                recordBranchProfileExclude(u, ua, true);
 #ifndef NDEBUG
                 stats.exclude_update_time += t_exclude_update.elapsed();
 #endif
                 break;
             }
+            recordBranchProfileExclude(u, ua, false);
 
 #ifndef NDEBUG
             recordBranchOrderDebug(u);
@@ -2297,7 +3412,7 @@ private:
 #ifndef NDEBUG
             branch_timing_depth--;
 #endif
-            long long excluded_time = child_dfs_time + local_lb_time;
+            long long excluded_time = child_dfs_time;
             stats.branch_time += branch_elapsed > excluded_time
                 ? branch_elapsed - excluded_time : 0;
         }

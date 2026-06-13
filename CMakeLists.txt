@@ -4,6 +4,9 @@ project(SSM_GED LANGUAGES CXX)
 
 add_compile_options(-O3 -g -Wall)
 
+set(SSM_GED_COMPILE_DEFINITIONS "" CACHE STRING
+    "Extra semicolon-separated compile definitions for SSM-GED targets.")
+
 include_directories(
     ${PROJECT_SOURCE_DIR}
 )
@@ -35,6 +38,9 @@ foreach(ALGO_SOURCE ${SSM_GED_ALGORITHM_SOURCES})
         ${SSM_GED_COMMON_SOURCES}
         ${ALGO_SOURCE}
     )
+    if (SSM_GED_COMPILE_DEFINITIONS)
+        target_compile_definitions(${TARGET_NAME} PRIVATE ${SSM_GED_COMPILE_DEFINITIONS})
+    endif()
     target_link_libraries(${TARGET_NAME} PRIVATE Threads::Threads)
 
     list(APPEND SSM_GED_EXECUTABLES ${TARGET_NAME})

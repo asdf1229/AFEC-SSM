@@ -10,6 +10,16 @@ namespace {
     bool reported_result_count_set = false;
     size_t reported_result_count = 0;
 
+#ifndef NDEBUG
+    void enable_immediate_output()
+    {
+        setvbuf(stdout, nullptr, _IONBF, 0);
+        setvbuf(stderr, nullptr, _IONBF, 0);
+        cout.setf(ios::unitbuf);
+        cerr.setf(ios::unitbuf);
+    }
+#endif
+
     LabelID label2int(const string str, map<string, LabelID> &M)
     {
         if (M.find(str) == M.end()) M[str] = M.size();
@@ -319,6 +329,8 @@ namespace ssm_ged {
     int run_algorithm_main(int argc, char *argv[], const AlgorithmDefinition &algorithm)
     {
 #ifndef NDEBUG
+        enable_immediate_output();
+
         printf("**** SSM-GED [%s] (Debug) build at %s %s ***\n",
             algorithm.display_name.c_str(), __TIME__, __DATE__);
 #else

@@ -54,6 +54,10 @@ DEFAULT_DISPLAY_METRICS = ("count", "run_ms", "recursion_calls")
 RUNTIME_LOW_COLOR_THRESHOLD_MS = 200.0
 MISSING_RUNTIME_RATIO = 10.0
 DEFAULT_OURS_ALGORITHM = "cde_edge_ie"
+SPEEDUP_BUCKET_EDGES = tuple(
+    [i / 10.0 for i in range(1, 11)] + [float(i) for i in range(2, 11)]
+)
+TOO_SHORT_RUNTIME_REASON = "compared_runtimes_too_short"
 
 
 def parse_args() -> argparse.Namespace:
@@ -382,6 +386,14 @@ def format_number(value: Optional[float], digits: int = 4) -> str:
     return f"{value:.{digits}f}"
 
 
+def format_compact_number(value: float) -> str:
+    if math.isinf(value):
+        return "inf"
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:g}"
+
+
 def natural_key(value: object) -> Tuple[object, ...]:
     parts = re.split(r"(\d+)", str(value))
     key: List[object] = []
@@ -459,6 +471,8 @@ def build_output_columns(
         "speedup_vs_best_other",
         "speedup_direction",
         "speedup_color",
+        "speedup_comparable",
+        "speedup_skip_reason",
     ):
         if column not in columns:
             columns.append(column)
@@ -500,19 +514,33 @@ def enrich_row(
         higher_is_better,
         missing_ratio,
     )
-    color, direction = ratio_color(
-        speedup,
-        cap_ratio,
-        suppress_runtime_color(metric, ours_value, best_value),
-    )
+    too_short_runtime = suppress_runtime_color(metric, ours_value, best_value)
+    displayed_speedup = None if too_short_runtime else speedup
+    if too_short_runtime:
+        color = ""
+        direction = TOO_SHORT_RUNTIME_REASON
+    else:
+        color, direction = ratio_color(
+            displayed_speedup,
+            cap_ratio,
+        )
 
     output["best_other_algorithm"] = best_algo
     output[f"best_other_{metric}"] = format_number(best_value)
     output["ours_algorithm"] = ours_algorithm
     output[f"{ours_algorithm}_{metric}"] = format_number(ours_value)
-    output["speedup_vs_best_other"] = format_number(speedup)
+    output["speedup_vs_best_other"] = format_number(displayed_speedup)
     output["speedup_direction"] = direction
     output["speedup_color"] = color
+    output["speedup_comparable"] = (
+        "1" if displayed_speedup is not None and displayed_speedup > 0 else ""
+    )
+    if too_short_runtime:
+        output["speedup_skip_reason"] = TOO_SHORT_RUNTIME_REASON
+    elif displayed_speedup is None:
+        output["speedup_skip_reason"] = "missing_or_invalid_speedup"
+    else:
+        output["speedup_skip_reason"] = ""
     return output
 
 
@@ -537,9 +565,15 @@ def write_csv(path: Path, rows: Sequence[Dict[str, str]], columns: Sequence[str]
 def summarize_group(rows: Sequence[Dict[str, str]]) -> Dict[str, str]:
     ratios = []
     faster = slower = equal = comparable = 0
+    too_short_runtime = 0
     for row in rows:
+        if row.get("speedup_skip_reason") == TOO_SHORT_RUNTIME_REASON:
+            too_short_runtime += 1
+        if row.get("speedup_comparable") != "1":
+            continue
+
         ratio = to_float(row.get("speedup_vs_best_other"))
-        if ratio is None or ratio <= 0 or math.isinf(ratio):
+        if ratio is None or ratio <= 0:
             continue
         comparable += 1
         ratios.append(ratio)
@@ -558,6 +592,8 @@ def summarize_group(rows: Sequence[Dict[str, str]]) -> Dict[str, str]:
     return {
         "rows": str(len(rows)),
         "comparable_rows": str(comparable),
+        "not_compared_rows": str(len(rows) - comparable),
+        "too_short_runtime_rows": str(too_short_runtime),
         "ours_faster_rows": str(faster),
         "ours_slower_rows": str(slower),
         "equal_rows": str(equal),
@@ -644,7 +680,7 @@ def build_threshold_speedup_table(
             continue
         row_keys.add(key)
         bucket = buckets[(key, threshold)]
-        if ratio is not None:
+        if ratio is not None and row.get("speedup_comparable") == "1":
             bucket["ratios"].append(ratio)
         if ours_value is not None:
             bucket["ours_values"].append(ours_value)
@@ -734,6 +770,94 @@ def write_table_block(
     handle.write("</tbody></table></div></div>\n")
 
 
+def write_summary_chips(
+    handle,
+    summary: Dict[str, str],
+    ours_algorithm: str,
+) -> None:
+    ours_label = html.escape(ours_algorithm)
+    handle.write(
+        "<div class=\"summary\">"
+        f"<span>rows: {html.escape(summary.get('rows', ''))}</span>"
+        f"<span>comparable: {html.escape(summary.get('comparable_rows', ''))}</span>"
+        f"<span>not compared: {html.escape(summary.get('not_compared_rows', ''))}</span>"
+        f"<span>too-short runtime: {html.escape(summary.get('too_short_runtime_rows', ''))}</span>"
+        f"<span>{ours_label} faster: {html.escape(summary.get('ours_faster_rows', ''))}</span>"
+        f"<span>{ours_label} slower: {html.escape(summary.get('ours_slower_rows', ''))}</span>"
+        f"<span>tie: {html.escape(summary.get('equal_rows', ''))}</span>"
+        f"<span>geomean speedup: {html.escape(summary.get('geomean_speedup', ''))}</span>"
+        "</div>\n"
+    )
+
+
+def build_speedup_distribution_table(
+    rows: Sequence[Dict[str, str]],
+) -> Tuple[List[str], List[Dict[str, str]]]:
+    labels = []
+    lower = None
+    for edge in SPEEDUP_BUCKET_EDGES:
+        upper_label = format_compact_number(edge)
+        if lower is None:
+            labels.append(f"<= {upper_label}")
+        else:
+            labels.append(f"({format_compact_number(lower)}, {upper_label}]")
+        lower = edge
+    labels.append(f"> {format_compact_number(SPEEDUP_BUCKET_EDGES[-1])}")
+
+    counts = [0 for _ in labels]
+    total = 0
+    for row in rows:
+        if row.get("speedup_comparable") != "1":
+            continue
+        ratio = to_float(row.get("speedup_vs_best_other"))
+        if ratio is None or ratio <= 0:
+            continue
+
+        total += 1
+        bucket_index = len(SPEEDUP_BUCKET_EDGES)
+        if not math.isinf(ratio):
+            for index, edge in enumerate(SPEEDUP_BUCKET_EDGES):
+                if ratio <= edge:
+                    bucket_index = index
+                    break
+        counts[bucket_index] += 1
+
+    table_rows = []
+    for label, count in zip(labels, counts):
+        share = f"{count / total * 100:.2f}%" if total else ""
+        table_rows.append(
+            {
+                "speedup_range": label,
+                "count": str(count),
+                "share": share,
+            }
+        )
+
+    table_rows.append(
+        {
+            "speedup_range": "total",
+            "count": str(total),
+            "share": "100.00%" if total else "",
+        }
+    )
+    return ["speedup_range", "count", "share"], table_rows
+
+
+def write_overall_section(
+    handle,
+    grouped: Sequence[Tuple[str, Dict[str, str], Sequence[Dict[str, str]]]],
+    ours_algorithm: str,
+) -> None:
+    all_rows = [row for _, _, rows in grouped for row in rows]
+    summary = summarize_group(all_rows)
+    bucket_columns, bucket_rows = build_speedup_distribution_table(all_rows)
+
+    handle.write("<h2>Overall</h2>\n")
+    write_summary_chips(handle, summary, ours_algorithm)
+    handle.write("<h3>Speedup distribution</h3>\n")
+    write_table_block(handle, bucket_columns, bucket_rows, speedup_column="")
+
+
 def write_html_report(
     path: Path,
     grouped: Sequence[Tuple[str, Dict[str, str], Sequence[Dict[str, str]]]],
@@ -780,28 +904,25 @@ td.text, th.text { text-align: left; }
             f"<span style=\"background:#eaf2ea\">green: {ours_label} faster</span>"
             f"<span style=\"background:#faeded\">red: {ours_label} slower</span>"
             f"<span style=\"background:#2e7d32;color:#fff\">deeper color: more extreme ratio</span>"
-            f"<span>no color: both runtimes &lt; 20 ms</span>"
+            f"<span>not compared: both compared runtimes &lt; "
+            f"{html.escape(format_compact_number(RUNTIME_LOW_COLOR_THRESHOLD_MS))} ms</span>"
             f"<span>missing runtime: treated as a 10x gap</span>"
             "</div>\n"
         )
 
-        display_columns = [
-            column for column in columns
-            if column not in {"speedup_direction", "speedup_color"}
-        ]
+        hidden_columns = {
+            "speedup_direction",
+            "speedup_color",
+            "speedup_comparable",
+            "speedup_skip_reason",
+        }
+        display_columns = [column for column in columns if column not in hidden_columns]
+
+        write_overall_section(handle, grouped, ours_algorithm)
 
         for title, summary, rows in grouped:
             handle.write(f"<h2>{html.escape(title)}</h2>\n")
-            handle.write(
-                "<div class=\"summary\">"
-                f"<span>rows: {html.escape(summary.get('rows', ''))}</span>"
-                f"<span>comparable: {html.escape(summary.get('comparable_rows', ''))}</span>"
-                f"<span>{ours_label} faster: {html.escape(summary.get('ours_faster_rows', ''))}</span>"
-                f"<span>{ours_label} slower: {html.escape(summary.get('ours_slower_rows', ''))}</span>"
-                f"<span>tie: {html.escape(summary.get('equal_rows', ''))}</span>"
-                f"<span>geomean speedup: {html.escape(summary.get('geomean_speedup', ''))}</span>"
-                "</div>\n"
-            )
+            write_summary_chips(handle, summary, ours_algorithm)
             handle.write("<h3>Detailed results</h3>\n")
             write_table_block(handle, display_columns, rows)
 
@@ -850,6 +971,7 @@ def write_speedup_by_t_report(
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #111827; }
 h1 { font-size: 24px; margin: 0 0 8px; }
 h2 { font-size: 18px; margin: 28px 0 8px; }
+h3 { font-size: 14px; margin: 16px 0 8px; }
 p { color: #4b5563; margin: 0 0 18px; }
 table { border-collapse: collapse; width: 100%; margin-bottom: 24px; font-size: 13px; }
 th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: right; white-space: nowrap; }
@@ -881,23 +1003,17 @@ td.text, th.text { text-align: left; }
             f"<span style=\"background:#eaf2ea\">green: {ours_label} faster</span>"
             f"<span style=\"background:#faeded\">red: {ours_label} slower</span>"
             f"<span style=\"background:#2e7d32;color:#fff\">deeper color: more extreme ratio</span>"
-            f"<span>no color: both runtimes &lt; 20 ms</span>"
+            f"<span>not compared: both compared runtimes &lt; "
+            f"{html.escape(format_compact_number(RUNTIME_LOW_COLOR_THRESHOLD_MS))} ms</span>"
             f"<span>missing runtime: treated as a 10x gap</span>"
             "</div>\n"
         )
 
+        write_overall_section(handle, grouped, ours_algorithm)
+
         for title, summary, rows in grouped:
             handle.write(f"<h2>{html.escape(title)}</h2>\n")
-            handle.write(
-                "<div class=\"summary\">"
-                f"<span>rows: {html.escape(summary.get('rows', ''))}</span>"
-                f"<span>comparable: {html.escape(summary.get('comparable_rows', ''))}</span>"
-                f"<span>{ours_label} faster: {html.escape(summary.get('ours_faster_rows', ''))}</span>"
-                f"<span>{ours_label} slower: {html.escape(summary.get('ours_slower_rows', ''))}</span>"
-                f"<span>tie: {html.escape(summary.get('equal_rows', ''))}</span>"
-                f"<span>geomean speedup: {html.escape(summary.get('geomean_speedup', ''))}</span>"
-                "</div>\n"
-            )
+            write_summary_chips(handle, summary, ours_algorithm)
             threshold_columns, threshold_rows = build_threshold_speedup_table(
                 rows, cap_ratio, metric, ours_algorithm
             )
@@ -948,6 +1064,8 @@ def is_text_column(column: str) -> bool:
         "ours_algorithm",
         "speedup_direction",
         "speedup_color",
+        "speedup_skip_reason",
+        "speedup_range",
     }:
         return True
     return column.endswith("_output") or column.endswith("_file")
@@ -1037,6 +1155,8 @@ def main() -> int:
             index_columns = list(group_by) + [
                 "rows",
                 "comparable_rows",
+                "not_compared_rows",
+                "too_short_runtime_rows",
                 "ours_faster_rows",
                 "ours_slower_rows",
                 "equal_rows",
