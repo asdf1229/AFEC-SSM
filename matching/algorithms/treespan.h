@@ -44,6 +44,8 @@ public:
             return false;
         }
 
+        cacheCandidateCounts();
+        initOrderingStatistics();
         orderQueryEdges();
 
         root = selectRoot();
@@ -113,16 +115,21 @@ public:
             return whole > 0 ? (double)part / whole * 100.0 : 0.0;
             };
 
-        printf("\n--- TreeSpan Matching Time Analysis ---\n");
+        long long search_accounted_time = stats.enum_time + stats.verify_time;
+        long long search_other_time = stats.search_time > search_accounted_time
+            ? stats.search_time - search_accounted_time : 0;
+
+        printf("\n--- TreeSpan Time Analysis ---\n");
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
         printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
-        printf("  - Q_T OD Time:     %.4lf ms\n", stats.enum_time / 1000.0);
         printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.search_time / 1000.0, pct(stats.search_time, stats.total_time));
+        printf("  - Q_T OD Time:     %.4lf ms (%.2f%% of Search)\n", stats.enum_time / 1000.0, pct(stats.enum_time, stats.search_time));
         printf("  - Verify Time:     %.4lf ms (%.2f%% of Search)\n", stats.verify_time / 1000.0, pct(stats.verify_time, stats.search_time));
+        printf("  - Search Other:    %.4lf ms (%.2f%% of Search)\n", search_other_time / 1000.0, pct(search_other_time, stats.search_time));
+        printf("Recursion Calls:     %lld\n", stats.recursion_calls);
+        printf("Replacement Calls:   %lld\n", stats.replacement_calls);
         printf("QISequences Cached:  %lld\n", stats.sequences_count);
         printf("OD Calls:            %lld\n", stats.enum_call_count);
-        printf("Replacement Calls:   %lld\n", stats.replacement_calls);
-        printf("Recursion Calls:     %lld\n", stats.recursion_calls);
         printf("[hasEdge] Calls:     %lld\n", stats.has_edge_calls);
         printf("Duplicate Results:   %lld\n", stats.duplicate_results);
         printf("Results Found:       %zu\n", stats.result_count);
@@ -131,7 +138,7 @@ public:
             (size_t)MATCH_OUTPUT_LIMIT,
             stats.output_limit_reached ? " (reached)" : "");
 #endif
-        printf("---------------------------------------\n");
+        printf("-----------------------------------------------------------\n");
     }
 
 private:
@@ -140,15 +147,7 @@ private:
     struct QEdge {
         ui u = 0;
         ui v = 0;
-        ui weight = 0;
         ui id = 0;
-
-        bool operator<(const QEdge &other) const
-        {
-            if (weight != other.weight) return weight < other.weight;
-            if (u != other.u) return u < other.u;
-            return v < other.v;
-        }
     };
 
     struct TreeState {
@@ -201,10 +200,13 @@ private:
     ui root = 0;
 
     vector<MyBitset> candidates;
+    vector<ui> candidate_counts;
     vector<vector<ui>> Lq_counts;
     vector<vector<ui>> Lg_counts;
     vector<ui> Lq_degrees;
     vector<ui> Lg_degrees;
+    vector<ui> data_label_frequency;
+    vector<vector<ui>> data_edge_label_frequency;
 
     vector<vector<char>> q_matrix;
     vector<vector<int>> q_edge_id;
@@ -243,10 +245,13 @@ private:
         root = 0;
 
         candidates.clear();
+        candidate_counts.clear();
         Lq_counts.clear();
         Lg_counts.clear();
         Lq_degrees.clear();
         Lg_degrees.clear();
+        data_label_frequency.clear();
+        data_edge_label_frequency.clear();
         q_matrix.clear();
         q_edge_id.clear();
         all_q_edges.clear();
@@ -279,17 +284,44 @@ private:
         }
     }
 
-    void orderQueryEdges()
+    void initOrderingStatistics()
     {
-        for (QEdge &e : all_q_edges) {
-            ui cu = (ui)candidates[e.u].size();
-            ui cv = (ui)candidates[e.v].size();
-            ui du = query_graph->getVertexDegree(e.u);
-            ui dv = query_graph->getVertexDegree(e.v);
-            e.weight = cu + cv + du + dv;
+        data_label_frequency.assign(label_count, 0);
+        data_edge_label_frequency.assign(label_count, vector<ui>(label_count, 0));
+
+        for (ui u = 0; u < gn; ++u) {
+            LabelID label = data_graph->getVertexLabel(u);
+            if (label >= 0 && (ui)label < label_count) {
+                data_label_frequency[(ui)label]++;
+            }
         }
 
-        sort(all_q_edges.begin(), all_q_edges.end());
+        for (ui u = 0; u < gn; ++u) {
+            LabelID lu = data_graph->getVertexLabel(u);
+            if (lu < 0 || (ui)lu >= label_count) continue;
+
+            ui deg;
+            const ui *nbrs = data_graph->getVertexNeighbors(u, deg);
+            for (ui i = 0; i < deg; ++i) {
+                ui v = nbrs[i];
+                if (u >= v) continue;
+
+                LabelID lv = data_graph->getVertexLabel(v);
+                if (lv < 0 || (ui)lv >= label_count) continue;
+
+                data_edge_label_frequency[(ui)lu][(ui)lv]++;
+                data_edge_label_frequency[(ui)lv][(ui)lu]++;
+            }
+        }
+    }
+
+    void orderQueryEdges()
+    {
+        sort(all_q_edges.begin(), all_q_edges.end(),
+            [](const QEdge &lhs, const QEdge &rhs) {
+                if (lhs.u != rhs.u) return lhs.u < rhs.u;
+                return lhs.v < rhs.v;
+            });
 
         q_edge_id.assign(qn, vector<int>(qn, -1));
         for (ui i = 0; i < all_q_edges.size(); ++i) {
@@ -345,14 +377,22 @@ private:
         return true;
     }
 
+    void cacheCandidateCounts()
+    {
+        candidate_counts.assign(qn, 0);
+        for (ui u = 0; u < qn; ++u) {
+            candidate_counts[u] = (ui)candidates[u].size();
+        }
+    }
+
     ui selectRoot()
     {
         ui best_u = 0;
-        int best_cands = candidates[0].size();
+        ui best_cands = candidate_counts[0];
         ui best_degree = query_graph->getVertexDegree(0);
 
         for (ui u = 1; u < qn; ++u) {
-            int cand_size = candidates[u].size();
+            ui cand_size = candidate_counts[u];
             ui degree = query_graph->getVertexDegree(u);
             if (cand_size < best_cands || (cand_size == best_cands && degree > best_degree)) {
                 best_u = u;
@@ -361,6 +401,136 @@ private:
             }
         }
         return best_u;
+    }
+
+    ui dataLabelFrequency(ui u) const
+    {
+        LabelID label = query_graph->getVertexLabel(u);
+        if (label < 0 || (ui)label >= data_label_frequency.size()) {
+            return 1;
+        }
+        return max((ui)1, data_label_frequency[(ui)label]);
+    }
+
+    ui dataEdgeLabelFrequency(ui u, ui anchor) const
+    {
+        LabelID lu = query_graph->getVertexLabel(u);
+        LabelID la = query_graph->getVertexLabel(anchor);
+        if (lu < 0 || la < 0 ||
+            (ui)lu >= data_edge_label_frequency.size() ||
+            (ui)la >= data_edge_label_frequency[(ui)lu].size()) {
+            return 0;
+        }
+        return data_edge_label_frequency[(ui)lu][(ui)la];
+    }
+
+    bool edgeCrossesVisited(ui edge_id, const vector<char> &visited,
+        ui &new_u, ui &anchor) const
+    {
+        const QEdge &edge = all_q_edges[edge_id];
+        bool u_vis = visited[edge.u] != 0;
+        bool v_vis = visited[edge.v] != 0;
+        if (u_vis == v_vis) return false;
+
+        if (u_vis) {
+            anchor = edge.u;
+            new_u = edge.v;
+        }
+        else {
+            anchor = edge.v;
+            new_u = edge.u;
+        }
+        return true;
+    }
+
+    bool isBetterDirectedEdge(ui edge_id, ui new_u, ui anchor,
+        ui best_edge_id, ui best_new_u, ui best_anchor) const
+    {
+        if (best_edge_id == INVALID_EDGE) return true;
+
+        unsigned long long lhs_num =
+            (unsigned long long)candidate_counts[new_u] *
+            (unsigned long long)dataEdgeLabelFrequency(new_u, anchor);
+        unsigned long long rhs_num =
+            (unsigned long long)candidate_counts[best_new_u] *
+            (unsigned long long)dataEdgeLabelFrequency(best_new_u, best_anchor);
+        unsigned long long lhs_den = (unsigned long long)dataLabelFrequency(new_u);
+        unsigned long long rhs_den = (unsigned long long)dataLabelFrequency(best_new_u);
+
+        __uint128_t lhs = (__uint128_t)lhs_num * rhs_den;
+        __uint128_t rhs = (__uint128_t)rhs_num * lhs_den;
+        if (lhs != rhs) return lhs < rhs;
+
+        if (candidate_counts[new_u] != candidate_counts[best_new_u]) {
+            return candidate_counts[new_u] < candidate_counts[best_new_u];
+        }
+
+        ui lhs_edge_freq = dataEdgeLabelFrequency(new_u, anchor);
+        ui rhs_edge_freq = dataEdgeLabelFrequency(best_new_u, best_anchor);
+        if (lhs_edge_freq != rhs_edge_freq) return lhs_edge_freq < rhs_edge_freq;
+        if (new_u != best_new_u) return new_u < best_new_u;
+        if (anchor != best_anchor) return anchor < best_anchor;
+        return edge_id < best_edge_id;
+    }
+
+    ui chooseBestCrossingEdge(const vector<char> &visited,
+        const vector<ui> &edge_ids, ui &best_new_u) const
+    {
+        ui best_edge_id = INVALID_EDGE;
+        ui best_anchor = 0;
+        best_new_u = 0;
+
+        for (ui edge_id : edge_ids) {
+            ui new_u = 0;
+            ui anchor = 0;
+            if (!edgeCrossesVisited(edge_id, visited, new_u, anchor)) continue;
+            if (isBetterDirectedEdge(edge_id, new_u, anchor,
+                best_edge_id, best_new_u, best_anchor)) {
+                best_edge_id = edge_id;
+                best_new_u = new_u;
+                best_anchor = anchor;
+            }
+        }
+
+        return best_edge_id;
+    }
+
+    ui chooseBestCrossingEdge(const vector<char> &visited, ui &best_new_u) const
+    {
+        ui best_edge_id = INVALID_EDGE;
+        ui best_anchor = 0;
+        best_new_u = 0;
+
+        for (const QEdge &edge : all_q_edges) {
+            ui new_u = 0;
+            ui anchor = 0;
+            if (!edgeCrossesVisited(edge.id, visited, new_u, anchor)) continue;
+            if (isBetterDirectedEdge(edge.id, new_u, anchor,
+                best_edge_id, best_new_u, best_anchor)) {
+                best_edge_id = edge.id;
+                best_new_u = new_u;
+                best_anchor = anchor;
+            }
+        }
+
+        return best_edge_id;
+    }
+
+    bool markPrefixVertices(const TreeState &state, ui edge_count,
+        vector<char> &visited) const
+    {
+        visited.assign(qn, 0);
+        visited[root] = 1;
+
+        for (ui i = 0; i < edge_count; ++i) {
+            const QEdge &edge = all_q_edges[state.edges[i]];
+            bool u_vis = visited[edge.u] != 0;
+            bool v_vis = visited[edge.v] != 0;
+            if (u_vis == v_vis) return false;
+            visited[u_vis ? edge.v : edge.u] = 1;
+        }
+
+        return true;
     }
 
     bool buildInitialTree(TreeState &state) const
@@ -375,21 +545,11 @@ private:
         visited[root] = 1;
 
         for (ui step = 0; step + 1 < qn; ++step) {
-            ui best = INVALID_EDGE;
-
-            for (const QEdge &e : all_q_edges) {
-                bool u_vis = visited[e.u] != 0;
-                bool v_vis = visited[e.v] != 0;
-                if (u_vis != v_vis) {
-                    best = e.id;
-                    break;
-                }
-            }
+            ui next_vertex = 0;
+            ui best = chooseBestCrossingEdge(visited, next_vertex);
 
             if (best == INVALID_EDGE) return false;
 
-            const QEdge &edge = all_q_edges[best];
-            ui next_vertex = visited[edge.u] ? edge.v : edge.u;
             visited[next_vertex] = 1;
             state.edges.push_back(best);
         }
@@ -407,6 +567,9 @@ private:
         vector<char> in_tree(all_q_edges.size(), 0);
         for (ui edge_id : state.edges) in_tree[edge_id] = 1;
 
+        vector<char> prefix_visited;
+        if (!markPrefixVertices(state, h, prefix_visited)) return false;
+
         DisjointSet dsu(qn);
         for (ui i = 0; i < state.edges.size(); ++i) {
             if (i == h) continue;
@@ -415,12 +578,21 @@ private:
         }
 
         ui replacement = INVALID_EDGE;
+        ui replacement_new_u = 0;
+        ui replacement_anchor = 0;
         for (const QEdge &edge : all_q_edges) {
             if (in_tree[edge.id]) continue;
             if (state.R.find(edge.id) != state.R.end()) continue;
             if (dsu.find((int)edge.u) != dsu.find((int)edge.v)) {
-                replacement = edge.id;
-                break;
+                ui new_u = 0;
+                ui anchor = 0;
+                if (!edgeCrossesVisited(edge.id, prefix_visited, new_u, anchor)) continue;
+                if (isBetterDirectedEdge(edge.id, new_u, anchor,
+                    replacement, replacement_new_u, replacement_anchor)) {
+                    replacement = edge.id;
+                    replacement_new_u = new_u;
+                    replacement_anchor = anchor;
+                }
             }
         }
 
@@ -434,20 +606,11 @@ private:
 
     bool reorderAfterReplacement(const TreeState &state, ui h, ui replacement, TreeState &next_state) const
     {
-        vector<char> visited(qn, 0);
-        visited[root] = 1;
+        vector<char> visited;
         next_state.edges.clear();
 
-        for (ui i = 0; i < h; ++i) {
-            ui edge_id = state.edges[i];
-            const QEdge &edge = all_q_edges[edge_id];
-            bool u_vis = visited[edge.u] != 0;
-            bool v_vis = visited[edge.v] != 0;
-            if (u_vis == v_vis) return false;
-
-            visited[u_vis ? edge.v : edge.u] = 1;
-            next_state.edges.push_back(edge_id);
-        }
+        if (!markPrefixVertices(state, h, visited)) return false;
+        for (ui i = 0; i < h; ++i) next_state.edges.push_back(state.edges[i]);
 
         vector<ui> remaining;
         remaining.reserve(state.edges.size() - h);
@@ -460,23 +623,19 @@ private:
 
         while (!remaining.empty()) {
             ui best_pos = INVALID_EDGE;
-            ui best_edge_id = INVALID_EDGE;
+            ui best_new_u = 0;
+            ui best_edge_id = chooseBestCrossingEdge(visited, remaining, best_new_u);
 
             for (ui i = 0; i < remaining.size(); ++i) {
-                const QEdge &edge = all_q_edges[remaining[i]];
-                bool u_vis = visited[edge.u] != 0;
-                bool v_vis = visited[edge.v] != 0;
-                if (u_vis == v_vis) continue;
-                if (best_edge_id == INVALID_EDGE || remaining[i] < best_edge_id) {
-                    best_edge_id = remaining[i];
+                if (remaining[i] == best_edge_id) {
                     best_pos = i;
+                    break;
                 }
             }
 
             if (best_edge_id == INVALID_EDGE) return false;
 
-            const QEdge &edge = all_q_edges[best_edge_id];
-            visited[visited[edge.u] ? edge.v : edge.u] = 1;
+            visited[best_new_u] = 1;
             next_state.edges.push_back(best_edge_id);
             remaining.erase(remaining.begin() + best_pos);
         }
