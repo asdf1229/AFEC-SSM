@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import csv
 import dataclasses
 import datetime as _datetime
 import os
@@ -70,6 +71,8 @@ DEFAULT_VARIANTS: Tuple[Variant, ...] = (
     Variant("no_terminal_buckets", env=(("CDE_EDGE_IE_TERMINAL_BUCKETS", "0"),),
         description="disable terminal-tail bucket ordering at runtime"),
 )
+
+DEFAULT_VARIANT_CONFIG = "scripts/cde_ablation_variants.tsv"
 
 
 PRESETS = {
@@ -320,10 +323,84 @@ def discover_tmp_cases(cases_dir: Path, max_cases: Optional[int]) -> List[Case]:
     return cases
 
 
-def resolve_variants(names: Optional[str]) -> List[Variant]:
-    by_name = {variant.name: variant for variant in DEFAULT_VARIANTS}
+def parse_list_field(value: str) -> Tuple[str, ...]:
+    value = value.strip()
+    if not value or value == "-":
+        return ()
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def parse_env_field(value: str, source: str, line_number: int) -> Tuple[Tuple[str, str], ...]:
+    entries: List[Tuple[str, str]] = []
+    for item in parse_list_field(value):
+        if "=" not in item:
+            raise SystemExit(f"{source}:{line_number}: env entry must be KEY=VALUE: {item}")
+        key, env_value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise SystemExit(f"{source}:{line_number}: env key is empty")
+        entries.append((key, env_value.strip()))
+    return tuple(entries)
+
+
+def load_variant_config(path: Path) -> List[Variant]:
+    variants: List[Variant] = []
+    seen = set()
+
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(
+            (line for line in fh if line.strip() and not line.lstrip().startswith("#")),
+            delimiter="\t",
+        )
+        if reader.fieldnames is None:
+            raise SystemExit(f"variant config is empty: {path}")
+
+        required = {"name", "macros", "env", "description"}
+        missing = required.difference(reader.fieldnames)
+        if missing:
+            raise SystemExit(f"{path}: missing columns: {', '.join(sorted(missing))}")
+
+        for line_number, row in enumerate(reader, start=2):
+            name = (row.get("name") or "").strip()
+            if not name:
+                raise SystemExit(f"{path}:{line_number}: variant name is empty")
+            if not re.fullmatch(r"[A-Za-z0-9_.=-]+", name):
+                raise SystemExit(
+                    f"{path}:{line_number}: variant name must use letters, numbers, _, ., =, or -: {name}"
+                )
+            if name in seen:
+                raise SystemExit(f"{path}:{line_number}: duplicate variant name: {name}")
+            seen.add(name)
+
+            variants.append(Variant(
+                name=name,
+                macros=parse_list_field(row.get("macros") or ""),
+                env=parse_env_field(row.get("env") or "", str(path), line_number),
+                description=(row.get("description") or "").strip(),
+            ))
+
+    if not variants:
+        raise SystemExit(f"variant config has no variants: {path}")
+    return variants
+
+
+def resolve_variant_config(repo: Path, configured_path: Optional[str]) -> Tuple[List[Variant], str]:
+    raw_path = configured_path or DEFAULT_VARIANT_CONFIG
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = repo / path
+
+    if path.is_file():
+        return load_variant_config(path), str(path)
+    if configured_path:
+        raise SystemExit(f"variant config not found: {path}")
+    return list(DEFAULT_VARIANTS), "built-in defaults"
+
+
+def resolve_variants(all_variants: Sequence[Variant], names: Optional[str]) -> List[Variant]:
+    by_name = {variant.name: variant for variant in all_variants}
     if not names:
-        return list(DEFAULT_VARIANTS)
+        return list(all_variants)
     selected: List[Variant] = []
     for raw in names.split(","):
         name = raw.strip()
@@ -625,8 +702,9 @@ def write_summary(
     return len(failures)
 
 
-def list_variants() -> None:
-    for variant in DEFAULT_VARIANTS:
+def list_variants(variants: Sequence[Variant], source: str) -> None:
+    print(f"Variant config: {source}")
+    for variant in variants:
         macros = ",".join(variant.macros) or "-"
         env = ",".join(f"{k}={v}" for k, v in variant.env) or "-"
         print(f"{variant.name}\tmacros={macros}\tenv={env}\t{variant.description}")
@@ -655,9 +733,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--repeat", type=int, default=1,
         help="repeat each case/variant and summarize medians; default: 1")
     parser.add_argument("--variants",
-        help="comma-separated variant names; default: all built-in variants")
+        help="comma-separated variant names; default: all variants from --variant-config")
+    parser.add_argument("--variant-config",
+        help=f"TSV variant config; default: {DEFAULT_VARIANT_CONFIG} when present")
     parser.add_argument("--list-variants", action="store_true",
-        help="print built-in variants and exit")
+        help="print variants from the selected config and exit")
     parser.add_argument("--dataset-regex",
         help="only include datasets whose group/name or path matches this regex")
     parser.add_argument("--query-group-regex",
@@ -675,8 +755,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 def main(argv: Sequence[str]) -> int:
     args = parse_args(argv)
+    repo = repo_root()
+    all_variants, variant_source = resolve_variant_config(repo, args.variant_config)
     if args.list_variants:
-        list_variants()
+        list_variants(all_variants, variant_source)
         return 0
 
     if args.parallel < 1:
@@ -692,7 +774,6 @@ def main(argv: Sequence[str]) -> int:
     max_cases = args.max_cases if args.max_cases is not None else preset["max_cases"]
     timeout = args.timeout if args.timeout is not None else float(preset["timeout"])
 
-    repo = repo_root()
     timestamp = _datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     result_dir = Path(args.result_dir) if args.result_dir else repo / "result" / f"cde_ablation_{timestamp}"
     if not result_dir.is_absolute():
@@ -701,7 +782,7 @@ def main(argv: Sequence[str]) -> int:
     if not build_root.is_absolute():
         build_root = repo / build_root
 
-    variants = resolve_variants(args.variants)
+    variants = resolve_variants(all_variants, args.variants)
     dataset_regex = compile_regex(args.dataset_regex)
     query_group_regex = compile_regex(args.query_group_regex)
 
@@ -729,6 +810,7 @@ def main(argv: Sequence[str]) -> int:
 
     result_dir.mkdir(parents=True, exist_ok=True)
     print(f"Results: {result_dir}")
+    print(f"Variant config: {variant_source}")
     print(f"Preset: {args.preset}; cases={len(cases)} variants={len(variants)} repeat={args.repeat}")
     print(f"Per-run timeout: {timeout}s; run parallel={args.parallel}")
 

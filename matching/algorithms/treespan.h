@@ -318,7 +318,27 @@ private:
     void orderQueryEdges()
     {
         sort(all_q_edges.begin(), all_q_edges.end(),
-            [](const QEdge &lhs, const QEdge &rhs) {
+            [this](const QEdge &lhs, const QEdge &rhs) {
+                ui lhs_new = lhs.u;
+                ui lhs_anchor = lhs.v;
+                if (isDirectedScoreLess(lhs.v, lhs.u, lhs.u, lhs.v)) {
+                    lhs_new = lhs.v;
+                    lhs_anchor = lhs.u;
+                }
+
+                ui rhs_new = rhs.u;
+                ui rhs_anchor = rhs.v;
+                if (isDirectedScoreLess(rhs.v, rhs.u, rhs.u, rhs.v)) {
+                    rhs_new = rhs.v;
+                    rhs_anchor = rhs.u;
+                }
+
+                if (isDirectedScoreLess(lhs_new, lhs_anchor, rhs_new, rhs_anchor)) {
+                    return true;
+                }
+                if (isDirectedScoreLess(rhs_new, rhs_anchor, lhs_new, lhs_anchor)) {
+                    return false;
+                }
                 if (lhs.u != rhs.u) return lhs.u < rhs.u;
                 return lhs.v < rhs.v;
             });
@@ -448,29 +468,42 @@ private:
     {
         if (best_edge_id == INVALID_EDGE) return true;
 
+        if (isDirectedScoreLess(new_u, anchor, best_new_u, best_anchor)) {
+            return true;
+        }
+        if (isDirectedScoreLess(best_new_u, best_anchor, new_u, anchor)) {
+            return false;
+        }
+
+        if (new_u != best_new_u) return new_u < best_new_u;
+        if (anchor != best_anchor) return anchor < best_anchor;
+        return edge_id < best_edge_id;
+    }
+
+    bool isDirectedScoreLess(ui lhs_new_u, ui lhs_anchor,
+        ui rhs_new_u, ui rhs_anchor) const
+    {
         unsigned long long lhs_num =
-            (unsigned long long)candidate_counts[new_u] *
-            (unsigned long long)dataEdgeLabelFrequency(new_u, anchor);
+            (unsigned long long)candidate_counts[lhs_new_u] *
+            (unsigned long long)dataEdgeLabelFrequency(lhs_new_u, lhs_anchor);
         unsigned long long rhs_num =
-            (unsigned long long)candidate_counts[best_new_u] *
-            (unsigned long long)dataEdgeLabelFrequency(best_new_u, best_anchor);
-        unsigned long long lhs_den = (unsigned long long)dataLabelFrequency(new_u);
-        unsigned long long rhs_den = (unsigned long long)dataLabelFrequency(best_new_u);
+            (unsigned long long)candidate_counts[rhs_new_u] *
+            (unsigned long long)dataEdgeLabelFrequency(rhs_new_u, rhs_anchor);
+        unsigned long long lhs_den = (unsigned long long)dataLabelFrequency(lhs_new_u);
+        unsigned long long rhs_den = (unsigned long long)dataLabelFrequency(rhs_new_u);
 
         __uint128_t lhs = (__uint128_t)lhs_num * rhs_den;
         __uint128_t rhs = (__uint128_t)rhs_num * lhs_den;
         if (lhs != rhs) return lhs < rhs;
 
-        if (candidate_counts[new_u] != candidate_counts[best_new_u]) {
-            return candidate_counts[new_u] < candidate_counts[best_new_u];
+        if (candidate_counts[lhs_new_u] != candidate_counts[rhs_new_u]) {
+            return candidate_counts[lhs_new_u] < candidate_counts[rhs_new_u];
         }
 
-        ui lhs_edge_freq = dataEdgeLabelFrequency(new_u, anchor);
-        ui rhs_edge_freq = dataEdgeLabelFrequency(best_new_u, best_anchor);
+        ui lhs_edge_freq = dataEdgeLabelFrequency(lhs_new_u, lhs_anchor);
+        ui rhs_edge_freq = dataEdgeLabelFrequency(rhs_new_u, rhs_anchor);
         if (lhs_edge_freq != rhs_edge_freq) return lhs_edge_freq < rhs_edge_freq;
-        if (new_u != best_new_u) return new_u < best_new_u;
-        if (anchor != best_anchor) return anchor < best_anchor;
-        return edge_id < best_edge_id;
+        return false;
     }
 
     ui chooseBestCrossingEdge(const vector<char> &visited,
@@ -567,9 +600,6 @@ private:
         vector<char> in_tree(all_q_edges.size(), 0);
         for (ui edge_id : state.edges) in_tree[edge_id] = 1;
 
-        vector<char> prefix_visited;
-        if (!markPrefixVertices(state, h, prefix_visited)) return false;
-
         DisjointSet dsu(qn);
         for (ui i = 0; i < state.edges.size(); ++i) {
             if (i == h) continue;
@@ -578,21 +608,12 @@ private:
         }
 
         ui replacement = INVALID_EDGE;
-        ui replacement_new_u = 0;
-        ui replacement_anchor = 0;
         for (const QEdge &edge : all_q_edges) {
             if (in_tree[edge.id]) continue;
             if (state.R.find(edge.id) != state.R.end()) continue;
             if (dsu.find((int)edge.u) != dsu.find((int)edge.v)) {
-                ui new_u = 0;
-                ui anchor = 0;
-                if (!edgeCrossesVisited(edge.id, prefix_visited, new_u, anchor)) continue;
-                if (isBetterDirectedEdge(edge.id, new_u, anchor,
-                    replacement, replacement_new_u, replacement_anchor)) {
-                    replacement = edge.id;
-                    replacement_new_u = new_u;
-                    replacement_anchor = anchor;
-                }
+                replacement = edge.id;
+                break;
             }
         }
 
