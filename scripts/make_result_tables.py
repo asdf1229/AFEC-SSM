@@ -8,10 +8,12 @@ The repository's benchmark summaries are TSV files shaped like:
   cde_edge_ie_count cde_edge_ie_run_ms ... treespan_count treespan_run_ms ...
 
 This script detects algorithm columns, compares the selected algorithm against
-the best non-selected algorithm for a metric, and writes one report.html by
+the best non-selected algorithm for a metric, and writes three HTML files by
 default:
 
-  - report.html with colored speedup cells
+  - report.html with detailed colored speedup rows
+  - speedup_by_t.html with the threshold-pivoted speedup table
+  - speedup_chart.html with average-runtime charts and speedup distributions
 
 CSV output is optional via --write-csv.
 """
@@ -58,6 +60,15 @@ SPEEDUP_BUCKET_EDGES = tuple(
     [i / 10.0 for i in range(1, 11)] + [float(i) for i in range(2, 11)]
 )
 TOO_SHORT_RUNTIME_REASON = "compared_runtimes_too_short"
+DEFAULT_TIMEOUT_SECONDS = 360.0
+DEFAULT_QUERY_SIZE_COLUMN = "query_group"
+DEFAULT_CHART_THRESHOLDS = tuple(str(value) for value in range(7))
+DEFAULT_CHART_RUNTIME_METRIC = "run_ms"
+TIMEOUT_MARKERS = ("timeout", "timed out", "time limit", "超时")
+CHART_COLORS = (
+    "#ef6c6c", "#79a9d1", "#8bc486", "#b88bc2",
+    "#f2a65a", "#bd8b6b", "#e89ac2", "#8f9bb3",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -116,6 +127,33 @@ def parse_args() -> argparse.Namespace:
         "--write-csv",
         action="store_true",
         help="also write per-object CSV files, index.csv, and all_tables.csv",
+    )
+    parser.add_argument(
+        "--query-size-column",
+        default=DEFAULT_QUERY_SIZE_COLUMN,
+        help=(
+            "column used as the query-graph size on runtime charts; "
+            f"default: {DEFAULT_QUERY_SIZE_COLUMN}"
+        ),
+    )
+    parser.add_argument(
+        "--chart-thresholds",
+        default=",".join(DEFAULT_CHART_THRESHOLDS),
+        help="comma-separated t values for runtime charts; default: 0,1,2,3,4,5,6",
+    )
+    parser.add_argument(
+        "--chart-runtime-metric",
+        default=DEFAULT_CHART_RUNTIME_METRIC,
+        help=f"runtime metric used by the bar charts; default: {DEFAULT_CHART_RUNTIME_METRIC}",
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=(
+            "timeout assigned to timed-out runs in runtime charts; "
+            f"default: {format(DEFAULT_TIMEOUT_SECONDS, 'g')} seconds"
+        ),
     )
     return parser.parse_args()
 
@@ -843,17 +881,23 @@ def build_speedup_distribution_table(
     return ["speedup_range", "count", "share"], table_rows
 
 
-def write_overall_section(
+def write_overall_summary_section(
     handle,
     grouped: Sequence[Tuple[str, Dict[str, str], Sequence[Dict[str, str]]]],
     ours_algorithm: str,
 ) -> None:
     all_rows = [row for _, _, rows in grouped for row in rows]
     summary = summarize_group(all_rows)
-    bucket_columns, bucket_rows = build_speedup_distribution_table(all_rows)
 
     handle.write("<h2>Overall</h2>\n")
     write_summary_chips(handle, summary, ours_algorithm)
+
+
+def write_speedup_distribution_section(
+    handle,
+    rows: Sequence[Dict[str, str]],
+) -> None:
+    bucket_columns, bucket_rows = build_speedup_distribution_table(rows)
     handle.write("<h3>Speedup distribution</h3>\n")
     write_table_block(handle, bucket_columns, bucket_rows, speedup_column="")
 
@@ -918,7 +962,7 @@ td.text, th.text { text-align: left; }
         }
         display_columns = [column for column in columns if column not in hidden_columns]
 
-        write_overall_section(handle, grouped, ours_algorithm)
+        write_overall_summary_section(handle, grouped, ours_algorithm)
 
         for title, summary, rows in grouped:
             handle.write(f"<h2>{html.escape(title)}</h2>\n")
@@ -958,6 +1002,355 @@ td.text, th.text { text-align: left; }
             "</body></html>\n"
         )
 
+
+
+def parse_chart_thresholds(value: str) -> List[str]:
+    thresholds = [part.strip() for part in value.split(",") if part.strip()]
+    if not thresholds:
+        raise ValueError("--chart-thresholds must contain at least one t value")
+    return thresholds
+
+
+def threshold_matches(value: object, expected: str) -> bool:
+    actual_text = str(value or "").strip()
+    expected_text = str(expected).strip()
+    actual_number = to_float(actual_text)
+    expected_number = to_float(expected_text)
+    if actual_number is not None and expected_number is not None:
+        return math.isclose(actual_number, expected_number, rel_tol=0.0, abs_tol=1e-12)
+    return actual_text == expected_text
+
+
+def query_size_label(row: Dict[str, str], query_size_column: str) -> str:
+    candidates = [query_size_column]
+    for fallback in ("query_group", "query"):
+        if fallback not in candidates:
+            candidates.append(fallback)
+
+    raw_value = ""
+    for column in candidates:
+        raw_value = str(row.get(column, "")).strip()
+        if raw_value:
+            break
+    if not raw_value:
+        return "<unknown>"
+
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", raw_value):
+        return raw_value
+    number_match = re.search(r"-?\d+(?:\.\d+)?", raw_value)
+    if number_match:
+        return number_match.group(0)
+    return raw_value
+
+
+def query_size_sort_key(value: str) -> Tuple[object, ...]:
+    number = to_float(value)
+    if number is not None:
+        return (0, number)
+    match = re.search(r"-?\d+(?:\.\d+)?", value)
+    if match:
+        return (1, float(match.group(0)), natural_key(value))
+    return (2, natural_key(value))
+
+
+def contains_timeout_marker(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    return any(marker in text for marker in TIMEOUT_MARKERS)
+
+
+def runtime_value_for_chart(
+    row: Dict[str, str],
+    algorithm: str,
+    runtime_metric: str,
+    timeout_ms: float,
+) -> Optional[float]:
+    metric_column = f"{algorithm}_{runtime_metric}"
+    raw_value = row.get(metric_column, "")
+    value = to_float(raw_value)
+    if value is not None:
+        if value < 0:
+            return timeout_ms
+        return min(value, timeout_ms)
+
+    timeout_fields = (
+        raw_value,
+        row.get(f"{algorithm}_status", ""),
+        row.get(f"{algorithm}_output", ""),
+        row.get("status", ""),
+    )
+    if any(contains_timeout_marker(item) for item in timeout_fields):
+        return timeout_ms
+    return None
+
+
+def build_average_runtime_data(
+    rows: Sequence[Dict[str, str]],
+    algorithms: Sequence[str],
+    threshold: str,
+    query_size_column: str,
+    runtime_metric: str,
+    timeout_ms: float,
+) -> Tuple[List[str], Dict[str, Dict[str, float]]]:
+    buckets: Dict[Tuple[str, str], List[float]] = defaultdict(list)
+    query_sizes = set()
+
+    for row in rows:
+        if not threshold_matches(row.get("threshold", ""), threshold):
+            continue
+        size_label = query_size_label(row, query_size_column)
+        query_sizes.add(size_label)
+        for algorithm in algorithms:
+            runtime = runtime_value_for_chart(
+                row,
+                algorithm,
+                runtime_metric,
+                timeout_ms,
+            )
+            if runtime is not None:
+                buckets[(size_label, algorithm)].append(runtime)
+
+    ordered_sizes = sorted(query_sizes, key=query_size_sort_key)
+    averages: Dict[str, Dict[str, float]] = {}
+    for size_label in ordered_sizes:
+        averages[size_label] = {}
+        for algorithm in algorithms:
+            values = buckets.get((size_label, algorithm), [])
+            if values:
+                averages[size_label][algorithm] = sum(values) / len(values)
+    return ordered_sizes, averages
+
+
+def format_axis_runtime(value: float) -> str:
+    if value >= 1000000:
+        return f"{value / 1000000:g}M"
+    if value >= 1000:
+        return f"{value / 1000:g}k"
+    if value >= 1:
+        return f"{value:g}"
+    return f"{value:.3g}"
+
+
+def svg_text(value: object) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def build_runtime_bar_chart_svg(
+    rows: Sequence[Dict[str, str]],
+    algorithms: Sequence[str],
+    ours_algorithm: str,
+    threshold: str,
+    query_size_column: str,
+    runtime_metric: str,
+    timeout_ms: float,
+) -> str:
+    ordered_algorithms = [ours_algorithm] + [
+        algorithm for algorithm in algorithms if algorithm != ours_algorithm
+    ]
+    sizes, averages = build_average_runtime_data(
+        rows,
+        ordered_algorithms,
+        threshold,
+        query_size_column,
+        runtime_metric,
+        timeout_ms,
+    )
+
+    chart_title = f"t={threshold}"
+    if not sizes or not any(averages.get(size) for size in sizes):
+        return (
+            '<div class="runtime-chart-card">'
+            f'<h4>{html.escape(chart_title)}</h4>'
+            '<div class="chart-empty">No runtime data for this t.</div>'
+            '</div>'
+        )
+
+    positive_values = [
+        value
+        for size in sizes
+        for value in averages.get(size, {}).values()
+        if value > 0
+    ]
+    if not positive_values:
+        return (
+            '<div class="runtime-chart-card">'
+            f'<h4>{html.escape(chart_title)}</h4>'
+            '<div class="chart-empty">No positive runtime data for this t.</div>'
+            '</div>'
+        )
+
+    min_value = min(positive_values)
+    max_value = max(max(positive_values), timeout_ms)
+    min_exp = math.floor(math.log10(min_value))
+    max_exp = math.ceil(math.log10(max_value))
+    if min_exp == max_exp:
+        min_exp -= 1
+    while max_exp - min_exp > 8:
+        min_exp += 1
+    y_min = 10.0 ** min_exp
+    y_max = 10.0 ** max_exp
+    ticks = [10.0 ** exponent for exponent in range(min_exp, max_exp + 1)]
+
+    left = 82
+    right = 24
+    top = 24
+    bottom = 64
+    plot_height = 320
+    preferred_group_width = max(86, 24 * len(ordered_algorithms) + 24)
+    width = max(760, left + right + preferred_group_width * len(sizes))
+    height = top + plot_height + bottom
+    plot_width = width - left - right
+    group_width = plot_width / len(sizes)
+    bar_gap = 2.0
+    usable_group_width = min(preferred_group_width, group_width) * 0.82
+    bar_width = max(
+        4.0,
+        min(
+            24.0,
+            (usable_group_width - bar_gap * (len(ordered_algorithms) - 1))
+            / len(ordered_algorithms),
+        ),
+    )
+
+    log_min = math.log10(y_min)
+    log_max = math.log10(y_max)
+
+    def y_position(value: float) -> float:
+        clipped = min(max(value, y_min), y_max)
+        portion = (math.log10(clipped) - log_min) / (log_max - log_min)
+        return top + plot_height * (1.0 - portion)
+
+    parts = [
+        '<div class="runtime-chart-card">',
+        f'<h4>{html.escape(chart_title)}</h4>',
+        '<div class="runtime-chart-legend">',
+    ]
+    for index, algorithm in enumerate(ordered_algorithms):
+        color = CHART_COLORS[index % len(CHART_COLORS)]
+        label = html.escape(algorithm)
+        ours_class = " ours" if algorithm == ours_algorithm else ""
+        parts.append(
+            f'<span class="runtime-legend-item{ours_class}">'
+            f'<i style="background:{color}"></i>{label}</span>'
+        )
+    parts.extend([
+        '</div>',
+        '<div class="runtime-chart-scroll">',
+        f'<svg class="runtime-chart" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="Average runtime for t={svg_text(threshold)}">',
+    ])
+
+    for tick in ticks:
+        y = y_position(tick)
+        parts.append(
+            f'<line x1="{left}" y1="{y:.2f}" x2="{width - right}" y2="{y:.2f}" '
+            'stroke="#d1d5db" stroke-width="1" />'
+        )
+        parts.append(
+            f'<text x="{left - 10}" y="{y + 4:.2f}" text-anchor="end" '
+            f'class="runtime-axis-label">{svg_text(format_axis_runtime(tick))}</text>'
+        )
+
+    timeout_y = y_position(timeout_ms)
+    parts.append(
+        f'<line x1="{left}" y1="{timeout_y:.2f}" x2="{width - right}" y2="{timeout_y:.2f}" '
+        'stroke="#9ca3af" stroke-width="1" stroke-dasharray="5 4" />'
+    )
+    parts.append(
+        f'<text x="{width - right}" y="{max(top + 11, timeout_y - 5):.2f}" '
+        f'text-anchor="end" class="runtime-timeout-label">'
+        f'timeout={timeout_ms / 1000:g}s</text>'
+    )
+
+    axis_bottom = top + plot_height
+    parts.append(
+        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{axis_bottom}" '
+        'stroke="#374151" stroke-width="1.2" />'
+    )
+    parts.append(
+        f'<line x1="{left}" y1="{axis_bottom}" x2="{width - right}" y2="{axis_bottom}" '
+        'stroke="#374151" stroke-width="1.2" />'
+    )
+
+    for size_index, size_label in enumerate(sizes):
+        center = left + group_width * (size_index + 0.5)
+        total_bar_width = (
+            bar_width * len(ordered_algorithms)
+            + bar_gap * (len(ordered_algorithms) - 1)
+        )
+        start_x = center - total_bar_width / 2.0
+        for algorithm_index, algorithm in enumerate(ordered_algorithms):
+            value = averages.get(size_label, {}).get(algorithm)
+            if value is None:
+                continue
+            x = start_x + algorithm_index * (bar_width + bar_gap)
+            y = y_position(value)
+            bar_height = max(1.0, axis_bottom - y)
+            color = CHART_COLORS[algorithm_index % len(CHART_COLORS)]
+            css_class = "runtime-bar ours" if algorithm == ours_algorithm else "runtime-bar"
+            tooltip = (
+                f"query size={size_label}; {algorithm}; "
+                f"average={value:.4f} ms; t={threshold}"
+            )
+            parts.append(
+                f'<rect class="{css_class}" x="{x:.2f}" y="{y:.2f}" '
+                f'width="{bar_width:.2f}" height="{bar_height:.2f}" '
+                f'fill="{color}"><title>{svg_text(tooltip)}</title></rect>'
+            )
+        parts.append(
+            f'<text x="{center:.2f}" y="{axis_bottom + 22}" text-anchor="middle" '
+            f'class="runtime-x-label">{svg_text(size_label)}</text>'
+        )
+
+    y_title_x = 20
+    y_title_y = top + plot_height / 2
+    parts.append(
+        f'<text x="{y_title_x}" y="{y_title_y:.2f}" text-anchor="middle" '
+        f'transform="rotate(-90 {y_title_x} {y_title_y:.2f})" '
+        'class="runtime-axis-title">Average runtime (ms, log scale)</text>'
+    )
+    parts.append(
+        f'<text x="{left + plot_width / 2:.2f}" y="{height - 12}" text-anchor="middle" '
+        'class="runtime-axis-title">Query graph size</text>'
+    )
+    parts.extend(['</svg>', '</div>', '</div>'])
+    return "".join(parts)
+
+
+def write_runtime_chart_section(
+    handle,
+    rows: Sequence[Dict[str, str]],
+    algorithms: Sequence[str],
+    ours_algorithm: str,
+    thresholds: Sequence[str],
+    query_size_column: str,
+    runtime_metric: str,
+    timeout_ms: float,
+) -> None:
+    handle.write("<h3>Average runtime by query graph size</h3>\n")
+    handle.write(
+        "<p class=\"runtime-chart-note\">"
+        f"One grouped bar chart per t. Timed-out runs are counted as "
+        f"{html.escape(format_compact_number(timeout_ms / 1000.0))} seconds. "
+        "Bars are arithmetic means over all queries of the same graph size; "
+        "the primary algorithm is always the leftmost bar."
+        "</p>\n"
+    )
+    handle.write('<div class="runtime-chart-grid">\n')
+    for threshold in thresholds:
+        handle.write(
+            build_runtime_bar_chart_svg(
+                rows,
+                algorithms,
+                ours_algorithm,
+                threshold,
+                query_size_column,
+                runtime_metric,
+                timeout_ms,
+            )
+        )
+        handle.write("\n")
+    handle.write("</div>\n")
 
 def write_speedup_by_t_report(
     path: Path,
@@ -1009,15 +1402,127 @@ td.text, th.text { text-align: left; }
             "</div>\n"
         )
 
-        write_overall_section(handle, grouped, ours_algorithm)
+        write_overall_summary_section(handle, grouped, ours_algorithm)
 
         for title, summary, rows in grouped:
             handle.write(f"<h2>{html.escape(title)}</h2>\n")
             write_summary_chips(handle, summary, ours_algorithm)
+            handle.write("<h3>Speedup by t</h3>\n")
             threshold_columns, threshold_rows = build_threshold_speedup_table(
                 rows, cap_ratio, metric, ours_algorithm
             )
             write_table_block(handle, threshold_columns, threshold_rows)
+
+        handle.write(
+            "<script>\n"
+            "(function () {\n"
+            "  function initBlock(block) {\n"
+            "    const top = block.querySelector('.scroll-sync');\n"
+            "    const inner = block.querySelector('.scroll-sync-inner');\n"
+            "    const wrap = block.querySelector('.table-wrap');\n"
+            "    const table = block.querySelector('table');\n"
+            "    if (!top || !inner || !wrap || !table) return;\n"
+            "    const resize = () => { inner.style.width = table.scrollWidth + 'px'; };\n"
+            "    let syncing = false;\n"
+            "    top.addEventListener('scroll', () => {\n"
+            "      if (syncing) return;\n"
+            "      syncing = true;\n"
+            "      wrap.scrollLeft = top.scrollLeft;\n"
+            "      syncing = false;\n"
+            "    });\n"
+            "    wrap.addEventListener('scroll', () => {\n"
+            "      if (syncing) return;\n"
+            "      syncing = true;\n"
+            "      top.scrollLeft = wrap.scrollLeft;\n"
+            "      syncing = false;\n"
+            "    });\n"
+            "    resize();\n"
+            "    window.addEventListener('resize', resize);\n"
+            "  }\n"
+            "  document.querySelectorAll('.table-block').forEach(initBlock);\n"
+            "}());\n"
+            "</script>\n"
+            "</body></html>\n"
+        )
+
+
+def write_speedup_chart_report(
+    path: Path,
+    grouped: Sequence[Tuple[str, Dict[str, str], Sequence[Dict[str, str]]]],
+    metric: str,
+    algorithms: Sequence[str],
+    ours_algorithm: str,
+    higher_is_better: bool,
+    chart_thresholds: Sequence[str],
+    query_size_column: str,
+    chart_runtime_metric: str,
+    timeout_ms: float,
+) -> None:
+    style = """
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #111827; }
+h1 { font-size: 24px; margin: 0 0 8px; }
+h2 { font-size: 18px; margin: 30px 0 8px; }
+h3 { font-size: 14px; margin: 16px 0 8px; }
+p { color: #4b5563; margin: 0 0 18px; }
+table { border-collapse: collapse; width: 100%; margin-bottom: 24px; font-size: 13px; }
+th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: right; white-space: nowrap; }
+th { background: #f3f4f6; position: sticky; top: 0; z-index: 1; }
+td.text, th.text { text-align: left; }
+.table-block { margin-bottom: 24px; }
+.table-wrap { overflow-x: auto; }
+.scroll-sync { overflow-x: auto; overflow-y: hidden; height: 16px; border: 1px solid #d1d5db; border-bottom: 0; background: #f9fafb; }
+.scroll-sync-inner { height: 1px; }
+.summary { display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0 10px; font-size: 12px; color: #374151; }
+.summary span { background: #f9fafb; border: 1px solid #e5e7eb; padding: 4px 8px; }
+.runtime-chart-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; margin: 8px 0 24px; }
+.runtime-chart-card { border: 1px solid #d1d5db; border-radius: 6px; background: #fff; padding: 10px 12px 12px; }
+.runtime-chart-card h4 { font-size: 14px; margin: 0 0 8px; }
+.runtime-chart-scroll { overflow-x: auto; }
+.runtime-chart { display: block; max-width: none; }
+.runtime-chart-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 0 0 6px; font-size: 12px; }
+.runtime-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.runtime-legend-item.ours { font-weight: 700; }
+.runtime-legend-item i { display: inline-block; width: 13px; height: 13px; border: 1px solid rgba(17,24,39,.35); }
+.runtime-axis-label, .runtime-x-label { fill: #374151; font-size: 11px; }
+.runtime-axis-title { fill: #111827; font-size: 12px; font-weight: 600; }
+.runtime-timeout-label { fill: #6b7280; font-size: 10px; }
+.runtime-bar { stroke: rgba(17,24,39,.35); stroke-width: .7; }
+.runtime-bar.ours { stroke: #111827; stroke-width: 1.3; }
+.runtime-chart-note { font-size: 12px; margin: 0 0 10px; }
+.chart-empty { color: #6b7280; font-size: 12px; padding: 20px 8px; }
+"""
+    with path.open("w", encoding="utf-8") as handle:
+        ours_label = html.escape(ours_algorithm)
+        handle.write("<!doctype html>\n<html><head><meta charset=\"utf-8\">\n")
+        handle.write("<title>SSM-GED Speedup Charts</title>\n")
+        handle.write(f"<style>{style}</style>\n</head><body>\n")
+        handle.write("<h1>SSM-GED Speedup Charts</h1>\n")
+        metric_direction = "higher-is-better" if higher_is_better else "lower-is-better"
+        handle.write(
+            f"<p>Metric: {html.escape(metric)} ({metric_direction}). "
+            "This file contains the average-runtime charts and speedup distributions. "
+            f"Speedup values above 1 favor {ours_label}.</p>\n"
+        )
+
+        all_rows = [row for _, _, rows in grouped for row in rows]
+        handle.write("<h2>Overall</h2>\n")
+        write_summary_chips(handle, summarize_group(all_rows), ours_algorithm)
+        write_speedup_distribution_section(handle, all_rows)
+
+        for title, summary, rows in grouped:
+            handle.write(f"<h2>{html.escape(title)}</h2>\n")
+            write_runtime_chart_section(
+                handle,
+                rows,
+                algorithms,
+                ours_algorithm,
+                chart_thresholds,
+                query_size_column,
+                chart_runtime_metric,
+                timeout_ms,
+            )
+            write_summary_chips(handle, summary, ours_algorithm)
+            write_speedup_distribution_section(handle, rows)
 
         handle.write(
             "<script>\n"
@@ -1108,6 +1613,27 @@ def main() -> int:
             fieldnames, algorithms, ours_algorithm, args.metric
         )
         higher_is_better = bool(args.higher_is_better)
+        chart_thresholds = parse_chart_thresholds(args.chart_thresholds)
+        if args.timeout_seconds <= 0:
+            raise ValueError("--timeout-seconds must be greater than zero")
+        timeout_ms = args.timeout_seconds * 1000.0
+        if args.query_size_column not in fieldnames:
+            fallback_columns = [
+                column for column in ("query_group", "query") if column in fieldnames
+            ]
+            if not fallback_columns:
+                raise ValueError(
+                    f"Missing query-size column: {args.query_size_column}; "
+                    "no query_group/query fallback is available"
+                )
+        chart_runtime_columns = [
+            f"{algorithm}_{args.chart_runtime_metric}" for algorithm in algorithms
+        ]
+        if not any(column in fieldnames for column in chart_runtime_columns):
+            raise ValueError(
+                "No selected algorithm has the runtime-chart metric column: "
+                f"*_{args.chart_runtime_metric}"
+            )
 
         enriched_rows = [
             enrich_row(
@@ -1168,6 +1694,7 @@ def main() -> int:
 
         report_path = out_dir / "report.html"
         speedup_by_t_path = out_dir / "speedup_by_t.html"
+        speedup_chart_path = out_dir / "speedup_chart.html"
         write_html_report(
             report_path,
             html_groups,
@@ -1185,15 +1712,32 @@ def main() -> int:
             higher_is_better,
             args.cap_ratio,
         )
+        write_speedup_chart_report(
+            speedup_chart_path,
+            html_groups,
+            args.metric,
+            algorithms,
+            ours_algorithm,
+            higher_is_better,
+            chart_thresholds,
+            args.query_size_column,
+            args.chart_runtime_metric,
+            timeout_ms,
+        )
 
         print(f"Input files: {len(input_files)}")
         print(f"Rows: {len(rows)}")
         print(f"Algorithms: {', '.join(algorithms)}")
         print(f"Our algorithm: {ours_algorithm}")
         print(f"Metric: {args.metric}")
+        print(f"Runtime chart metric: {args.chart_runtime_metric}")
+        print(f"Runtime chart t values: {', '.join(chart_thresholds)}")
+        print(f"Query-size column: {args.query_size_column}")
+        print(f"Chart timeout: {args.timeout_seconds:g} seconds")
         print(f"Output directory: {out_dir}")
         print(f"HTML report: {report_path}")
         print(f"Speedup by t report: {speedup_by_t_path}")
+        print(f"Speedup chart report: {speedup_chart_path}")
         if args.write_csv:
             print(f"Per-object CSV files: {len(grouped_rows)}")
     except Exception as exc:
@@ -1205,3 +1749,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

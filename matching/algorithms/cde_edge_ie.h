@@ -92,9 +92,6 @@ public:
             ui this_root_cand_index = root_cand_index++;
             if (has_forced_root_data && v0 != forced_root_data) continue;
             if (has_forced_root_cand_index && this_root_cand_index != forced_root_cand_index) continue;
-#endif
-            if (outputLimitReached()) break;
-#ifndef NDEBUG
             recordBranchOrderDebug(root);
 #endif
 
