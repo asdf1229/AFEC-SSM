@@ -1,8 +1,0 @@
-name	macros	env	description
-base			current default CDE-Edge-IE
-no_spoke	DISABLE_SPOKE_FILTERING		disable spoke candidate filtering
-onehop	ENABLE_ONEHOP_FILTERING		enable one-hop filtering on top of spoke records
-no_terminal_buckets		CDE_EDGE_IE_TERMINAL_BUCKETS=0	disable terminal-tail bucket ordering at runtime
-# Examples you can enable by removing '#':
-# onehop_qdeg4	ENABLE_ONEHOP_FILTERING,ONEHOP_FILTER_MAX_QDEG=4		one-hop filtering with max query degree 4
-# excluded_edge	ENABLE_EXCLUDED_EDGE_SUPPORT		enable excluded-edge support

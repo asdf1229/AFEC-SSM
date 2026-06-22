@@ -1,6 +1,12 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
+#ifdef SSM_GED_CONFIG_HEADER
+
+#include SSM_GED_CONFIG_HEADER
+
+#else
+
 // --- cde_edge_ie filtering options ---
 #ifndef DISABLE_SPOKE_FILTERING
 #define ENABLE_SPOKE_FILTERING
@@ -9,16 +15,6 @@
 #ifdef DISABLE_ONEHOP_FILTERING
 #undef ENABLE_ONEHOP_FILTERING
 #endif
-#ifndef ONEHOP_FILTER_MISSING_GAP
-#define ONEHOP_FILTER_MISSING_GAP 2
-#endif
-#ifndef ONEHOP_FILTER_MAX_QDEG
-#define ONEHOP_FILTER_MAX_QDEG 8
-#endif
-
-#if defined(ENABLE_ONEHOP_FILTERING) && !defined(ENABLE_SPOKE_FILTERING)
-#error "ENABLE_ONEHOP_FILTERING requires ENABLE_SPOKE_FILTERING because OneHop consumes spoke-stage records."
-#endif
 
 // --- other options ---
 #define NDEBUG
@@ -26,14 +22,41 @@
 // --- output options ---
 // 0 means unlimited. A positive value stops recursive enumeration after that
 // many results have been found.
-#ifndef MATCH_OUTPUT_LIMIT
-#define MATCH_OUTPUT_LIMIT 1000
-#endif
-#if MATCH_OUTPUT_LIMIT < 0
-#error "MATCH_OUTPUT_LIMIT must be non-negative."
-#endif
 
 // #define ENABLE_EXCLUDED_EDGE_SUPPORT
 // #define ENABLE_CAND_STATS
+
+#define CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT 1
+#define CDE_EDGE_IE_FIXED_ORDER 0
+
+#endif // SSM_GED_CONFIG_HEADER
+
+#ifndef ONEHOP_FILTER_MISSING_GAP
+#define ONEHOP_FILTER_MISSING_GAP 2
+#endif
+
+#ifndef ONEHOP_FILTER_MAX_QDEG
+#define ONEHOP_FILTER_MAX_QDEG 8
+#endif
+
+#ifndef MATCH_OUTPUT_LIMIT
+#define MATCH_OUTPUT_LIMIT 1000
+#endif
+
+#ifndef CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT
+#define CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT 1
+#endif
+
+#ifndef CDE_EDGE_IE_FIXED_ORDER
+#define CDE_EDGE_IE_FIXED_ORDER 0
+#endif
+
+#if defined(ENABLE_ONEHOP_FILTERING) && !defined(ENABLE_SPOKE_FILTERING)
+#error "ENABLE_ONEHOP_FILTERING requires ENABLE_SPOKE_FILTERING because OneHop consumes spoke-stage records."
+#endif
+
+#if MATCH_OUTPUT_LIMIT < 0
+#error "MATCH_OUTPUT_LIMIT must be non-negative."
+#endif
 
 #endif //_CONFIG_H_

@@ -2,6 +2,7 @@
 
 BUILD_DIR="build"
 GENERATOR=""
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 for arg in "$@"; do
     case "$arg" in
@@ -39,19 +40,25 @@ else
 fi
 echo "========================================"
 
-if [ -d "$BUILD_DIR" ]; then
-    echo "Cleaning build directory '$BUILD_DIR'..."
-    rm -rf "$BUILD_DIR"
+if [[ "$BUILD_DIR" = /* ]]; then
+    BUILD_PATH="$BUILD_DIR"
+else
+    BUILD_PATH="${SOURCE_DIR}/${BUILD_DIR#./}"
 fi
 
-mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR" || exit 1
+if [ -d "$BUILD_PATH" ]; then
+    echo "Cleaning build directory '$BUILD_DIR'..."
+    rm -rf "$BUILD_PATH"
+fi
+
+mkdir -p "$BUILD_PATH"
+cd "$BUILD_PATH" || exit 1
 
 echo "Running CMake..."
 if [ -n "$GENERATOR" ]; then
-    cmake -G "$GENERATOR" .. || exit 1
+    cmake -G "$GENERATOR" "$SOURCE_DIR" || exit 1
 else
-    cmake .. || exit 1
+    cmake "$SOURCE_DIR" || exit 1
 fi
 
 echo "Compiling..."

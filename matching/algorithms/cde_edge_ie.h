@@ -43,8 +43,15 @@ public:
         Timer t_filter;
         bool res = runCandidateFiltering();
         stats.filter_time = t_filter.elapsed();
+        if (!res) {
+            stats.init_time = t_init.elapsed();
+            return false;
+        }
+
+#if CDE_EDGE_IE_FIXED_ORDER
+        initFixedEdgePriorities();
+#endif
         stats.init_time = t_init.elapsed();
-        if (!res) return false;
         return true;
     }
 
@@ -274,6 +281,9 @@ private:
     vector<vector<ui>> q_neighbors;
     vector<ui> q_degree;
     vector<vector<char>> q_neighbor_is_bridge;
+#if CDE_EDGE_IE_FIXED_ORDER
+    vector<vector<ui>> fixed_edge_priority;
+#endif
 
     vector<MyBitset> candidates;
 
@@ -298,9 +308,6 @@ private:
     bool terminal_buckets_enabled = true;
     ui data_vertex_mark_token = 0;
     int branch_timing_depth = 0;
-
-    vector<ui> frontier_visit;
-    ui frontier_token;
 
     struct TerminalScan {
         ui unmatched_count = 0;
@@ -421,6 +428,9 @@ private:
         q_neighbors.clear();
         q_degree.clear();
         q_neighbor_is_bridge.clear();
+#if CDE_EDGE_IE_FIXED_ORDER
+        fixed_edge_priority.clear();
+#endif
 
         anchor_count.assign(qn, 0);
         support.assign(qn, vector<ui>(qn, 0));
@@ -442,9 +452,6 @@ private:
         branch_order_prefix_reach_counts.clear();
         branch_order_prefix_answer_counts.clear();
 #endif
-        frontier_visit.assign(qn, 0);
-        frontier_token = 1;
-
         stats = TimeStats();
         initTerminalTailConfig();
 #ifndef NDEBUG
@@ -514,16 +521,7 @@ private:
 
     void initTerminalTailConfig()
     {
-        terminal_buckets_enabled = true;
-        const char *env = std::getenv("CDE_EDGE_IE_TERMINAL_BUCKETS");
-        if (env != nullptr && env[0] != '\0') {
-            terminal_buckets_enabled =
-                !(std::strcmp(env, "0") == 0 ||
-                    std::strcmp(env, "false") == 0 ||
-                    std::strcmp(env, "FALSE") == 0 ||
-                    std::strcmp(env, "off") == 0 ||
-                    std::strcmp(env, "OFF") == 0);
-        }
+        terminal_buckets_enabled = CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT != 0;
     }
 
 #ifndef NDEBUG
@@ -2157,6 +2155,114 @@ private:
     {
         return CandidateFilter(*this).run();
     }
+
+#if CDE_EDGE_IE_FIXED_ORDER
+    struct FixedEdgePriorityEntry {
+        ui u = 0;
+        ui anchor = 0;
+        unsigned long long pair_support = 0;
+        ui u_candidate_count = 0;
+        ui anchor_candidate_count = 0;
+    };
+
+    unsigned long long countStaticCandidateEdgePairs(ui u, ui u1) const
+    {
+        unsigned long long count = 0;
+        for (ui v : candidates[u]) {
+            ui degree = 0;
+            const ui *neighbors = data_graph->getVertexNeighbors(v, degree);
+            for (ui i = 0; i < degree; ++i) {
+                if (candidates[u1].contains(neighbors[i])) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    void initFixedEdgePriorities()
+    {
+        const ui invalid_priority = std::numeric_limits<ui>::max();
+        fixed_edge_priority.assign(qn, vector<ui>(qn, invalid_priority));
+
+        vector<FixedEdgePriorityEntry> entries;
+        size_t directed_edge_count = 0;
+        for (ui u = 0; u < qn; ++u) {
+            directed_edge_count += q_neighbors[u].size();
+        }
+        entries.reserve(directed_edge_count);
+
+        for (ui u = 0; u < qn; ++u) {
+            for (ui u1 : q_neighbors[u]) {
+                if (u >= u1) {
+                    continue;
+                }
+
+                ui u_candidate_count = (ui)candidates[u].size();
+                ui u1_candidate_count = (ui)candidates[u1].size();
+                ui scan_u = u_candidate_count <= u1_candidate_count ? u : u1;
+                ui target_u = scan_u == u ? u1 : u;
+                unsigned long long pair_support =
+                    countStaticCandidateEdgePairs(scan_u, target_u);
+
+                FixedEdgePriorityEntry forward;
+                forward.u = u;
+                forward.anchor = u1;
+                forward.pair_support = pair_support;
+                forward.u_candidate_count = u_candidate_count;
+                forward.anchor_candidate_count = u1_candidate_count;
+                entries.push_back(forward);
+
+                FixedEdgePriorityEntry reverse;
+                reverse.u = u1;
+                reverse.anchor = u;
+                reverse.pair_support = pair_support;
+                reverse.u_candidate_count = u1_candidate_count;
+                reverse.anchor_candidate_count = u_candidate_count;
+                entries.push_back(reverse);
+            }
+        }
+
+        std::sort(entries.begin(), entries.end(),
+            [&](const FixedEdgePriorityEntry &lhs,
+                const FixedEdgePriorityEntry &rhs) {
+                // pair_support / |Cand(anchor)| estimates the support seen after
+                // fixing one candidate for the anchor. Compare the ratios
+                // exactly so the priority is deterministic.
+                __uint128_t lhs_scaled =
+                    (__uint128_t)lhs.pair_support *
+                    std::max((ui)1, rhs.anchor_candidate_count);
+                __uint128_t rhs_scaled =
+                    (__uint128_t)rhs.pair_support *
+                    std::max((ui)1, lhs.anchor_candidate_count);
+                if (lhs_scaled != rhs_scaled) {
+                    return lhs_scaled < rhs_scaled;
+                }
+                if (lhs.u_candidate_count != rhs.u_candidate_count) {
+                    return lhs.u_candidate_count < rhs.u_candidate_count;
+                }
+                if (lhs.pair_support != rhs.pair_support) {
+                    return lhs.pair_support < rhs.pair_support;
+                }
+                if (q_degree[lhs.u] != q_degree[rhs.u]) {
+                    return q_degree[lhs.u] > q_degree[rhs.u];
+                }
+                if (q_degree[lhs.anchor] != q_degree[rhs.anchor]) {
+                    return q_degree[lhs.anchor] > q_degree[rhs.anchor];
+                }
+                if (lhs.u != rhs.u) {
+                    return lhs.u < rhs.u;
+                }
+                return lhs.anchor < rhs.anchor;
+            });
+
+        assert(entries.size() <= (size_t)std::numeric_limits<ui>::max());
+        for (size_t rank = 0; rank < entries.size(); ++rank) {
+            const FixedEdgePriorityEntry &entry = entries[rank];
+            fixed_edge_priority[entry.u][entry.anchor] = (ui)rank;
+        }
+    }
+#endif
     // ========================================================================
 
     // ========================================================================
@@ -2228,7 +2334,8 @@ private:
         }
 
         bool restrictTopEdgesToCoveredComponent(vector<ActiveEdge> &top_edges,
-            EdgeScoreCache &edge_score_cache, vector<ui> &component_frontier,
+            EdgeScoreCache &edge_score_cache, vector<int> &component_id,
+            vector<vector<ui>> &component_frontiers, vector<char> &component_checked,
             vector<ActiveEdge> &component_edges, vector<ActiveEdge> &best_component_edges,
             size_t &best_support_sum, bool &has_zero_support_component,
             const vector<char> *skip_query_vertices = nullptr) const
@@ -2240,8 +2347,22 @@ private:
                 return false;
             }
 
+            size_t component_count = labelUnmatchedComponents(component_id,
+                component_frontiers, skip_query_vertices);
+            component_checked.assign(component_count, 0);
+
             for (const ActiveEdge &edge : top_edges) {
-                collectComponentFrontier(edge.u, component_frontier, skip_query_vertices);
+                if (edge.u >= component_id.size() || component_id[edge.u] < 0) {
+                    continue;
+                }
+
+                size_t id = (size_t)component_id[edge.u];
+                if (component_checked[id]) {
+                    continue;
+                }
+                component_checked[id] = 1;
+
+                const vector<ui> &component_frontier = component_frontiers[id];
                 if (component_frontier.empty()) {
                     continue;
                 }
@@ -2338,6 +2459,17 @@ private:
 
         bool isBetterActiveEdge(const ActiveEdge &lhs, const ActiveEdge &rhs) const
         {
+#if CDE_EDGE_IE_FIXED_ORDER
+            ui lhs_priority = solver.fixed_edge_priority[lhs.u][lhs.anchor];
+            ui rhs_priority = solver.fixed_edge_priority[rhs.u][rhs.anchor];
+            if (lhs_priority != rhs_priority) {
+                return lhs_priority < rhs_priority;
+            }
+            if (lhs.u != rhs.u) {
+                return lhs.u < rhs.u;
+            }
+            return lhs.anchor < rhs.anchor;
+#else
 #ifndef NDEBUG
             char lhs_preferred = solver.preferred_query_vertices.empty() ? 0 : solver.preferred_query_vertices[lhs.u];
             char rhs_preferred = solver.preferred_query_vertices.empty() ? 0 : solver.preferred_query_vertices[rhs.u];
@@ -2363,6 +2495,7 @@ private:
                 return lhs.u < rhs.u;
             }
             return lhs.anchor < rhs.anchor;
+#endif
         }
 
         void collectActiveEdgesForVertex(ui u, vector<ActiveEdge> &edges) const
@@ -2415,49 +2548,52 @@ private:
             return false;
         }
 
-        // Move to the next BFS visit token
-        void nextToken() const
-        {
-            if (++solver.frontier_token == 0) {
-                std::fill(solver.frontier_visit.begin(), solver.frontier_visit.end(), 0);
-                solver.frontier_token = 1;
-            }
-        }
-
-        void collectComponentFrontier(ui best_u, vector<ui> &component_frontier,
+        size_t labelUnmatchedComponents(vector<int> &component_id,
+            vector<vector<ui>> &component_frontiers,
             const vector<char> *skip_query_vertices) const
         {
-            component_frontier.clear();
-
-            if (solver.mapped_q[best_u] != -1 ||
-                shouldSkipQueryVertex(best_u, skip_query_vertices)) {
-                return;
+            // Label every unmatched component in one graph sweep, then reuse the
+            // labels for all top edges in this DFS state.
+            component_id.assign(solver.qn, -1);
+            for (vector<ui> &frontier : component_frontiers) {
+                frontier.clear();
             }
 
-            nextToken();
-
+            size_t component_count = 0;
             queue<ui> q;
-            solver.frontier_visit[best_u] = solver.frontier_token;
-            q.push(best_u);
-
-            while (!q.empty()) {
-                ui curr = q.front();
-                q.pop();
-
-                if (solver.frontier_pos[curr] != -1 &&
-                    !shouldSkipQueryVertex(curr, skip_query_vertices)) {
-                    component_frontier.push_back(curr);
+            for (ui start = 0; start < solver.qn; ++start) {
+                if (solver.mapped_q[start] != -1 ||
+                    shouldSkipQueryVertex(start, skip_query_vertices) ||
+                    component_id[start] != -1) {
+                    continue;
                 }
 
-                for (ui nbr : solver.q_neighbors[curr]) {
-                    if (solver.mapped_q[nbr] == -1 &&
-                        solver.frontier_visit[nbr] != solver.frontier_token &&
-                        !shouldSkipQueryVertex(nbr, skip_query_vertices)) {
-                        solver.frontier_visit[nbr] = solver.frontier_token;
-                        q.push(nbr);
+                int id = (int)component_count++;
+                if ((size_t)id == component_frontiers.size()) {
+                    component_frontiers.emplace_back();
+                }
+                component_id[start] = id;
+                q.push(start);
+
+                while (!q.empty()) {
+                    ui curr = q.front();
+                    q.pop();
+
+                    if (solver.frontier_pos[curr] != -1) {
+                        component_frontiers[(size_t)id].push_back(curr);
+                    }
+
+                    for (ui nbr : solver.q_neighbors[curr]) {
+                        if (solver.mapped_q[nbr] == -1 &&
+                            !shouldSkipQueryVertex(nbr, skip_query_vertices) &&
+                            component_id[nbr] == -1) {
+                            component_id[nbr] = id;
+                            q.push(nbr);
+                        }
                     }
                 }
             }
+            return component_count;
         }
 
     };
@@ -2719,7 +2855,9 @@ private:
         vector<ActiveEdge> best_component_edges;
         vector<ui> candidate_vertices;
         vector<ui> candidate_anchor_counts;
-        vector<ui> component_frontier;
+        vector<int> component_id;
+        vector<vector<ui>> component_frontiers;
+        vector<char> component_checked;
         vector<char> terminal_skip;
         vector<ui> terminal_vertices;
         vector<ui> active_terminal_vertices;
@@ -2739,6 +2877,9 @@ private:
             best_component_edges.reserve((size_t)threshold + 1);
             candidate_vertices.reserve(max_g_deg);
             candidate_anchor_counts.reserve(max_g_deg);
+            component_id.reserve(qn);
+            component_frontiers.reserve(qn);
+            component_checked.reserve(qn);
             terminal_skip.reserve(qn);
             terminal_vertices.reserve(qn);
             active_terminal_vertices.reserve(qn);
@@ -2755,7 +2896,8 @@ private:
             }
             std::fill(edge_score_cache.active_edges_cached.begin(),
                 edge_score_cache.active_edges_cached.end(), 0);
-            component_frontier.clear();
+            component_id.clear();
+            component_checked.clear();
             component_edges.clear();
             best_component_edges.clear();
             terminal_vertices.clear();
@@ -3206,7 +3348,12 @@ private:
 #endif
         }
 
-        if (top_edges.back().anchor_support == 0) {
+        bool all_selected_edges_have_zero_support = std::all_of(
+            top_edges.begin(), top_edges.end(),
+            [](const ActiveEdge &edge) {
+                return edge.anchor_support == 0;
+            });
+        if (all_selected_edges_have_zero_support) {
             stats.frontier_time += t_frontier.elapsed();
             stats.prun_calls++;
             recordBranchProfilePrune();
@@ -3218,7 +3365,8 @@ private:
             Timer t_component;
 #endif
             selected_covered_component = buf.branch_selector.restrictTopEdgesToCoveredComponent(top_edges,
-                buf.edge_score_cache, buf.component_frontier, buf.component_edges,
+                buf.edge_score_cache, buf.component_id, buf.component_frontiers,
+                buf.component_checked, buf.component_edges,
                 buf.best_component_edges, selected_component_support_sum,
                 has_zero_support_component, terminal_skip_vertices);
 #ifndef NDEBUG

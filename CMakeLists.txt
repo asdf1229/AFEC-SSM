@@ -6,6 +6,8 @@ add_compile_options(-O3 -g -Wall)
 
 set(SSM_GED_COMPILE_DEFINITIONS "" CACHE STRING
     "Extra semicolon-separated compile definitions for SSM-GED targets.")
+set(SSM_GED_CONFIG_HEADER "" CACHE STRING
+    "Optional configuration header selected instead of configuration/config.h defaults.")
 
 include_directories(
     ${PROJECT_SOURCE_DIR}
@@ -30,10 +32,7 @@ endif()
 
 set(SSM_GED_EXECUTABLES "")
 
-foreach(ALGO_SOURCE ${SSM_GED_ALGORITHM_SOURCES})
-    get_filename_component(ALGO_NAME ${ALGO_SOURCE} NAME_WE)
-    set(TARGET_NAME "ssm_ged_${ALGO_NAME}")
-
+macro(add_ssm_ged_executable TARGET_NAME ALGO_SOURCE CONFIG_HEADER)
     add_executable(${TARGET_NAME}
         ${SSM_GED_COMMON_SOURCES}
         ${ALGO_SOURCE}
@@ -41,9 +40,82 @@ foreach(ALGO_SOURCE ${SSM_GED_ALGORITHM_SOURCES})
     if (SSM_GED_COMPILE_DEFINITIONS)
         target_compile_definitions(${TARGET_NAME} PRIVATE ${SSM_GED_COMPILE_DEFINITIONS})
     endif()
+    if (NOT "${CONFIG_HEADER}" STREQUAL "")
+        target_compile_definitions(${TARGET_NAME} PRIVATE
+            "SSM_GED_CONFIG_HEADER=\"${CONFIG_HEADER}\"")
+    endif()
     target_link_libraries(${TARGET_NAME} PRIVATE Threads::Threads)
-
     list(APPEND SSM_GED_EXECUTABLES ${TARGET_NAME})
+endmacro()
+
+macro(set_cde_edge_ie_identity TARGET_NAME CONFIG_NAME)
+    if ("${CONFIG_NAME}" STREQUAL "base")
+        set(CDE_ALGORITHM_KEY "cde_edge_ie")
+        set(CDE_DISPLAY_NAME "CDE-Edge-IE")
+    else()
+        set(CDE_ALGORITHM_KEY "cde_edge_ie_${CONFIG_NAME}")
+        set(CDE_DISPLAY_NAME "CDE-Edge-IE (${CONFIG_NAME})")
+    endif()
+    target_compile_definitions(${TARGET_NAME} PRIVATE
+        "CDE_EDGE_IE_ALGORITHM_KEY=\"${CDE_ALGORITHM_KEY}\""
+        "CDE_EDGE_IE_DISPLAY_NAME=\"${CDE_DISPLAY_NAME}\""
+    )
+endmacro()
+
+foreach(ALGO_SOURCE ${SSM_GED_ALGORITHM_SOURCES})
+    get_filename_component(ALGO_NAME ${ALGO_SOURCE} NAME_WE)
+
+    if (ALGO_NAME STREQUAL "cde_edge_ie")
+        if (SSM_GED_CONFIG_HEADER)
+            # Explicit single-config mode is used by scripts/run_cde_ablations.py.
+            get_filename_component(CONFIG_NAME "${SSM_GED_CONFIG_HEADER}" NAME_WE)
+            add_ssm_ged_executable(
+                "ssm_ged_cde_edge_ie"
+                "${ALGO_SOURCE}"
+                "${SSM_GED_CONFIG_HEADER}"
+            )
+            set_cde_edge_ie_identity("ssm_ged_cde_edge_ie" "${CONFIG_NAME}")
+        else()
+            # Normal build.sh mode: every config header becomes one executable.
+            file(GLOB CDE_ABLATION_CONFIGS CONFIGURE_DEPENDS
+                RELATIVE "${PROJECT_SOURCE_DIR}"
+                "${PROJECT_SOURCE_DIR}/configuration/cde_ablation_configs/*.h"
+            )
+            list(SORT CDE_ABLATION_CONFIGS)
+            if (NOT CDE_ABLATION_CONFIGS)
+                message(FATAL_ERROR
+                    "No CDE ablation configs found under configuration/cde_ablation_configs.")
+            endif()
+
+            set(CDE_BASE_CONFIG_FOUND FALSE)
+            foreach(CONFIG_HEADER ${CDE_ABLATION_CONFIGS})
+                get_filename_component(CONFIG_NAME "${CONFIG_HEADER}" NAME_WE)
+                if (CONFIG_NAME STREQUAL "base")
+                    set(TARGET_NAME "ssm_ged_cde_edge_ie")
+                    set(CDE_BASE_CONFIG_FOUND TRUE)
+                else()
+                    set(TARGET_NAME "ssm_ged_cde_edge_ie_${CONFIG_NAME}")
+                endif()
+                add_ssm_ged_executable(
+                    "${TARGET_NAME}"
+                    "${ALGO_SOURCE}"
+                    "${CONFIG_HEADER}"
+                )
+                set_cde_edge_ie_identity("${TARGET_NAME}" "${CONFIG_NAME}")
+            endforeach()
+
+            if (NOT CDE_BASE_CONFIG_FOUND)
+                message(FATAL_ERROR
+                    "CDE ablation configs must include configuration/cde_ablation_configs/base.h.")
+            endif()
+        endif()
+    else()
+        add_ssm_ged_executable(
+            "ssm_ged_${ALGO_NAME}"
+            "${ALGO_SOURCE}"
+            ""
+        )
+    endif()
 endforeach()
 
 message(STATUS "Configured SSM-GED executables: ${SSM_GED_EXECUTABLES}")

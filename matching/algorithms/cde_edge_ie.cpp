@@ -1,6 +1,14 @@
 #include "matching/run_matching.h"
 #include "matching/algorithms/cde_edge_ie.h"
 
+#ifndef CDE_EDGE_IE_ALGORITHM_KEY
+#define CDE_EDGE_IE_ALGORITHM_KEY "cde_edge_ie"
+#endif
+
+#ifndef CDE_EDGE_IE_DISPLAY_NAME
+#define CDE_EDGE_IE_DISPLAY_NAME "CDE-Edge-IE"
+#endif
+
 namespace ssm_ged {
 
     namespace {
@@ -15,8 +23,8 @@ namespace ssm_ged {
     const AlgorithmDefinition &create_algorithm_definition()
     {
         static const AlgorithmDefinition definition = {
-            "cde_edge_ie",
-            "CDE-Edge-IE",
+            CDE_EDGE_IE_ALGORITHM_KEY,
+            CDE_EDGE_IE_DISPLAY_NAME,
             &run_cde_edge_ie
         };
         return definition;

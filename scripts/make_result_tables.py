@@ -13,7 +13,7 @@ default:
 
   - report.html with detailed colored speedup rows
   - speedup_by_t.html with the threshold-pivoted speedup table
-  - speedup_chart.html with average-runtime charts and speedup distributions
+  - speedup_chart.html with average-runtime charts
 
 CSV output is optional via --write-csv.
 """
@@ -54,7 +54,6 @@ KNOWN_ALGORITHM_SUFFIXES = (
 
 DEFAULT_DISPLAY_METRICS = ("count", "run_ms", "recursion_calls")
 RUNTIME_LOW_COLOR_THRESHOLD_MS = 200.0
-MISSING_RUNTIME_RATIO = 10.0
 DEFAULT_OURS_ALGORITHM = "cde_edge_ie"
 SPEEDUP_BUCKET_EDGES = tuple(
     [i / 10.0 for i in range(1, 11)] + [float(i) for i in range(2, 11)]
@@ -65,10 +64,33 @@ DEFAULT_QUERY_SIZE_COLUMN = "query_group"
 DEFAULT_CHART_THRESHOLDS = tuple(str(value) for value in range(7))
 DEFAULT_CHART_RUNTIME_METRIC = "run_ms"
 TIMEOUT_MARKERS = ("timeout", "timed out", "time limit", "超时")
+CHART_TIMEOUT_RUNTIME_VALUES = {"NA", "N/A"}
 CHART_COLORS = (
     "#ef6c6c", "#79a9d1", "#8bc486", "#b88bc2",
     "#f2a65a", "#bd8b6b", "#e89ac2", "#8f9bb3",
 )
+DENSITY_BUCKETS = ("dense", "sparse")
+DENSITY_BUCKET_LABELS = {
+    "dense": "Dense",
+    "sparse": "Sparse",
+    "other": "Other",
+}
+DENSITY_DETECTION_COLUMNS = (
+    "density",
+    "query_density",
+    "graph_density",
+    "dataset_group",
+    "dataset",
+    "query_group",
+    "query",
+    "source",
+    "source_file",
+)
+DENSITY_BUCKET_RE = re.compile(
+    r"(^|[^A-Za-z0-9])(dense|sparse)([^A-Za-z0-9]|$)",
+    re.IGNORECASE,
+)
+CHART_LABEL_COUNT_SUFFIX_RE = re.compile(r"_(?:15|30|45|60)$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -332,17 +354,10 @@ def compute_speedup(
     ours: Optional[float],
     best_other: Optional[float],
     higher_is_better: bool,
-    missing_ratio: Optional[float] = None,
 ) -> Optional[float]:
     if (ours is not None and ours < 0) or (best_other is not None and best_other < 0):
         return None
     if ours is None or best_other is None:
-        if missing_ratio is None or (ours is None and best_other is None):
-            return None
-        if ours is not None:
-            return missing_ratio
-        if best_other is not None:
-            return 1.0 / missing_ratio
         return None
 
     if higher_is_better:
@@ -421,6 +436,8 @@ def format_number(value: Optional[float], digits: int = 4) -> str:
         return ""
     if math.isinf(value):
         return "inf"
+    if value != 0 and abs(value) < 10 ** -digits:
+        return f"{value:.{digits}e}"
     return f"{value:.{digits}f}"
 
 
@@ -517,6 +534,21 @@ def build_output_columns(
     return columns
 
 
+def metric_value_for_speedup(
+    row: Dict[str, str],
+    algorithm: str,
+    metric: str,
+    timeout_ms: float,
+) -> Optional[float]:
+    raw_value = row.get(f"{algorithm}_{metric}", "")
+    value = to_float(raw_value)
+    if value is not None:
+        return value
+    if is_runtime_metric(metric) and str(raw_value).strip().upper() in CHART_TIMEOUT_RUNTIME_VALUES:
+        return timeout_ms
+    return None
+
+
 def enrich_row(
     row: Dict[str, str],
     algorithms: Sequence[str],
@@ -524,14 +556,15 @@ def enrich_row(
     metric: str,
     higher_is_better: bool,
     cap_ratio: float,
+    timeout_ms: float,
 ) -> Dict[str, str]:
     output = dict(row)
-    ours_value = to_float(row.get(f"{ours_algorithm}_{metric}"))
+    ours_value = metric_value_for_speedup(row, ours_algorithm, metric, timeout_ms)
     other_values = []
     for algo in algorithms:
         if algo == ours_algorithm:
             continue
-        value = to_float(row.get(f"{algo}_{metric}"))
+        value = metric_value_for_speedup(row, algo, metric, timeout_ms)
         if value is not None:
             other_values.append((algo, value))
 
@@ -542,15 +575,10 @@ def enrich_row(
     else:
         best_algo, best_value = best
 
-    missing_ratio = None
-    if is_runtime_metric(metric) and any(algo != ours_algorithm for algo in algorithms):
-        missing_ratio = MISSING_RUNTIME_RATIO
-
     speedup = compute_speedup(
         ours_value,
         best_value,
         higher_is_better,
-        missing_ratio,
     )
     too_short_runtime = suppress_runtime_color(metric, ours_value, best_value)
     displayed_speedup = None if too_short_runtime else speedup
@@ -590,6 +618,50 @@ def group_rows(
         key = tuple(row.get(column, "") for column in group_by)
         groups[key].append(row)
     return groups
+
+
+def chart_dataset_prefix(dataset: str) -> str:
+    return CHART_LABEL_COUNT_SUFFIX_RE.sub("", dataset)
+
+
+def chart_group_key(
+    title: str,
+    rows: Sequence[Dict[str, str]],
+) -> Tuple[Tuple[str, ...], str]:
+    if not rows:
+        return (title,), title
+
+    first_row = rows[0]
+    dataset = str(first_row.get("dataset", "")).strip()
+    dataset_group = str(first_row.get("dataset_group", "")).strip()
+    if not dataset:
+        return (title,), title
+
+    dataset_prefix = chart_dataset_prefix(dataset)
+    if dataset_prefix == dataset:
+        return (title,), title
+
+    if dataset_group:
+        return (dataset_group, dataset_prefix), f"{dataset_group} / {dataset_prefix}"
+    return (dataset_prefix,), dataset_prefix
+
+
+def combine_chart_groups_by_dataset_prefix(
+    grouped: Sequence[Tuple[str, Dict[str, str], Sequence[Dict[str, str]]]]
+) -> List[Tuple[str, Dict[str, str], Sequence[Dict[str, str]]]]:
+    buckets: Dict[Tuple[str, ...], List[Dict[str, str]]] = defaultdict(list)
+    titles: Dict[Tuple[str, ...], str] = {}
+
+    for title, _summary, rows in grouped:
+        key, chart_title = chart_group_key(title, rows)
+        titles[key] = chart_title
+        buckets[key].extend(rows)
+
+    combined = []
+    for key in sorted(buckets, key=lambda item: tuple(natural_key(part) for part in item)):
+        rows = sorted(buckets[key], key=row_sort_key)
+        combined.append((titles[key], summarize_group(rows), rows))
+    return combined
 
 
 def write_csv(path: Path, rows: Sequence[Dict[str, str]], columns: Sequence[str]) -> None:
@@ -910,6 +982,7 @@ def write_html_report(
     ours_algorithm: str,
     higher_is_better: bool,
     cap_ratio: float,
+    timeout_ms: float,
 ) -> None:
     style = """
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #111827; }
@@ -950,7 +1023,8 @@ td.text, th.text { text-align: left; }
             f"<span style=\"background:#2e7d32;color:#fff\">deeper color: more extreme ratio</span>"
             f"<span>not compared: both compared runtimes &lt; "
             f"{html.escape(format_compact_number(RUNTIME_LOW_COLOR_THRESHOLD_MS))} ms</span>"
-            f"<span>missing runtime: treated as a 10x gap</span>"
+            f"<span>NA runtime: counted as "
+            f"{html.escape(format_compact_number(timeout_ms / 1000.0))}s timeout</span>"
             "</div>\n"
         )
 
@@ -1071,6 +1145,8 @@ def runtime_value_for_chart(
         if value < 0:
             return timeout_ms
         return min(value, timeout_ms)
+    if str(raw_value).strip().upper() in CHART_TIMEOUT_RUNTIME_VALUES:
+        return timeout_ms
 
     timeout_fields = (
         raw_value,
@@ -1081,6 +1157,51 @@ def runtime_value_for_chart(
     if any(contains_timeout_marker(item) for item in timeout_fields):
         return timeout_ms
     return None
+
+
+def density_bucket_for_chart(row: Dict[str, str]) -> Optional[str]:
+    checked = set()
+    for column in DENSITY_DETECTION_COLUMNS:
+        checked.add(column)
+        match = DENSITY_BUCKET_RE.search(str(row.get(column, "")))
+        if match:
+            return match.group(2).lower()
+
+    for column, value in row.items():
+        if column in checked:
+            continue
+        if any(column.endswith(suffix) for suffix in KNOWN_ALGORITHM_SUFFIXES):
+            continue
+        match = DENSITY_BUCKET_RE.search(str(value))
+        if match:
+            return match.group(2).lower()
+    return None
+
+
+def split_rows_by_density(
+    rows: Sequence[Dict[str, str]]
+) -> List[Tuple[str, Sequence[Dict[str, str]]]]:
+    buckets: Dict[str, List[Dict[str, str]]] = defaultdict(list)
+    other_rows: List[Dict[str, str]] = []
+
+    for row in rows:
+        bucket = density_bucket_for_chart(row)
+        if bucket in DENSITY_BUCKETS:
+            buckets[bucket].append(row)
+        else:
+            other_rows.append(row)
+
+    if not any(buckets.values()):
+        return [("", rows)]
+
+    sections: List[Tuple[str, Sequence[Dict[str, str]]]] = [
+        (DENSITY_BUCKET_LABELS[bucket], buckets[bucket])
+        for bucket in DENSITY_BUCKETS
+        if buckets[bucket]
+    ]
+    if other_rows:
+        sections.append((DENSITY_BUCKET_LABELS["other"], other_rows))
+    return sections
 
 
 def build_average_runtime_data(
@@ -1190,22 +1311,22 @@ def build_runtime_bar_chart_svg(
     y_max = 10.0 ** max_exp
     ticks = [10.0 ** exponent for exponent in range(min_exp, max_exp + 1)]
 
-    left = 82
-    right = 24
-    top = 24
-    bottom = 64
-    plot_height = 320
-    preferred_group_width = max(86, 24 * len(ordered_algorithms) + 24)
-    width = max(760, left + right + preferred_group_width * len(sizes))
+    left = 66
+    right = 16
+    top = 18
+    bottom = 48
+    plot_height = 220
+    preferred_group_width = max(58, 17 * len(ordered_algorithms) + 18)
+    width = max(520, left + right + preferred_group_width * len(sizes))
     height = top + plot_height + bottom
     plot_width = width - left - right
     group_width = plot_width / len(sizes)
-    bar_gap = 2.0
-    usable_group_width = min(preferred_group_width, group_width) * 0.82
+    bar_gap = 1.5
+    usable_group_width = min(preferred_group_width, group_width) * 0.80
     bar_width = max(
         4.0,
         min(
-            24.0,
+            18.0,
             (usable_group_width - bar_gap * (len(ordered_algorithms) - 1))
             / len(ordered_algorithms),
         ),
@@ -1298,11 +1419,11 @@ def build_runtime_bar_chart_svg(
                 f'fill="{color}"><title>{svg_text(tooltip)}</title></rect>'
             )
         parts.append(
-            f'<text x="{center:.2f}" y="{axis_bottom + 22}" text-anchor="middle" '
+            f'<text x="{center:.2f}" y="{axis_bottom + 17}" text-anchor="middle" '
             f'class="runtime-x-label">{svg_text(size_label)}</text>'
         )
 
-    y_title_x = 20
+    y_title_x = 14
     y_title_y = top + plot_height / 2
     parts.append(
         f'<text x="{y_title_x}" y="{y_title_y:.2f}" text-anchor="middle" '
@@ -1330,27 +1451,34 @@ def write_runtime_chart_section(
     handle.write("<h3>Average runtime by query graph size</h3>\n")
     handle.write(
         "<p class=\"runtime-chart-note\">"
-        f"One grouped bar chart per t. Timed-out runs are counted as "
+        f"One grouped bar chart per t. Timed-out runs and NA runtime cells are counted as "
         f"{html.escape(format_compact_number(timeout_ms / 1000.0))} seconds. "
-        "Bars are arithmetic means over all queries of the same graph size; "
+        "Bars are arithmetic means over queries of the same graph size. "
+        "When dense/sparse labels are present, they are averaged separately; "
         "the primary algorithm is always the leftmost bar."
         "</p>\n"
     )
-    handle.write('<div class="runtime-chart-grid">\n')
-    for threshold in thresholds:
-        handle.write(
-            build_runtime_bar_chart_svg(
-                rows,
-                algorithms,
-                ours_algorithm,
-                threshold,
-                query_size_column,
-                runtime_metric,
-                timeout_ms,
+    for density_label, density_rows in split_rows_by_density(rows):
+        if density_label:
+            handle.write(
+                f'<h4 class="runtime-density-title">{html.escape(density_label)}</h4>\n'
             )
-        )
-        handle.write("\n")
-    handle.write("</div>\n")
+        handle.write('<div class="runtime-chart-grid">\n')
+        for threshold in thresholds:
+            handle.write(
+                build_runtime_bar_chart_svg(
+                    density_rows,
+                    algorithms,
+                    ours_algorithm,
+                    threshold,
+                    query_size_column,
+                    runtime_metric,
+                    timeout_ms,
+                )
+            )
+            handle.write("\n")
+        handle.write("</div>\n")
+
 
 def write_speedup_by_t_report(
     path: Path,
@@ -1359,6 +1487,7 @@ def write_speedup_by_t_report(
     ours_algorithm: str,
     higher_is_better: bool,
     cap_ratio: float,
+    timeout_ms: float,
 ) -> None:
     style = """
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #111827; }
@@ -1398,7 +1527,8 @@ td.text, th.text { text-align: left; }
             f"<span style=\"background:#2e7d32;color:#fff\">deeper color: more extreme ratio</span>"
             f"<span>not compared: both compared runtimes &lt; "
             f"{html.escape(format_compact_number(RUNTIME_LOW_COLOR_THRESHOLD_MS))} ms</span>"
-            f"<span>missing runtime: treated as a 10x gap</span>"
+            f"<span>NA runtime: counted as "
+            f"{html.escape(format_compact_number(timeout_ms / 1000.0))}s timeout</span>"
             "</div>\n"
         )
 
@@ -1474,22 +1604,23 @@ td.text, th.text { text-align: left; }
 .scroll-sync-inner { height: 1px; }
 .summary { display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0 10px; font-size: 12px; color: #374151; }
 .summary span { background: #f9fafb; border: 1px solid #e5e7eb; padding: 4px 8px; }
-.runtime-chart-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; margin: 8px 0 24px; }
-.runtime-chart-card { border: 1px solid #d1d5db; border-radius: 6px; background: #fff; padding: 10px 12px 12px; }
-.runtime-chart-card h4 { font-size: 14px; margin: 0 0 8px; }
+.runtime-chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 10px; margin: 6px 0 16px; }
+.runtime-chart-card { border: 1px solid #d1d5db; border-radius: 6px; background: #fff; padding: 7px 8px 8px; }
+.runtime-chart-card h4 { font-size: 13px; margin: 0 0 5px; }
 .runtime-chart-scroll { overflow-x: auto; }
 .runtime-chart { display: block; max-width: none; }
-.runtime-chart-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 0 0 6px; font-size: 12px; }
+.runtime-chart-legend { display: flex; flex-wrap: wrap; gap: 5px 10px; margin: 0 0 4px; font-size: 11px; }
 .runtime-legend-item { display: inline-flex; align-items: center; gap: 5px; }
 .runtime-legend-item.ours { font-weight: 700; }
-.runtime-legend-item i { display: inline-block; width: 13px; height: 13px; border: 1px solid rgba(17,24,39,.35); }
-.runtime-axis-label, .runtime-x-label { fill: #374151; font-size: 11px; }
-.runtime-axis-title { fill: #111827; font-size: 12px; font-weight: 600; }
+.runtime-legend-item i { display: inline-block; width: 11px; height: 11px; border: 1px solid rgba(17,24,39,.35); }
+.runtime-axis-label, .runtime-x-label { fill: #374151; font-size: 10px; }
+.runtime-axis-title { fill: #111827; font-size: 11px; font-weight: 600; }
 .runtime-timeout-label { fill: #6b7280; font-size: 10px; }
 .runtime-bar { stroke: rgba(17,24,39,.35); stroke-width: .7; }
 .runtime-bar.ours { stroke: #111827; stroke-width: 1.3; }
-.runtime-chart-note { font-size: 12px; margin: 0 0 10px; }
-.chart-empty { color: #6b7280; font-size: 12px; padding: 20px 8px; }
+.runtime-chart-note { font-size: 12px; margin: 0 0 8px; }
+.runtime-density-title { font-size: 13px; margin: 10px 0 4px; color: #111827; }
+.chart-empty { color: #6b7280; font-size: 12px; padding: 12px 6px; }
 """
     with path.open("w", encoding="utf-8") as handle:
         ours_label = html.escape(ours_algorithm)
@@ -1500,16 +1631,14 @@ td.text, th.text { text-align: left; }
         metric_direction = "higher-is-better" if higher_is_better else "lower-is-better"
         handle.write(
             f"<p>Metric: {html.escape(metric)} ({metric_direction}). "
-            "This file contains the average-runtime charts and speedup distributions. "
+            "This file contains the average-runtime charts. "
+            "Datasets with label-count suffixes _15, _30, _45, and _60 "
+            "are averaged together by prefix. "
             f"Speedup values above 1 favor {ours_label}.</p>\n"
         )
 
-        all_rows = [row for _, _, rows in grouped for row in rows]
-        handle.write("<h2>Overall</h2>\n")
-        write_summary_chips(handle, summarize_group(all_rows), ours_algorithm)
-        write_speedup_distribution_section(handle, all_rows)
-
-        for title, summary, rows in grouped:
+        chart_groups = combine_chart_groups_by_dataset_prefix(grouped)
+        for title, summary, rows in chart_groups:
             handle.write(f"<h2>{html.escape(title)}</h2>\n")
             write_runtime_chart_section(
                 handle,
@@ -1522,7 +1651,6 @@ td.text, th.text { text-align: left; }
                 timeout_ms,
             )
             write_summary_chips(handle, summary, ours_algorithm)
-            write_speedup_distribution_section(handle, rows)
 
         handle.write(
             "<script>\n"
@@ -1643,6 +1771,7 @@ def main() -> int:
                 args.metric,
                 higher_is_better,
                 args.cap_ratio,
+                timeout_ms,
             )
             for row in rows
         ]
@@ -1703,6 +1832,7 @@ def main() -> int:
             ours_algorithm,
             higher_is_better,
             args.cap_ratio,
+            timeout_ms,
         )
         write_speedup_by_t_report(
             speedup_by_t_path,
@@ -1711,6 +1841,7 @@ def main() -> int:
             ours_algorithm,
             higher_is_better,
             args.cap_ratio,
+            timeout_ms,
         )
         write_speedup_chart_report(
             speedup_chart_path,
@@ -1749,4 +1880,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
