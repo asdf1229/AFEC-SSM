@@ -48,6 +48,9 @@ public:
             return false;
         }
 
+#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+        initDataLabelDegreeIndex();
+#endif
 #if CDE_EDGE_IE_FIXED_ORDER
         initFixedEdgePriorities();
 #endif
@@ -250,10 +253,18 @@ private:
     enum { kDebugBranchOrderDepth = 1 };
 #endif
 
+#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+    struct DataLabelDegreeCount {
+        LabelID label = 0;
+        ui count = 0;
+    };
+#endif
+
     struct ActiveEdge {
         ui u = 0;       // unmatched endpoint
         ui anchor = 0;  // matched endpoint
         ui anchor_support = std::numeric_limits<ui>::max();
+        double rank_support = std::numeric_limits<double>::max();
         ui live_anchor_count = 0;
         ui query_degree = 0;
     };
@@ -283,6 +294,9 @@ private:
     vector<vector<char>> q_neighbor_is_bridge;
 #if CDE_EDGE_IE_FIXED_ORDER
     vector<vector<ui>> fixed_edge_priority;
+#endif
+#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+    vector<vector<DataLabelDegreeCount>> data_label_degrees;
 #endif
 
     vector<MyBitset> candidates;
@@ -430,6 +444,9 @@ private:
         q_neighbor_is_bridge.clear();
 #if CDE_EDGE_IE_FIXED_ORDER
         fixed_edge_priority.clear();
+#endif
+#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+        data_label_degrees.clear();
 #endif
 
         anchor_count.assign(qn, 0);
@@ -2156,6 +2173,63 @@ private:
         return CandidateFilter(*this).run();
     }
 
+#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+    void initDataLabelDegreeIndex()
+    {
+        data_label_degrees.assign(gn, vector<DataLabelDegreeCount>());
+        vector<ui> label_counts(label_count, 0);
+
+        for (ui v = 0; v < gn; ++v) {
+            ui deg = 0;
+            const ui *neighbors = data_graph->getVertexNeighbors(v, deg);
+            data_label_degrees[v].reserve(std::min(deg, label_count));
+
+            for (ui i = 0; i < deg; ++i) {
+                LabelID label = data_graph->getVertexLabel(neighbors[i]);
+                assert(label >= 0 && (ui)label < label_count);
+                label_counts[(ui)label]++;
+            }
+
+            for (ui label = 0; label < label_count; ++label) {
+                ui count = label_counts[label];
+                if (count != 0) {
+                    data_label_degrees[v].push_back({ (LabelID)label, count });
+                    label_counts[label] = 0;
+                }
+            }
+        }
+    }
+
+    ui dataLabelDegree(ui v, LabelID label) const
+    {
+        if (v >= gn || label < 0 || (ui)label >= label_count) {
+            return 0;
+        }
+
+        const vector<DataLabelDegreeCount> &counts = data_label_degrees[v];
+        auto it = std::lower_bound(counts.begin(), counts.end(), label,
+            [](const DataLabelDegreeCount &item, LabelID target_label) {
+                return item.label < target_label;
+            });
+        if (it == counts.end() || it->label != label) {
+            return 0;
+        }
+        return it->count;
+    }
+
+    double initialTopkDecayRankSupport(ui u, ui anchor)
+    {
+        if (u >= qn || anchor >= qn || mapped_q[anchor] == -1) {
+            return 0.0;
+        }
+
+        LabelID label = query_graph->getVertexLabel(u);
+        ui label_degree = dataLabelDegree((ui)mapped_q[anchor], label);
+        ui candidate_count = (ui)candidates[u].size();
+        return (double)std::min(candidate_count, label_degree);
+    }
+#endif
+
 #if CDE_EDGE_IE_FIXED_ORDER
     struct FixedEdgePriorityEntry {
         ui u = 0;
@@ -2319,6 +2393,9 @@ private:
                 return false;
             }
 
+#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+            selectTopActiveEdgesWithDecay(max_count, top_edges);
+#else
             auto better_edge = [&](const ActiveEdge &lhs, const ActiveEdge &rhs) {
                 return isBetterActiveEdge(lhs, rhs);
                 };
@@ -2330,6 +2407,7 @@ private:
             else {
                 sort(top_edges.begin(), top_edges.end(), better_edge);
             }
+#endif
             return true;
         }
 
@@ -2337,11 +2415,11 @@ private:
             EdgeScoreCache &edge_score_cache, vector<int> &component_id,
             vector<vector<ui>> &component_frontiers, vector<char> &component_checked,
             vector<ActiveEdge> &component_edges, vector<ActiveEdge> &best_component_edges,
-            size_t &best_support_sum, bool &has_zero_support_component,
+            double &best_support_sum, bool &has_zero_support_component,
             const vector<char> *skip_query_vertices = nullptr) const
         {
             best_component_edges.clear();
-            best_support_sum = std::numeric_limits<size_t>::max();
+            best_support_sum = std::numeric_limits<double>::max();
             has_zero_support_component = false;
             if (top_edges.empty()) {
                 return false;
@@ -2367,13 +2445,46 @@ private:
                     continue;
                 }
 
+#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+                component_edges.clear();
+                bool covered = true;
+                for (ui component_u : component_frontier) {
+                    const vector<ActiveEdge> &cached_edges =
+                        cachedActiveEdgesForVertex(component_u, edge_score_cache);
+                    for (const ActiveEdge &component_edge : cached_edges) {
+                        if (!containsActiveEdge(top_edges, component_edge)) {
+                            covered = false;
+                            break;
+                        }
+                    }
+                    if (!covered) {
+                        break;
+                    }
+                }
+
+                if (!covered) {
+                    continue;
+                }
+
+                double support_sum = 0.0;
+                for (const ActiveEdge &top_edge : top_edges) {
+                    if (top_edge.u < component_id.size() &&
+                        component_id[top_edge.u] == (int)id) {
+                        component_edges.push_back(top_edge);
+                        support_sum += top_edge.rank_support;
+                    }
+                }
+                if (component_edges.empty()) {
+                    continue;
+                }
+#else
                 if (!collectTopActiveEdges(component_frontier,
                     std::numeric_limits<ui>::max(), component_edges, &edge_score_cache,
                     skip_query_vertices)) {
                     continue;
                 }
 
-                size_t support_sum = 0;
+                double support_sum = 0.0;
                 for (const ActiveEdge &component_edge : component_edges) {
                     support_sum += component_edge.anchor_support;
                 }
@@ -2396,6 +2507,13 @@ private:
                         best_support_sum = support_sum;
                     }
                 }
+#endif
+#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+                if (best_component_edges.empty() || support_sum < best_support_sum) {
+                    best_component_edges = component_edges;
+                    best_support_sum = support_sum;
+                }
+#endif
             }
 
             if (best_component_edges.empty()) {
@@ -2469,6 +2587,38 @@ private:
                 return lhs.u < rhs.u;
             }
             return lhs.anchor < rhs.anchor;
+#elif CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+#ifndef NDEBUG
+            char lhs_preferred = solver.preferred_query_vertices.empty() ? 0 : solver.preferred_query_vertices[lhs.u];
+            char rhs_preferred = solver.preferred_query_vertices.empty() ? 0 : solver.preferred_query_vertices[rhs.u];
+            if (lhs_preferred != rhs_preferred) {
+                return lhs_preferred > rhs_preferred;
+            }
+            char lhs_delayed = solver.delayed_query_vertices.empty() ? 0 : solver.delayed_query_vertices[lhs.u];
+            char rhs_delayed = solver.delayed_query_vertices.empty() ? 0 : solver.delayed_query_vertices[rhs.u];
+            if (lhs_delayed != rhs_delayed) {
+                return lhs_delayed < rhs_delayed;
+            }
+#endif
+            double lhs_scaled =
+                lhs.rank_support * (double)std::max((ui)1, rhs.live_anchor_count);
+            double rhs_scaled =
+                rhs.rank_support * (double)std::max((ui)1, lhs.live_anchor_count);
+            double scale = std::max(1.0,
+                std::max(std::fabs(lhs_scaled), std::fabs(rhs_scaled)));
+            if (std::fabs(lhs_scaled - rhs_scaled) > 1e-12 * scale) {
+                return lhs_scaled < rhs_scaled;
+            }
+            if (lhs.live_anchor_count != rhs.live_anchor_count) {
+                return lhs.live_anchor_count > rhs.live_anchor_count;
+            }
+            if (lhs.query_degree != rhs.query_degree) {
+                return lhs.query_degree > rhs.query_degree;
+            }
+            if (lhs.u != rhs.u) {
+                return lhs.u < rhs.u;
+            }
+            return lhs.anchor < rhs.anchor;
 #else
 #ifndef NDEBUG
             char lhs_preferred = solver.preferred_query_vertices.empty() ? 0 : solver.preferred_query_vertices[lhs.u];
@@ -2498,6 +2648,56 @@ private:
 #endif
         }
 
+#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+        void selectTopActiveEdgesWithDecay(ui max_count, vector<ActiveEdge> &top_edges) const
+        {
+            size_t selected_limit = top_edges.size();
+            if ((size_t)max_count < selected_limit) {
+                selected_limit = (size_t)max_count;
+            }
+
+            const double gamma = (double)CDE_EDGE_IE_TOPK_SUPPORT_DECAY_GAMMA;
+            for (size_t selected_idx = 0; selected_idx < selected_limit; ++selected_idx) {
+                size_t best_idx = selected_idx;
+                for (size_t i = selected_idx + 1; i < top_edges.size(); ++i) {
+                    if (isBetterActiveEdge(top_edges[i], top_edges[best_idx])) {
+                        best_idx = i;
+                    }
+                }
+
+                if (best_idx != selected_idx) {
+                    std::swap(top_edges[selected_idx], top_edges[best_idx]);
+                }
+
+                const ActiveEdge &selected = top_edges[selected_idx];
+                double candidate_count = (double)solver.candidates[selected.u].size();
+                if (candidate_count <= 0.0) {
+                    continue;
+                }
+
+                double factor = 1.0 - gamma * selected.rank_support / candidate_count;
+                if (factor < 0.0) {
+                    factor = 0.0;
+                }
+                else if (factor > 1.0) {
+                    factor = 1.0;
+                }
+
+                if (factor == 1.0) {
+                    continue;
+                }
+
+                for (size_t i = selected_idx + 1; i < top_edges.size(); ++i) {
+                    if (top_edges[i].u == selected.u) {
+                        top_edges[i].rank_support *= factor;
+                    }
+                }
+            }
+
+            top_edges.resize(selected_limit);
+        }
+#endif
+
         void collectActiveEdgesForVertex(ui u, vector<ActiveEdge> &edges) const
         {
             edges.clear();
@@ -2518,7 +2718,11 @@ private:
                 ActiveEdge edge;
                 edge.u = u;
                 edge.anchor = anchor;
+#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+                edge.rank_support = solver.initialTopkDecayRankSupport(u, anchor);
+#else
                 edge.anchor_support = countEdgeSupport(u, anchor);
+#endif
                 edge.live_anchor_count = live_anchor_count;
                 edge.query_degree = solver.q_degree[u];
                 edges.push_back(edge);
@@ -3296,8 +3500,10 @@ private:
         vector<ui> &candidate_anchor_counts = buf.candidate_anchor_counts;
         vector<ActiveEdge> &top_edges = buf.top_edges;
         ui current_cost = cost;
-        size_t selected_component_support_sum = std::numeric_limits<size_t>::max();
+        double selected_component_support_sum = std::numeric_limits<double>::max();
+#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY
         bool selected_covered_component = false;
+#endif
         bool has_zero_support_component = false;
         const vector<char> *terminal_skip_vertices = nullptr;
 
@@ -3348,6 +3554,7 @@ private:
 #endif
         }
 
+#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY
         bool all_selected_edges_have_zero_support = std::all_of(
             top_edges.begin(), top_edges.end(),
             [](const ActiveEdge &edge) {
@@ -3359,28 +3566,39 @@ private:
             recordBranchProfilePrune();
             return;
         }
+#endif
 
         {
 #ifndef NDEBUG
             Timer t_component;
 #endif
+#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+            (void)buf.branch_selector.restrictTopEdgesToCoveredComponent(top_edges,
+                buf.edge_score_cache, buf.component_id, buf.component_frontiers,
+                buf.component_checked, buf.component_edges,
+                buf.best_component_edges, selected_component_support_sum,
+                has_zero_support_component, terminal_skip_vertices);
+#else
             selected_covered_component = buf.branch_selector.restrictTopEdgesToCoveredComponent(top_edges,
                 buf.edge_score_cache, buf.component_id, buf.component_frontiers,
                 buf.component_checked, buf.component_edges,
                 buf.best_component_edges, selected_component_support_sum,
                 has_zero_support_component, terminal_skip_vertices);
+#endif
 #ifndef NDEBUG
             stats.frontier_component_time += t_component.elapsed();
 #endif
         }
         stats.frontier_time += t_frontier.elapsed();
 
+#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY
         if (has_zero_support_component ||
             (selected_covered_component && selected_component_support_sum == 0)) {
             stats.prun_calls++;
             recordBranchProfilePrune();
             return;
         }
+#endif
 
 #ifndef NDEBUG
         branch_timing_depth++;
@@ -3390,6 +3608,7 @@ private:
 
         ui first_branch_edge = 0;
         bool pruned_by_forced_zero = false;
+#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY
         for (; first_branch_edge < top_edges.size(); ++first_branch_edge) {
             const ActiveEdge &edge = top_edges[first_branch_edge];
             if (edge.anchor_support != 0) break;
@@ -3419,6 +3638,7 @@ private:
                 break;
             }
         }
+#endif
 
         for (ui edge_idx = first_branch_edge; !pruned_by_forced_zero && edge_idx < top_edges.size(); ++edge_idx) {
             const ActiveEdge &edge = top_edges[edge_idx];
