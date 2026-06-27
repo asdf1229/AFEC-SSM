@@ -193,7 +193,7 @@ public:
         printf("  - Filter Time:     %.4lf ms (%.2f%% of Init)\n", stats.filter_time / 1000.0, pct(stats.filter_time, stats.init_time));
         printf("    - NLF:           %.4lf ms (%.2f%% of Filter)\n", stats.filter_nlf_time / 1000.0, pct(stats.filter_nlf_time, stats.filter_time));
         printf("    - Bridge:        %.4lf ms (%.2f%% of Filter)\n", stats.filter_bridge_time / 1000.0, pct(stats.filter_bridge_time, stats.filter_time));
-#ifdef ENABLE_SPOKE_FILTERING
+#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
         printf("    - Spoke:         %.4lf ms (%.2f%% of Filter)\n", stats.filter_spoke_time / 1000.0, pct(stats.filter_spoke_time, stats.filter_time));
 #endif
         printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
@@ -1467,7 +1467,7 @@ private:
         vector<ui>          seen_right;
         ui                  seen_token = 1;
         vector<char>        left_is_bridge;
-#ifdef ENABLE_SPOKE_FILTERING
+#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
         queue<ui>           pending_spokes;
         vector<char>        queued_spoke;
 #endif
@@ -1479,7 +1479,7 @@ private:
             match_right(solver.max_g_deg, -1),
             seen_right(solver.max_g_deg, 0),
             left_is_bridge(solver.qn, 0)
-#ifdef ENABLE_SPOKE_FILTERING
+#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
             , queued_spoke(solver.qn, 0)
 #endif
         {}
@@ -1501,7 +1501,7 @@ private:
             })) return false;
 #endif
 
-#ifdef ENABLE_SPOKE_FILTERING
+#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
             if (!timed(&MatchingSolver::TimeStats::filter_spoke_time, [&] {
                 enqueueAllSpokeVertices();
                 return propagateFilterClosure();
@@ -1776,7 +1776,7 @@ private:
                 return false;
             }
             removed.push({ u, v });
-#ifdef ENABLE_SPOKE_FILTERING
+#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
             for (ui nbr_u : solver.q_neighbors[u]) {
                 enqueueSpokeVertex(nbr_u);
             }
@@ -1854,7 +1854,7 @@ private:
                 if (!propagateBridgeRemovals()) {
                     return false;
                 }
-#ifdef ENABLE_SPOKE_FILTERING
+#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
                 if (pending_spokes.empty()) {
                     break;
                 }
@@ -1971,7 +1971,7 @@ private:
             return std::min(solver.threshold, solver.q_degree[u] - 1);
         }
 
-#ifdef ENABLE_SPOKE_FILTERING
+#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
         void enqueueSpokeVertex(ui u)
         {
             if (queued_spoke[u]) {
