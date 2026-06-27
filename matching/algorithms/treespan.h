@@ -36,10 +36,15 @@ public:
         candidates.assign(qn, MyBitset(gn));
 
         buildQueryMatrix();
-        initGlobalLabelCounts(query_graph, Lq_counts, Lq_degrees);
-        initGlobalLabelCounts(data_graph, Lg_counts, Lg_degrees);
+        Timer t_filter;
+        t_filter.restart();
+        initGlobalLabelCounts(query_graph, Lq_counts);
+        initGlobalLabelCounts(data_graph, Lg_counts);
+        initDataLabelBuckets();
 
-        if (!calVerticesFilter()) {
+        bool filter_ok = calVerticesFilter();
+        stats.filter_time = t_filter.elapsed();
+        if (!filter_ok) {
             stats.init_time = t_init.elapsed();
             return false;
         }
@@ -96,6 +101,7 @@ public:
     struct TreeStats {
         long long total_time = 0;
         long long init_time = 0;
+        long long filter_time = 0;
         long long search_time = 0;
         long long enum_time = 0;
         long long verify_time = 0;
@@ -122,6 +128,7 @@ public:
         printf("\n--- TreeSpan Time Analysis ---\n");
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
         printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
+        printf("  - Filter Time:     %.4lf ms (%.2f%% of Init)\n", stats.filter_time / 1000.0, pct(stats.filter_time, stats.init_time));
         printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.search_time / 1000.0, pct(stats.search_time, stats.total_time));
         printf("  - Q_T OD Time:     %.4lf ms (%.2f%% of Search)\n", stats.enum_time / 1000.0, pct(stats.enum_time, stats.search_time));
         printf("  - Verify Time:     %.4lf ms (%.2f%% of Search)\n", stats.verify_time / 1000.0, pct(stats.verify_time, stats.search_time));
@@ -148,6 +155,11 @@ private:
         ui u = 0;
         ui v = 0;
         ui id = 0;
+    };
+
+    struct LabelCount {
+        LabelID label = 0;
+        ui count = 0;
     };
 
     struct TreeState {
@@ -201,10 +213,9 @@ private:
 
     vector<MyBitset> candidates;
     vector<ui> candidate_counts;
-    vector<vector<ui>> Lq_counts;
-    vector<vector<ui>> Lg_counts;
-    vector<ui> Lq_degrees;
-    vector<ui> Lg_degrees;
+    vector<vector<LabelCount>> Lq_counts;
+    vector<vector<LabelCount>> Lg_counts;
+    vector<vector<ui>> data_vertices_by_label;
     vector<ui> data_label_frequency;
     vector<vector<ui>> data_edge_label_frequency;
 
@@ -248,8 +259,7 @@ private:
         candidate_counts.clear();
         Lq_counts.clear();
         Lg_counts.clear();
-        Lq_degrees.clear();
-        Lg_degrees.clear();
+        data_vertices_by_label.clear();
         data_label_frequency.clear();
         data_edge_label_frequency.clear();
         q_matrix.clear();
@@ -353,21 +363,45 @@ private:
         }
     }
 
-    void initGlobalLabelCounts(const Graph *g, vector<vector<ui>> &counts, vector<ui> &degrees)
+    void initGlobalLabelCounts(const Graph *g, vector<vector<LabelCount>> &counts)
     {
         ui n = g->getVerticesCount();
-        counts.assign(n, vector<ui>(label_count, 0));
-        degrees.assign(n, 0);
+        counts.assign(n, vector<LabelCount>());
+        vector<ui> label_counts(label_count, 0);
+        vector<ui> touched_labels;
 
         for (ui u = 0; u < n; ++u) {
             ui deg;
             const ui *neighbors = g->getVertexNeighbors(u, deg);
-            degrees[u] = deg;
+            counts[u].reserve(std::min(deg, label_count));
+            touched_labels.clear();
+
             for (ui i = 0; i < deg; ++i) {
                 LabelID label = g->getVertexLabel(neighbors[i]);
                 if (label >= 0 && (ui)label < label_count) {
-                    counts[u][(ui)label]++;
+                    ui label_idx = (ui)label;
+                    if (label_counts[label_idx] == 0) {
+                        touched_labels.push_back(label_idx);
+                    }
+                    label_counts[label_idx]++;
                 }
+            }
+
+            sort(touched_labels.begin(), touched_labels.end());
+            for (ui label : touched_labels) {
+                counts[u].push_back({ (LabelID)label, label_counts[label] });
+                label_counts[label] = 0;
+            }
+        }
+    }
+
+    void initDataLabelBuckets()
+    {
+        data_vertices_by_label.assign(label_count, vector<ui>());
+        for (ui v = 0; v < gn; ++v) {
+            LabelID label = data_graph->getVertexLabel(v);
+            if (label >= 0 && (ui)label < label_count) {
+                data_vertices_by_label[(ui)label].push_back(v);
             }
         }
     }
@@ -375,9 +409,25 @@ private:
     ui computeDelta(ui u, ui v) const
     {
         ui diff = 0;
-        for (ui i = 0; i < label_count; ++i) {
-            if (Lq_counts[u][i] > Lg_counts[v][i]) {
-                diff += Lq_counts[u][i] - Lg_counts[v][i];
+        const vector<LabelCount> &query_counts = Lq_counts[u];
+        const vector<LabelCount> &data_counts = Lg_counts[v];
+        size_t data_idx = 0;
+
+        for (const auto &query_count : query_counts) {
+            while (data_idx < data_counts.size() && data_counts[data_idx].label < query_count.label) {
+                data_idx++;
+            }
+
+            ui data_count = 0;
+            if (data_idx < data_counts.size() && data_counts[data_idx].label == query_count.label) {
+                data_count = data_counts[data_idx].count;
+            }
+
+            if (query_count.count > data_count) {
+                diff += query_count.count - data_count;
+                if (diff > threshold) {
+                    return diff;
+                }
             }
         }
         return diff;
@@ -387,9 +437,11 @@ private:
     {
         for (ui u = 0; u < qn; ++u) {
             LabelID label_u = query_graph->getVertexLabel(u);
-            for (ui v = 0; v < gn; ++v) {
-                if (label_u != data_graph->getVertexLabel(v)) continue;
-                if (Lq_degrees[u] > Lg_degrees[v] + threshold) continue;
+            if (label_u < 0 || (ui)label_u >= data_vertices_by_label.size()) {
+                return false;
+            }
+            for (ui v : data_vertices_by_label[(ui)label_u]) {
+                if (query_graph->getVertexDegree(u) > data_graph->getVertexDegree(v) + threshold) continue;
                 if (computeDelta(u, v) <= threshold) candidates[u].insert(v);
             }
             if (candidates[u].empty()) return false;
