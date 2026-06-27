@@ -1,29 +1,25 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
+// Shared settings used by both default and ablation configurations.
+#define NDEBUG
+#define MATCH_OUTPUT_LIMIT 1000000
+#define CDE_EDGE_IE_TOPK_SUPPORT_DECAY_GAMMA 0.9
+
 #ifdef SSM_GED_CONFIG_HEADER
 
 #include SSM_GED_CONFIG_HEADER
 
 #else
 
-// --- other options ---
-#define NDEBUG
-
-// --- output options ---
-// 0 means unlimited. A positive value stops recursive enumeration after that
-// many results have been found.
-
 // #define ENABLE_EXCLUDED_EDGE_SUPPORT
 // #define ENABLE_CAND_STATS
 
-#define MATCH_OUTPUT_LIMIT 1000
 #define CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT 1
 #define CDE_EDGE_IE_ENABLE_SPOKE_FILTERING 1
 #define CDE_EDGE_IE_ENABLE_BRIDGE_FILTERING 1
 #define CDE_EDGE_IE_FIXED_ORDER 0
 #define CDE_EDGE_IE_TOPK_SUPPORT_DECAY 0
-#define CDE_EDGE_IE_TOPK_SUPPORT_DECAY_GAMMA 0.9
 
 #endif // SSM_GED_CONFIG_HEADER
 
