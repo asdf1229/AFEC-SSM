@@ -17,6 +17,7 @@
 // #define ENABLE_EXCLUDED_EDGE_SUPPORT
 // #define ENABLE_CAND_STATS
 
+#define MATCH_OUTPUT_LIMIT 1000
 #define CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT 1
 #define CDE_EDGE_IE_ENABLE_SPOKE_FILTERING 1
 #define CDE_EDGE_IE_ENABLE_BRIDGE_FILTERING 1
@@ -27,35 +28,55 @@
 #endif // SSM_GED_CONFIG_HEADER
 
 #ifndef MATCH_OUTPUT_LIMIT
-#define MATCH_OUTPUT_LIMIT 1000
+#error "MATCH_OUTPUT_LIMIT must be defined by the selected configuration."
 #endif
 
 #ifndef CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT
-#define CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT 1
+#error "CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT must be defined by the selected configuration."
 #endif
 
 #ifndef CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
-#define CDE_EDGE_IE_ENABLE_SPOKE_FILTERING 1
+#error "CDE_EDGE_IE_ENABLE_SPOKE_FILTERING must be defined by the selected configuration."
 #endif
 
 #ifndef CDE_EDGE_IE_ENABLE_BRIDGE_FILTERING
-#define CDE_EDGE_IE_ENABLE_BRIDGE_FILTERING 1
+#error "CDE_EDGE_IE_ENABLE_BRIDGE_FILTERING must be defined by the selected configuration."
 #endif
 
 #ifndef CDE_EDGE_IE_FIXED_ORDER
-#define CDE_EDGE_IE_FIXED_ORDER 0
+#error "CDE_EDGE_IE_FIXED_ORDER must be defined by the selected configuration."
 #endif
 
 #ifndef CDE_EDGE_IE_TOPK_SUPPORT_DECAY
-#define CDE_EDGE_IE_TOPK_SUPPORT_DECAY 0
+#error "CDE_EDGE_IE_TOPK_SUPPORT_DECAY must be defined by the selected configuration."
 #endif
 
 #ifndef CDE_EDGE_IE_TOPK_SUPPORT_DECAY_GAMMA
-#define CDE_EDGE_IE_TOPK_SUPPORT_DECAY_GAMMA 0.9
+#error "CDE_EDGE_IE_TOPK_SUPPORT_DECAY_GAMMA must be defined by the selected configuration."
 #endif
 
 #if CDE_EDGE_IE_TOPK_SUPPORT_DECAY && CDE_EDGE_IE_FIXED_ORDER
 #error "CDE_EDGE_IE_TOPK_SUPPORT_DECAY and CDE_EDGE_IE_FIXED_ORDER are mutually exclusive."
+#endif
+
+#if CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT != 0 && CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT != 1
+#error "CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT must be 0 or 1."
+#endif
+
+#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING != 0 && CDE_EDGE_IE_ENABLE_SPOKE_FILTERING != 1
+#error "CDE_EDGE_IE_ENABLE_SPOKE_FILTERING must be 0 or 1."
+#endif
+
+#if CDE_EDGE_IE_ENABLE_BRIDGE_FILTERING != 0 && CDE_EDGE_IE_ENABLE_BRIDGE_FILTERING != 1
+#error "CDE_EDGE_IE_ENABLE_BRIDGE_FILTERING must be 0 or 1."
+#endif
+
+#if CDE_EDGE_IE_FIXED_ORDER != 0 && CDE_EDGE_IE_FIXED_ORDER != 1
+#error "CDE_EDGE_IE_FIXED_ORDER must be 0 or 1."
+#endif
+
+#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY != 0 && CDE_EDGE_IE_TOPK_SUPPORT_DECAY != 1
+#error "CDE_EDGE_IE_TOPK_SUPPORT_DECAY must be 0 or 1."
 #endif
 
 #if MATCH_OUTPUT_LIMIT < 0
