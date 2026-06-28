@@ -1,5 +1,14 @@
-#ifndef MATCHING_ALGORITHMS_CDE_EDGE_IE_H_
-#define MATCHING_ALGORITHMS_CDE_EDGE_IE_H_
+#ifndef MATCHING_ALGORITHMS_CDE_BLACK_WHITE_H_
+#define MATCHING_ALGORITHMS_CDE_BLACK_WHITE_H_
+
+#define CDE_BLACK_WHITE_TERMINAL_BUCKETS_DEFAULT 0
+#define CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING 1
+#define CDE_BLACK_WHITE_ENABLE_BRIDGE_FILTERING 1
+#define CDE_BLACK_WHITE_FIXED_ORDER 0
+#define CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY 1
+#define CDE_BLACK_WHITE_USE_DYNAMIC_SEARCH 1
+#define CDE_BLACK_WHITE_DEFAULT_WHITE 0
+#define CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY_GAMMA 0.9
 
 #include "graph/graph.h"
 #include "matching/run_matching.h"
@@ -8,11 +17,83 @@
 using namespace std;
 
 // ============================================================================
-// MatchingSolver Implementation
+// CDEBlackWhiteSolver Implementation
 // ============================================================================
-class MatchingSolver {
+class CDEBlackWhiteSolver {
+    enum VertexColor : unsigned char {
+        COLOR_UNSELECTED = 0,
+        COLOR_BLACK = 1,
+        COLOR_WHITE = 2
+    };
+
+    enum EdgeState : unsigned char {
+        EDGE_UNDECIDED = 0,
+        EDGE_PRESENT = 1,
+        EDGE_MISSING = 2
+    };
+
+    struct WhiteCandidateBuckets {
+        vector<vector<ui>> buckets;
+        ui feasible_count = 0;
+
+        void clear()
+        {
+            buckets.clear();
+            feasible_count = 0;
+        }
+
+        bool empty() const
+        {
+            return feasible_count == 0;
+        }
+    };
+
+    struct BlackWhiteState {
+        vector<int> mapped_q;
+        vector<ui> used_data_vertices;
+        vector<unsigned char> used_data_flag;
+        vector<VertexColor> color;
+        vector<EdgeState> edge_state;
+        vector<WhiteCandidateBuckets> white;
+        vector<pair<ui, ui>> part_M;
+        ui selected_count = 0;
+        ui white_count = 0;
+    };
+
+    struct BlackWhiteActiveEdge {
+        ui u = 0;
+        ui anchor = 0;
+        double rank_support = std::numeric_limits<double>::max();
+        ui live_anchor_count = 0;
+        ui query_degree = 0;
+    };
+
+    enum BlackWhiteUndoKind : unsigned char {
+        BW_UNDO_MAPPED_Q = 0,
+        BW_UNDO_COLOR = 1,
+        BW_UNDO_EDGE_STATE = 2,
+        BW_UNDO_USED_DATA_SIZE = 3,
+        BW_UNDO_PART_M_SIZE = 4,
+        BW_UNDO_SELECTED_COUNT = 5,
+        BW_UNDO_WHITE_COUNT = 6,
+        BW_UNDO_WHITE_BUCKET = 7
+    };
+
+    struct BlackWhiteUndo {
+        BlackWhiteUndoKind kind = BW_UNDO_MAPPED_Q;
+        ui u = 0;
+        ui v = 0;
+        int old_mapped_q = -1;
+        VertexColor old_color = COLOR_UNSELECTED;
+        EdgeState old_edge_uv = EDGE_UNDECIDED;
+        EdgeState old_edge_vu = EDGE_UNDECIDED;
+        size_t old_size = 0;
+        ui old_count = 0;
+        WhiteCandidateBuckets old_white;
+    };
+
 public:
-    MatchingSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr) {}
+    CDEBlackWhiteSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr) {}
 
     bool init(const Graph *q, const Graph *g, ui match_threshold)
     {
@@ -53,10 +134,10 @@ public:
             return false;
         }
 
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
         initDataLabelDegreeIndex();
 #endif
-#if CDE_EDGE_IE_FIXED_ORDER
+#if CDE_BLACK_WHITE_FIXED_ORDER
         initFixedEdgePriorities();
 #endif
         stats.init_time = t_init.elapsed();
@@ -70,6 +151,19 @@ public:
 
         results_ptr = &results;
         results_ptr->clear();
+
+#if CDE_BLACK_WHITE_USE_DYNAMIC_SEARCH
+        ui root = selectInitialRootBlackWhite();
+        for (ui v0 : candidates[root]) {
+            BlackWhiteState state;
+            initBlackWhiteState(state);
+            if (!commitRootBlack(state, root, v0)) {
+                continue;
+            }
+            bwSearch(state, 0);
+            if (outputLimitReached()) break;
+        }
+#else
         initDfsBuffer();
 
         BranchSelector branch_selector(*this);
@@ -92,6 +186,7 @@ public:
 
             if (outputLimitReached()) break;
         }
+#endif
 
         stats.dfs_time = t_search.elapsed();
         stats.total_time = stats.init_time + stats.dfs_time;
@@ -146,7 +241,7 @@ public:
         long long search_other_time = stats.dfs_time > search_accounted_time
             ? stats.dfs_time - search_accounted_time : 0;
 
-        printf("\n--- CDE-Edge-IE Time Analysis ---\n");
+        printf("\n--- CDE-Black-White Time Analysis ---\n");
 #ifdef NDEBUG
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
         printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
@@ -162,7 +257,7 @@ public:
         printf("  - Filter Time:     %.4lf ms (%.2f%% of Init)\n", stats.filter_time / 1000.0, pct(stats.filter_time, stats.init_time));
         printf("    - NLF:           %.4lf ms (%.2f%% of Filter)\n", stats.filter_nlf_time / 1000.0, pct(stats.filter_nlf_time, stats.filter_time));
         printf("    - Bridge:        %.4lf ms (%.2f%% of Filter)\n", stats.filter_bridge_time / 1000.0, pct(stats.filter_bridge_time, stats.filter_time));
-#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
+#if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
         printf("    - Spoke:         %.4lf ms (%.2f%% of Filter)\n", stats.filter_spoke_time / 1000.0, pct(stats.filter_spoke_time, stats.filter_time));
 #endif
         printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
@@ -205,7 +300,7 @@ public:
     }
 
 private:
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
     struct DataLabelDegreeCount {
         LabelID label = 0;
         ui count = 0;
@@ -244,10 +339,10 @@ private:
     vector<vector<ui>> q_neighbors;
     vector<ui> q_degree;
     vector<vector<char>> q_neighbor_is_bridge;
-#if CDE_EDGE_IE_FIXED_ORDER
+#if CDE_BLACK_WHITE_FIXED_ORDER
     vector<vector<ui>> fixed_edge_priority;
 #endif
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
     vector<vector<DataLabelDegreeCount>> data_label_degrees;
 #endif
 
@@ -258,11 +353,14 @@ private:
     vector<vector<char>> excluded_edges;
     vector<MyBitset> excluded_cands;
     vector<pair<ui, ui>> part_M;
+    vector<BlackWhiteUndo> black_white_undo;
 
     vector<ui> anchor_count;
     vector<vector<ui>> support;
     vector<vector<char>> support_dirty;
     vector<SupportSnapshot> *active_support_snapshots = nullptr;
+    vector<vector<BlackWhiteActiveEdge>> bw_top_edges_buffer_by_depth;
+    vector<vector<ui>> bw_white_neighbors_buffer_by_depth;
     vector<int> frontier_pos;
     vector<ui> active_frontier;
     vector<ui> data_vertex_mark;
@@ -325,10 +423,10 @@ private:
         q_neighbors.clear();
         q_degree.clear();
         q_neighbor_is_bridge.clear();
-#if CDE_EDGE_IE_FIXED_ORDER
+#if CDE_BLACK_WHITE_FIXED_ORDER
         fixed_edge_priority.clear();
 #endif
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
         data_label_degrees.clear();
 #endif
 
@@ -336,13 +434,18 @@ private:
         support.assign(qn, vector<ui>(qn, 0));
         support_dirty.assign(qn, vector<char>(qn, 1));
         active_support_snapshots = nullptr;
+        bw_top_edges_buffer_by_depth.clear();
+        bw_top_edges_buffer_by_depth.resize((size_t)qn + 1);
+        bw_white_neighbors_buffer_by_depth.clear();
+        bw_white_neighbors_buffer_by_depth.resize((size_t)qn + 1);
         frontier_pos.assign(qn, -1);
         active_frontier.clear();
         data_vertex_mark.assign(gn, 0);
         data_vertex_mark_pos.assign(gn, 0);
         data_vertex_mark_token = 0;
+        black_white_undo.clear();
         stats = TimeStats();
-        terminal_buckets_enabled = CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT != 0;
+        terminal_buckets_enabled = CDE_BLACK_WHITE_TERMINAL_BUCKETS_DEFAULT != 0;
     }
 
     // ========================================================================
@@ -350,7 +453,7 @@ private:
     // ========================================================================
     struct CandidateFilter {
     private:
-        MatchingSolver &solver;
+        CDEBlackWhiteSolver &solver;
 
         struct LabelFreq {
             LabelID label = 0;
@@ -396,42 +499,42 @@ private:
         vector<ui>          seen_right;
         ui                  seen_token = 1;
         vector<char>        left_is_bridge;
-#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
+#if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
         queue<ui>           pending_spokes;
         vector<char>        queued_spoke;
 #endif
 
     public:
-        explicit CandidateFilter(MatchingSolver &solver)
+        explicit CandidateFilter(CDEBlackWhiteSolver &solver)
             : solver(solver),
             spoke_adj(solver.qn, vector<ui>()),
             match_right(solver.max_g_deg, -1),
             seen_right(solver.max_g_deg, 0),
             left_is_bridge(solver.qn, 0)
-#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
+#if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
             , queued_spoke(solver.qn, 0)
 #endif
         {}
 
         bool run()
         {
-            if (!timed(&MatchingSolver::TimeStats::filter_bridge_time, [&] {
+            if (!timed(&CDEBlackWhiteSolver::TimeStats::filter_bridge_time, [&] {
                 buildBridgeIndex();
                 return true;
             })) return false;
 
-            if (!timed(&MatchingSolver::TimeStats::filter_nlf_time, [&] {
+            if (!timed(&CDEBlackWhiteSolver::TimeStats::filter_nlf_time, [&] {
                 return filterNLF();
             })) return false;
 
-#if CDE_EDGE_IE_ENABLE_BRIDGE_FILTERING
-            if (!timed(&MatchingSolver::TimeStats::filter_bridge_time, [&] {
+#if CDE_BLACK_WHITE_ENABLE_BRIDGE_FILTERING
+            if (!timed(&CDEBlackWhiteSolver::TimeStats::filter_bridge_time, [&] {
                 return initBridgeSupports() && propagateFilterClosure();
             })) return false;
 #endif
 
-#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
-            if (!timed(&MatchingSolver::TimeStats::filter_spoke_time, [&] {
+#if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
+            if (!timed(&CDEBlackWhiteSolver::TimeStats::filter_spoke_time, [&] {
                 enqueueAllSpokeVertices();
                 return propagateFilterClosure();
             })) return false;
@@ -443,7 +546,7 @@ private:
 
     private:
         template <typename Fn>
-        bool timed(long long MatchingSolver::TimeStats::*field, Fn &&fn)
+        bool timed(long long CDEBlackWhiteSolver::TimeStats::*field, Fn &&fn)
         {
 #ifndef NDEBUG
             Timer t;
@@ -521,7 +624,7 @@ private:
                 solver.q_neighbor_is_bridge[u].assign(solver.q_degree[u], 0);
             }
 
-#if CDE_EDGE_IE_ENABLE_BRIDGE_FILTERING
+#if CDE_BLACK_WHITE_ENABLE_BRIDGE_FILTERING
             vector<int> dfn(solver.qn, 0);
             vector<int> low(solver.qn, 0);
             int tim = 0;
@@ -701,7 +804,7 @@ private:
                 return false;
             }
             removed.push({ u, v });
-#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
+#if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
             for (ui nbr_u : solver.q_neighbors[u]) {
                 enqueueSpokeVertex(nbr_u);
             }
@@ -779,7 +882,7 @@ private:
                 if (!propagateBridgeRemovals()) {
                     return false;
                 }
-#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
+#if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
                 if (pending_spokes.empty()) {
                     break;
                 }
@@ -896,7 +999,7 @@ private:
             return std::min(solver.threshold, solver.q_degree[u] - 1);
         }
 
-#if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
+#if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
         void enqueueSpokeVertex(ui u)
         {
             if (queued_spoke[u]) {
@@ -940,7 +1043,7 @@ private:
         return CandidateFilter(*this).run();
     }
 
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
     void initDataLabelDegreeIndex()
     {
         data_label_degrees.assign(gn, vector<DataLabelDegreeCount>());
@@ -997,7 +1100,7 @@ private:
     }
 #endif
 
-#if CDE_EDGE_IE_FIXED_ORDER
+#if CDE_BLACK_WHITE_FIXED_ORDER
     struct FixedEdgePriorityEntry {
         ui u = 0;
         ui anchor = 0;
@@ -1111,10 +1214,10 @@ private:
     // ========================================================================
     struct BranchSelector {
     private:
-        MatchingSolver &solver;
+        CDEBlackWhiteSolver &solver;
 
     public:
-        explicit BranchSelector(MatchingSolver &solver) : solver(solver) {}
+        explicit BranchSelector(CDEBlackWhiteSolver &solver) : solver(solver) {}
 
         ui selectInitialRoot() const
         {
@@ -1160,7 +1263,7 @@ private:
                 return false;
             }
 
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
             selectTopActiveEdgesWithDecay(max_count, top_edges);
 #else
             auto better_edge = [&](const ActiveEdge &lhs, const ActiveEdge &rhs) {
@@ -1203,11 +1306,11 @@ private:
                     const vector<ActiveEdge> &edges =
                         cachedActiveEdgesForVertex(component_u, edge_score_cache);
                     component_edge_counts[id] += (ui)edges.size();
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
                     for (const ActiveEdge &edge : edges) {
                         component_support_sums[id] += edge.rank_support;
                     }
-#elif !CDE_EDGE_IE_FIXED_ORDER
+#elif !CDE_BLACK_WHITE_FIXED_ORDER
                     for (const ActiveEdge &edge : edges) {
                         component_support_sums[id] += edge.anchor_support;
                     }
@@ -1232,7 +1335,7 @@ private:
                     continue;
                 }
 
-#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY && !CDE_EDGE_IE_FIXED_ORDER
+#if !CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY && !CDE_BLACK_WHITE_FIXED_ORDER
                 if (component_support_sums[id] == 0.0) {
                     has_zero_support_component = true;
                     return false;
@@ -1300,7 +1403,7 @@ private:
 
         bool isBetterActiveEdge(const ActiveEdge &lhs, const ActiveEdge &rhs) const
         {
-#if CDE_EDGE_IE_FIXED_ORDER
+#if CDE_BLACK_WHITE_FIXED_ORDER
             ui lhs_priority = solver.fixed_edge_priority[lhs.u][lhs.anchor];
             ui rhs_priority = solver.fixed_edge_priority[rhs.u][rhs.anchor];
             if (lhs_priority != rhs_priority) {
@@ -1310,7 +1413,7 @@ private:
                 return lhs.u < rhs.u;
             }
             return lhs.anchor < rhs.anchor;
-#elif CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+#elif CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
             double lhs_scaled =
                 lhs.rank_support * (double)std::max((ui)1, rhs.live_anchor_count);
             double rhs_scaled =
@@ -1347,7 +1450,7 @@ private:
 #endif
         }
 
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
         void selectTopActiveEdgesWithDecay(ui max_count, vector<ActiveEdge> &top_edges) const
         {
             size_t selected_limit = top_edges.size();
@@ -1355,7 +1458,7 @@ private:
                 selected_limit = (size_t)max_count;
             }
 
-            const double gamma = (double)CDE_EDGE_IE_TOPK_SUPPORT_DECAY_GAMMA;
+            const double gamma = (double)CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY_GAMMA;
             for (size_t selected_idx = 0; selected_idx < selected_limit; ++selected_idx) {
                 size_t best_idx = selected_idx;
                 for (size_t i = selected_idx + 1; i < top_edges.size(); ++i) {
@@ -1417,9 +1520,9 @@ private:
                 ActiveEdge edge;
                 edge.u = u;
                 edge.anchor = anchor;
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
+#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
                 edge.rank_support = solver.initialTopkDecayRankSupport(u, anchor);
-#elif !CDE_EDGE_IE_FIXED_ORDER
+#elif !CDE_BLACK_WHITE_FIXED_ORDER
                 edge.anchor_support = countEdgeSupport(u, anchor);
 #endif
                 edge.live_anchor_count = live_anchor_count;
@@ -1715,11 +1818,11 @@ private:
     }
 
     struct SupportUndoScope {
-        MatchingSolver &solver;
+        CDEBlackWhiteSolver &solver;
         vector<SupportSnapshot> *previous_snapshots;
         vector<SupportSnapshot> &snapshots;
 
-        SupportUndoScope(MatchingSolver &solver, vector<SupportSnapshot> &snapshots)
+        SupportUndoScope(CDEBlackWhiteSolver &solver, vector<SupportSnapshot> &snapshots)
             : solver(solver),
             previous_snapshots(solver.active_support_snapshots),
             snapshots(snapshots)
@@ -1758,7 +1861,7 @@ private:
         EdgeScoreCache edge_score_cache;
         BranchSelector branch_selector;
         vector<SupportSnapshot> local_support_snapshots;
-        explicit DfsBuffer(MatchingSolver &solver)
+        explicit DfsBuffer(CDEBlackWhiteSolver &solver)
             : branch_selector(solver)
         {}
 
@@ -1811,7 +1914,7 @@ private:
             local_excluded_cands.push_back({ u, v });
         }
 
-        void restoreLocalChanges(MatchingSolver &solver)
+        void restoreLocalChanges(CDEBlackWhiteSolver &solver)
         {
             for (auto &p : local_excluded_cands) {
                 solver.excluded_cands[p.first].remove(p.second);
@@ -1855,6 +1958,981 @@ private:
             reserveDfsBuffer(dfs_buffers.back());
         }
         return dfs_buffers[depth];
+    }
+    // ========================================================================
+
+    // ========================================================================
+    // Dynamic black/white search
+    // ========================================================================
+    void initBlackWhiteState(BlackWhiteState &state) const
+    {
+        state.mapped_q.assign(qn, -1);
+        state.used_data_vertices.clear();
+        state.used_data_vertices.reserve(qn);
+        state.used_data_flag.assign(gn, 0);
+        state.color.assign(qn, COLOR_UNSELECTED);
+        state.edge_state.assign((size_t)qn * qn, EDGE_UNDECIDED);
+        state.white.clear();
+        state.white.resize(qn);
+        state.part_M.clear();
+        state.part_M.reserve(qn);
+        state.selected_count = 0;
+        state.white_count = 0;
+    }
+
+    size_t blackWhiteEdgeIndex(ui u, ui v) const
+    {
+        return (size_t)u * qn + v;
+    }
+
+    EdgeState getBlackWhiteEdgeState(const BlackWhiteState &state, ui u, ui v) const
+    {
+        return state.edge_state[blackWhiteEdgeIndex(u, v)];
+    }
+
+    void setBlackWhiteEdgeStateRaw(BlackWhiteState &state, ui u, ui v,
+        EdgeState edge_state_value) const
+    {
+        state.edge_state[blackWhiteEdgeIndex(u, v)] = edge_state_value;
+    }
+
+    vector<BlackWhiteActiveEdge> &blackWhiteTopEdgesBuffer(ui depth)
+    {
+        if (bw_top_edges_buffer_by_depth.size() <= depth) {
+            bw_top_edges_buffer_by_depth.resize((size_t)depth + 1);
+        }
+        vector<BlackWhiteActiveEdge> &buffer = bw_top_edges_buffer_by_depth[depth];
+        buffer.clear();
+        if (buffer.capacity() < qn) {
+            buffer.reserve(qn);
+        }
+        return buffer;
+    }
+
+    vector<ui> &blackWhiteWhiteNeighborsBuffer(ui depth)
+    {
+        if (bw_white_neighbors_buffer_by_depth.size() <= depth) {
+            bw_white_neighbors_buffer_by_depth.resize((size_t)depth + 1);
+        }
+        vector<ui> &buffer = bw_white_neighbors_buffer_by_depth[depth];
+        buffer.clear();
+        if (buffer.capacity() < qn) {
+            buffer.reserve(qn);
+        }
+        return buffer;
+    }
+
+    ui selectInitialRootBlackWhite()
+    {
+        ui root = 0;
+        for (ui u = 1; u < qn; ++u) {
+            if (candidates[u].size() < candidates[root].size() ||
+                (candidates[u].size() == candidates[root].size() &&
+                    q_degree[u] > q_degree[root])) {
+                root = u;
+            }
+        }
+        return root;
+    }
+
+    bool commitRootBlack(BlackWhiteState &state, ui root, ui v) const
+    {
+        if (root >= qn || v >= gn || !candidates[root].contains(v)) {
+            return false;
+        }
+        state.color[root] = COLOR_BLACK;
+        state.mapped_q[root] = (int)v;
+        state.used_data_vertices.push_back(v);
+        state.used_data_flag[v] = 1;
+        state.part_M.push_back({ root, v });
+        state.selected_count = 1;
+        return true;
+    }
+
+    bool isDataVertexUsed(const BlackWhiteState &state, ui v) const
+    {
+        return v < state.used_data_flag.size() && state.used_data_flag[v] != 0;
+    }
+
+    bool isSelected(const BlackWhiteState &state, ui u) const
+    {
+        return u < state.color.size() && state.color[u] != COLOR_UNSELECTED;
+    }
+
+    bool isBlack(const BlackWhiteState &state, ui u) const
+    {
+        return u < state.color.size() && state.color[u] == COLOR_BLACK;
+    }
+
+    bool isWhite(const BlackWhiteState &state, ui u) const
+    {
+        return u < state.color.size() && state.color[u] == COLOR_WHITE;
+    }
+
+    size_t markBlackWhiteState() const
+    {
+        return black_white_undo.size();
+    }
+
+    void rollbackBlackWhiteState(BlackWhiteState &state, size_t mark)
+    {
+        while (black_white_undo.size() > mark) {
+            BlackWhiteUndo undo = std::move(black_white_undo.back());
+            black_white_undo.pop_back();
+
+            switch (undo.kind) {
+            case BW_UNDO_MAPPED_Q:
+                state.mapped_q[undo.u] = undo.old_mapped_q;
+                break;
+            case BW_UNDO_COLOR:
+                state.color[undo.u] = undo.old_color;
+                break;
+            case BW_UNDO_EDGE_STATE:
+                setBlackWhiteEdgeStateRaw(state, undo.u, undo.v, undo.old_edge_uv);
+                setBlackWhiteEdgeStateRaw(state, undo.v, undo.u, undo.old_edge_vu);
+                break;
+            case BW_UNDO_USED_DATA_SIZE:
+                for (size_t i = undo.old_size; i < state.used_data_vertices.size(); ++i) {
+                    ui used_v = state.used_data_vertices[i];
+                    if (used_v < state.used_data_flag.size()) {
+                        state.used_data_flag[used_v] = 0;
+                    }
+                }
+                state.used_data_vertices.resize(undo.old_size);
+                break;
+            case BW_UNDO_PART_M_SIZE:
+                state.part_M.resize(undo.old_size);
+                break;
+            case BW_UNDO_SELECTED_COUNT:
+                state.selected_count = undo.old_count;
+                break;
+            case BW_UNDO_WHITE_COUNT:
+                state.white_count = undo.old_count;
+                break;
+            case BW_UNDO_WHITE_BUCKET:
+                state.white[undo.u] = std::move(undo.old_white);
+                break;
+            }
+        }
+    }
+
+    void setBlackWhiteMappedQ(BlackWhiteState &state, ui u, int value)
+    {
+        BlackWhiteUndo undo;
+        undo.kind = BW_UNDO_MAPPED_Q;
+        undo.u = u;
+        undo.old_mapped_q = state.mapped_q[u];
+        black_white_undo.push_back(std::move(undo));
+        state.mapped_q[u] = value;
+    }
+
+    void setBlackWhiteColor(BlackWhiteState &state, ui u, VertexColor value)
+    {
+        BlackWhiteUndo undo;
+        undo.kind = BW_UNDO_COLOR;
+        undo.u = u;
+        undo.old_color = state.color[u];
+        black_white_undo.push_back(std::move(undo));
+        state.color[u] = value;
+    }
+
+    void setBlackWhiteEdgeState(BlackWhiteState &state, ui u, ui v,
+        EdgeState edge_state_value)
+    {
+        BlackWhiteUndo undo;
+        undo.kind = BW_UNDO_EDGE_STATE;
+        undo.u = u;
+        undo.v = v;
+        undo.old_edge_uv = getBlackWhiteEdgeState(state, u, v);
+        undo.old_edge_vu = getBlackWhiteEdgeState(state, v, u);
+        black_white_undo.push_back(std::move(undo));
+        setBlackWhiteEdgeStateRaw(state, u, v, edge_state_value);
+        setBlackWhiteEdgeStateRaw(state, v, u, edge_state_value);
+    }
+
+    void pushBlackWhiteUsedDataVertex(BlackWhiteState &state, ui v)
+    {
+        BlackWhiteUndo undo;
+        undo.kind = BW_UNDO_USED_DATA_SIZE;
+        undo.old_size = state.used_data_vertices.size();
+        black_white_undo.push_back(std::move(undo));
+        state.used_data_vertices.push_back(v);
+        state.used_data_flag[v] = 1;
+    }
+
+    void pushBlackWhitePartM(BlackWhiteState &state, ui u, ui v)
+    {
+        BlackWhiteUndo undo;
+        undo.kind = BW_UNDO_PART_M_SIZE;
+        undo.old_size = state.part_M.size();
+        black_white_undo.push_back(std::move(undo));
+        state.part_M.push_back({ u, v });
+    }
+
+    void setBlackWhiteSelectedCount(BlackWhiteState &state, ui value)
+    {
+        BlackWhiteUndo undo;
+        undo.kind = BW_UNDO_SELECTED_COUNT;
+        undo.old_count = state.selected_count;
+        black_white_undo.push_back(std::move(undo));
+        state.selected_count = value;
+    }
+
+    void setBlackWhiteWhiteCount(BlackWhiteState &state, ui value)
+    {
+        BlackWhiteUndo undo;
+        undo.kind = BW_UNDO_WHITE_COUNT;
+        undo.old_count = state.white_count;
+        black_white_undo.push_back(std::move(undo));
+        state.white_count = value;
+    }
+
+    void replaceBlackWhiteBucket(BlackWhiteState &state, ui u,
+        WhiteCandidateBuckets &&bucket)
+    {
+        BlackWhiteUndo undo;
+        undo.kind = BW_UNDO_WHITE_BUCKET;
+        undo.u = u;
+        undo.old_white = std::move(state.white[u]);
+        black_white_undo.push_back(std::move(undo));
+        state.white[u] = std::move(bucket);
+    }
+
+    bool computeBlackNeighborDelta(const BlackWhiteState &state, ui u, ui v,
+        ui cost, ui &delta) const
+    {
+        delta = 0;
+        for (ui neighbor : q_neighbors[u]) {
+            if (!isBlack(state, neighbor)) {
+                continue;
+            }
+
+            ui mapped_neighbor = (ui)state.mapped_q[neighbor];
+            bool adjacent = data_graph->hasEdge(v, mapped_neighbor);
+            EdgeState state_uv = getBlackWhiteEdgeState(state, u, neighbor);
+            if (state_uv == EDGE_PRESENT) {
+                if (!adjacent) return false;
+            }
+            else if (state_uv == EDGE_MISSING) {
+                if (adjacent) return false;
+            }
+            else if (!adjacent) {
+                delta++;
+                if (cost + delta > threshold) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    bool buildWhiteCandidateBuckets(const BlackWhiteState &state, ui u, ui cost,
+        WhiteCandidateBuckets &white_candidate_buckets) const
+    {
+        white_candidate_buckets.clear();
+        if (cost > threshold || !isSelectedByBlackNeighbor(state, u)) {
+            return false;
+        }
+
+        ui remaining_budget = threshold - cost;
+        white_candidate_buckets.buckets.assign((size_t)remaining_budget + 1, vector<ui>());
+
+        for (int candidate : candidates[u]) {
+            ui v = (ui)candidate;
+            if (isDataVertexUsed(state, v)) {
+                continue;
+            }
+
+            ui delta = 0;
+            if (!computeBlackNeighborDelta(state, u, v, cost, delta)) {
+                continue;
+            }
+
+            if (delta <= remaining_budget) {
+                white_candidate_buckets.buckets[delta].push_back(v);
+                white_candidate_buckets.feasible_count++;
+            }
+        }
+        return !white_candidate_buckets.empty();
+    }
+
+    bool isSelectedByBlackNeighbor(const BlackWhiteState &state, ui u) const
+    {
+        for (ui neighbor : q_neighbors[u]) {
+            if (isBlack(state, neighbor) &&
+                getBlackWhiteEdgeState(state, u, neighbor) != EDGE_MISSING) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void collectSelectedWhiteNeighbors(const BlackWhiteState &state, ui u,
+        vector<ui> &white_neighbors) const
+    {
+        white_neighbors.clear();
+        for (ui neighbor : q_neighbors[u]) {
+            if (isWhite(state, neighbor)) {
+                white_neighbors.push_back(neighbor);
+            }
+        }
+    }
+
+    bool chooseBlackWhite(const BlackWhiteState &state, ui u,
+        const WhiteCandidateBuckets &white_candidate_buckets) const
+    {
+#if CDE_BLACK_WHITE_DEFAULT_WHITE
+        if (white_candidate_buckets.feasible_count < 8) {
+            return false;
+        }
+
+        bool has_future_neighbor = false;
+        for (ui neighbor : q_neighbors[u]) {
+            if (isWhite(state, neighbor)) {
+                return false;
+            }
+            if (state.color[neighbor] == COLOR_UNSELECTED) {
+                has_future_neighbor = true;
+            }
+        }
+        return has_future_neighbor;
+#else
+        (void)state;
+        (void)u;
+        (void)white_candidate_buckets;
+        return false;
+#endif
+    }
+
+    bool updateWhiteBucketForBlackNeighbor(BlackWhiteState &state, ui white_u,
+        ui black_u, ui black_v, ui cost)
+    {
+        assert(isWhite(state, white_u));
+        assert(isBlack(state, black_u));
+        if (cost > threshold) {
+            return false;
+        }
+
+        WhiteCandidateBuckets next_buckets;
+        ui remaining_budget = threshold - cost;
+        next_buckets.buckets.assign((size_t)remaining_budget + 1, vector<ui>());
+        EdgeState state_uv = getBlackWhiteEdgeState(state, white_u, black_u);
+
+        const WhiteCandidateBuckets &old_buckets = state.white[white_u];
+        if (old_buckets.empty()) {
+            return false;
+        }
+
+        size_t active_bucket_count = std::min(old_buckets.buckets.size(),
+            (size_t)remaining_budget + 1);
+        vector<size_t> reserve_counts(next_buckets.buckets.size(), 0);
+        for (size_t delta = 0; delta < active_bucket_count; ++delta) {
+            size_t old_size = old_buckets.buckets[delta].size();
+            if (old_size == 0) {
+                continue;
+            }
+            if (state_uv == EDGE_UNDECIDED && delta + 1 < active_bucket_count) {
+                size_t split_reserve = old_size / 2 + 1;
+                reserve_counts[delta] += split_reserve;
+                reserve_counts[delta + 1] += split_reserve;
+            }
+            else {
+                reserve_counts[delta] += old_size;
+            }
+        }
+        for (size_t delta = 0; delta < reserve_counts.size(); ++delta) {
+            if (reserve_counts[delta] > 0) {
+                next_buckets.buckets[delta].reserve(reserve_counts[delta]);
+            }
+        }
+
+        for (size_t delta = 0; delta < active_bucket_count; ++delta) {
+            for (ui candidate : old_buckets.buckets[delta]) {
+                if (candidate >= gn || isDataVertexUsed(state, candidate)) {
+                    continue;
+                }
+
+                bool adjacent = data_graph->hasEdge(candidate, black_v);
+                size_t next_delta = delta;
+                if (state_uv == EDGE_PRESENT) {
+                    if (!adjacent) continue;
+                }
+                else if (state_uv == EDGE_MISSING) {
+                    if (adjacent) continue;
+                }
+                else if (!adjacent) {
+                    next_delta++;
+                    if (next_delta > remaining_budget) {
+                        continue;
+                    }
+                }
+
+                next_buckets.buckets[next_delta].push_back(candidate);
+                next_buckets.feasible_count++;
+            }
+        }
+
+        if (next_buckets.empty()) {
+            return false;
+        }
+        replaceBlackWhiteBucket(state, white_u, std::move(next_buckets));
+        return true;
+    }
+
+    bool commitNewBlackVertex(BlackWhiteState &state, ui cost, ui u, ui v,
+        ui &next_cost)
+    {
+        if (u >= qn || v >= gn || !candidates[u].contains(v)) {
+            return false;
+        }
+        if (state.color[u] != COLOR_UNSELECTED || isDataVertexUsed(state, v)) {
+            return false;
+        }
+
+        ui delta = 0;
+        if (!computeBlackNeighborDelta(state, u, v, cost, delta)) {
+            return false;
+        }
+        next_cost = cost + delta;
+        if (next_cost > threshold) {
+            return false;
+        }
+
+        setBlackWhiteColor(state, u, COLOR_BLACK);
+        setBlackWhiteMappedQ(state, u, (int)v);
+        pushBlackWhiteUsedDataVertex(state, v);
+        pushBlackWhitePartM(state, u, v);
+        setBlackWhiteSelectedCount(state, state.selected_count + 1);
+
+        for (ui neighbor : q_neighbors[u]) {
+            if (!isBlack(state, neighbor)) {
+                continue;
+            }
+            EdgeState state_uv = getBlackWhiteEdgeState(state, u, neighbor);
+            if (state_uv != EDGE_UNDECIDED) {
+                continue;
+            }
+            bool adjacent = data_graph->hasEdge(v, (ui)state.mapped_q[neighbor]);
+            setBlackWhiteEdgeState(state, u, neighbor,
+                adjacent ? EDGE_PRESENT : EDGE_MISSING);
+        }
+
+        for (ui neighbor : q_neighbors[u]) {
+            if (!isWhite(state, neighbor)) {
+                continue;
+            }
+            if (!updateWhiteBucketForBlackNeighbor(state, neighbor, u, v, next_cost)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool commitMaterializedWhiteVertex(BlackWhiteState &state, ui cost, ui white_u,
+        ui candidate, ui bucket_delta, ui &next_cost)
+    {
+        if (!isWhite(state, white_u) || candidate >= gn ||
+            isDataVertexUsed(state, candidate) ||
+            !candidates[white_u].contains(candidate)) {
+            return false;
+        }
+
+        next_cost = cost + bucket_delta;
+        if (next_cost > threshold) {
+            return false;
+        }
+
+        setBlackWhiteColor(state, white_u, COLOR_BLACK);
+        assert(state.white_count > 0);
+        setBlackWhiteWhiteCount(state, state.white_count - 1);
+        setBlackWhiteMappedQ(state, white_u, (int)candidate);
+        pushBlackWhiteUsedDataVertex(state, candidate);
+        pushBlackWhitePartM(state, white_u, candidate);
+
+        for (ui neighbor : q_neighbors[white_u]) {
+            if (!isSelected(state, neighbor)) {
+                continue;
+            }
+            if (isWhite(state, neighbor)) {
+                return false;
+            }
+
+            ui mapped_neighbor = (ui)state.mapped_q[neighbor];
+            bool adjacent = data_graph->hasEdge(candidate, mapped_neighbor);
+            EdgeState state_uv = getBlackWhiteEdgeState(state, white_u, neighbor);
+            if (state_uv == EDGE_PRESENT) {
+                if (!adjacent) return false;
+            }
+            else if (state_uv == EDGE_MISSING) {
+                if (adjacent) return false;
+            }
+            else {
+                setBlackWhiteEdgeState(state, white_u, neighbor,
+                    adjacent ? EDGE_PRESENT : EDGE_MISSING);
+            }
+        }
+        return true;
+    }
+
+    bool addWhiteVertexBranch(BlackWhiteState &state, ui cost, ui u)
+    {
+        if (state.color[u] != COLOR_UNSELECTED) {
+            return false;
+        }
+
+        for (ui neighbor : q_neighbors[u]) {
+            if (isWhite(state, neighbor)) {
+                return false;
+            }
+        }
+
+        WhiteCandidateBuckets white_candidate_buckets;
+        if (!buildWhiteCandidateBuckets(state, u, cost, white_candidate_buckets)) {
+            return false;
+        }
+        if (!chooseBlackWhite(state, u, white_candidate_buckets)) {
+            return false;
+        }
+
+        size_t mark = markBlackWhiteState();
+        setBlackWhiteColor(state, u, COLOR_WHITE);
+        replaceBlackWhiteBucket(state, u, std::move(white_candidate_buckets));
+        setBlackWhiteSelectedCount(state, state.selected_count + 1);
+        setBlackWhiteWhiteCount(state, state.white_count + 1);
+        bwSearch(state, cost);
+        rollbackBlackWhiteState(state, mark);
+        return true;
+    }
+
+    bool addBlackVertexBranches(BlackWhiteState &state, ui cost, ui u,
+        ui required_anchor = std::numeric_limits<ui>::max())
+    {
+        bool emitted_branch = false;
+        auto try_candidate = [&](ui candidate) -> bool {
+            size_t mark = markBlackWhiteState();
+            ui next_cost = cost;
+            if (!commitNewBlackVertex(state, cost, u, candidate, next_cost)) {
+                rollbackBlackWhiteState(state, mark);
+                return false;
+            }
+            emitted_branch = true;
+            bwSearch(state, next_cost);
+            rollbackBlackWhiteState(state, mark);
+            if (outputLimitReached()) {
+                return true;
+            }
+            return false;
+        };
+
+        if (required_anchor < qn && isBlack(state, required_anchor) &&
+            getBlackWhiteEdgeState(state, u, required_anchor) == EDGE_PRESENT) {
+            ui mapped_anchor = (ui)state.mapped_q[required_anchor];
+            ui degree = 0;
+            const ui *neighbors = data_graph->getVertexNeighbors(mapped_anchor, degree);
+            for (ui i = 0; i < degree; ++i) {
+                ui candidate = neighbors[i];
+                if (!candidates[u].contains(candidate)) {
+                    continue;
+                }
+                if (try_candidate(candidate)) {
+                    return true;
+                }
+            }
+            return emitted_branch;
+        }
+
+        for (int candidate : candidates[u]) {
+            if (try_candidate((ui)candidate)) {
+                return true;
+            }
+        }
+        return emitted_branch;
+    }
+
+    template <typename Continue>
+    bool materializeWhiteVertexBranches(BlackWhiteState &state, ui cost,
+        ui white_u, Continue continue_branch)
+    {
+        if (!isWhite(state, white_u)) {
+            return false;
+        }
+
+        bool emitted_branch = false;
+        size_t bucket_count = state.white[white_u].buckets.size();
+        for (size_t delta = 0; delta < bucket_count; ++delta) {
+            if (cost + delta > threshold) {
+                continue;
+            }
+            const vector<ui> &bucket = state.white[white_u].buckets[delta];
+            for (ui candidate : bucket) {
+                size_t mark = markBlackWhiteState();
+                ui next_cost = cost;
+                if (!commitMaterializedWhiteVertex(state, cost, white_u,
+                    candidate, (ui)delta, next_cost)) {
+                    rollbackBlackWhiteState(state, mark);
+                    continue;
+                }
+                if (continue_branch(state, next_cost)) {
+                    emitted_branch = true;
+                }
+                rollbackBlackWhiteState(state, mark);
+                if (outputLimitReached()) {
+                    return true;
+                }
+            }
+        }
+        return emitted_branch;
+    }
+
+    template <typename Continue>
+    bool materializeWhiteSetBranches(BlackWhiteState &state, ui cost,
+        const vector<ui> &white_vertices, size_t pos, Continue continue_branch)
+    {
+        if (pos == white_vertices.size()) {
+            return continue_branch(state, cost);
+        }
+
+        ui white_u = white_vertices[pos];
+        if (!isWhite(state, white_u)) {
+            return materializeWhiteSetBranches(state, cost, white_vertices,
+                pos + 1, continue_branch);
+        }
+
+        return materializeWhiteVertexBranches(state, cost, white_u,
+            [&](BlackWhiteState &next_state, ui next_cost) -> bool {
+                return materializeWhiteSetBranches(next_state, next_cost,
+                    white_vertices, pos + 1, continue_branch);
+            });
+    }
+
+    bool forcedIncludeBlackAnchor(BlackWhiteState &state, ui cost, ui u,
+        ui anchor)
+    {
+        if (!isBlack(state, anchor) || state.color[u] != COLOR_UNSELECTED ||
+            getBlackWhiteEdgeState(state, u, anchor) != EDGE_PRESENT) {
+            return false;
+        }
+
+#if CDE_BLACK_WHITE_DEFAULT_WHITE
+        vector<ui> &white_neighbors =
+            blackWhiteWhiteNeighborsBuffer(state.selected_count);
+        collectSelectedWhiteNeighbors(state, u, white_neighbors);
+        bool emitted_white_branch = false;
+        if (white_neighbors.empty()) {
+            emitted_white_branch = addWhiteVertexBranch(state, cost, u);
+        }
+        else {
+            emitted_white_branch = materializeWhiteSetBranches(state, cost,
+                white_neighbors, 0,
+                [&](BlackWhiteState &materialized_state, ui materialized_cost) -> bool {
+                    return addWhiteVertexBranch(materialized_state,
+                        materialized_cost, u);
+                });
+        }
+
+        if (emitted_white_branch) {
+            return true;
+        }
+#endif
+        return addBlackVertexBranches(state, cost, u, anchor);
+    }
+
+    bool includeActiveEdgeBranch(BlackWhiteState &state, ui cost,
+        const BlackWhiteActiveEdge &edge)
+    {
+        ui u = edge.u;
+        ui anchor = edge.anchor;
+        if (state.color[u] != COLOR_UNSELECTED ||
+            !isSelected(state, anchor) ||
+            getBlackWhiteEdgeState(state, u, anchor) != EDGE_UNDECIDED) {
+            return false;
+        }
+
+        size_t mark = markBlackWhiteState();
+        setBlackWhiteEdgeState(state, u, anchor, EDGE_PRESENT);
+
+        bool emitted_branch = false;
+        if (isBlack(state, anchor)) {
+            emitted_branch = forcedIncludeBlackAnchor(state, cost, u, anchor);
+        }
+        else {
+            emitted_branch = materializeWhiteVertexBranches(state, cost, anchor,
+            [&](BlackWhiteState &materialized_state, ui materialized_cost) -> bool {
+                return forcedIncludeBlackAnchor(materialized_state,
+                    materialized_cost, u, anchor);
+            });
+        }
+        rollbackBlackWhiteState(state, mark);
+        return emitted_branch;
+    }
+
+    double estimateBlackAnchorSupport(const BlackWhiteState &state, ui u,
+        ui anchor) const
+    {
+        if (!isBlack(state, anchor)) {
+            return 0.0;
+        }
+
+        double support_count = 0.0;
+        ui mapped_anchor = (ui)state.mapped_q[anchor];
+        ui degree = 0;
+        const ui *neighbors = data_graph->getVertexNeighbors(mapped_anchor, degree);
+        for (ui i = 0; i < degree; ++i) {
+            ui v = neighbors[i];
+            if (!candidates[u].contains(v)) {
+                continue;
+            }
+            if (isDataVertexUsed(state, v)) {
+                continue;
+            }
+            support_count += 1.0;
+        }
+        return support_count;
+    }
+
+    double estimateWhiteAnchorSupport(const BlackWhiteState &state, ui anchor) const
+    {
+        if (!isWhite(state, anchor)) {
+            return 0.0;
+        }
+        return (double)std::max((ui)1, state.white[anchor].feasible_count);
+    }
+
+    bool isBetterBlackWhiteActiveEdge(const BlackWhiteActiveEdge &lhs,
+        const BlackWhiteActiveEdge &rhs) const
+    {
+        double lhs_scaled = lhs.rank_support *
+            (double)std::max((ui)1, rhs.live_anchor_count);
+        double rhs_scaled = rhs.rank_support *
+            (double)std::max((ui)1, lhs.live_anchor_count);
+        double scale = std::max(1.0,
+            std::max(std::fabs(lhs_scaled), std::fabs(rhs_scaled)));
+        if (std::fabs(lhs_scaled - rhs_scaled) > 1e-12 * scale) {
+            return lhs_scaled < rhs_scaled;
+        }
+        if (lhs.live_anchor_count != rhs.live_anchor_count) {
+            return lhs.live_anchor_count > rhs.live_anchor_count;
+        }
+        if (lhs.query_degree != rhs.query_degree) {
+            return lhs.query_degree > rhs.query_degree;
+        }
+        if (lhs.u != rhs.u) {
+            return lhs.u < rhs.u;
+        }
+        return lhs.anchor < rhs.anchor;
+    }
+
+    void selectTopBlackWhiteActiveEdges(ui max_count,
+        vector<BlackWhiteActiveEdge> &top_edges)
+    {
+        size_t selected_limit = top_edges.size();
+        if ((size_t)max_count < selected_limit) {
+            selected_limit = (size_t)max_count;
+        }
+
+#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
+        const double gamma = (double)CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY_GAMMA;
+        for (size_t selected_idx = 0; selected_idx < selected_limit; ++selected_idx) {
+            size_t best_idx = selected_idx;
+            for (size_t i = selected_idx + 1; i < top_edges.size(); ++i) {
+                if (isBetterBlackWhiteActiveEdge(top_edges[i], top_edges[best_idx])) {
+                    best_idx = i;
+                }
+            }
+
+            if (best_idx != selected_idx) {
+                std::swap(top_edges[selected_idx], top_edges[best_idx]);
+            }
+
+            const BlackWhiteActiveEdge &selected = top_edges[selected_idx];
+            double candidate_count = (double)candidates[selected.u].size();
+            if (candidate_count <= 0.0) {
+                continue;
+            }
+
+            double factor = 1.0 - gamma * selected.rank_support / candidate_count;
+            if (factor < 0.0) {
+                factor = 0.0;
+            }
+            else if (factor > 1.0) {
+                factor = 1.0;
+            }
+
+            if (factor == 1.0) {
+                continue;
+            }
+
+            for (size_t i = selected_idx + 1; i < top_edges.size(); ++i) {
+                if (top_edges[i].u == selected.u) {
+                    top_edges[i].rank_support *= factor;
+                }
+            }
+        }
+#else
+        auto better_edge = [&](const BlackWhiteActiveEdge &lhs,
+            const BlackWhiteActiveEdge &rhs) {
+            return isBetterBlackWhiteActiveEdge(lhs, rhs);
+            };
+        if (top_edges.size() > selected_limit) {
+            partial_sort(top_edges.begin(), top_edges.begin() + selected_limit,
+                top_edges.end(), better_edge);
+        }
+        else {
+            sort(top_edges.begin(), top_edges.end(), better_edge);
+        }
+#endif
+        top_edges.resize(selected_limit);
+    }
+
+    bool collectTopBlackWhiteActiveEdges(const BlackWhiteState &state,
+        ui max_count, vector<BlackWhiteActiveEdge> &top_edges)
+    {
+        top_edges.clear();
+        if (max_count == 0) {
+            return false;
+        }
+
+        for (ui u = 0; u < qn; ++u) {
+            if (state.color[u] != COLOR_UNSELECTED) {
+                continue;
+            }
+
+            ui live_anchor_count = 0;
+            for (ui anchor : q_neighbors[u]) {
+                if (isSelected(state, anchor) &&
+                    getBlackWhiteEdgeState(state, u, anchor) == EDGE_UNDECIDED) {
+                    live_anchor_count++;
+                }
+            }
+            if (live_anchor_count == 0) {
+                continue;
+            }
+
+            for (ui anchor : q_neighbors[u]) {
+                if (!isSelected(state, anchor) ||
+                    getBlackWhiteEdgeState(state, u, anchor) != EDGE_UNDECIDED) {
+                    continue;
+                }
+
+                BlackWhiteActiveEdge edge;
+                edge.u = u;
+                edge.anchor = anchor;
+                edge.live_anchor_count = live_anchor_count;
+                edge.query_degree = q_degree[u];
+                if (isBlack(state, anchor)) {
+                    edge.rank_support = estimateBlackAnchorSupport(state, u, anchor);
+                }
+                else {
+                    edge.rank_support = estimateWhiteAnchorSupport(state, anchor);
+                }
+                top_edges.push_back(edge);
+            }
+        }
+
+        if (top_edges.empty()) {
+            return false;
+        }
+        selectTopBlackWhiteActiveEdges(max_count, top_edges);
+        return true;
+    }
+
+    ui chooseWhiteVertexToMaterialize(const BlackWhiteState &state) const
+    {
+        ui chosen = qn;
+        ui best_count = std::numeric_limits<ui>::max();
+        for (ui u = 0; u < qn; ++u) {
+            if (!isWhite(state, u)) {
+                continue;
+            }
+            ui count = state.white[u].feasible_count;
+            if (count < best_count || (count == best_count && u < chosen)) {
+                chosen = u;
+                best_count = count;
+            }
+        }
+        return chosen;
+    }
+
+    void emitBlackWhiteResult(const BlackWhiteState &state)
+    {
+        assert(state.part_M.size() == qn);
+        stats.result_count++;
+        noteOutputLimitIfReached();
+#ifndef NDEBUG
+        results_ptr->push_back(state.part_M);
+#endif
+    }
+
+    void executeBlackWhiteTopEdges(BlackWhiteState &state, ui cost,
+        const vector<BlackWhiteActiveEdge> &top_edges, size_t edge_idx)
+    {
+        if (outputLimitReached() || cost > threshold ||
+            edge_idx >= top_edges.size()) {
+            return;
+        }
+
+        const BlackWhiteActiveEdge &edge = top_edges[edge_idx];
+        includeActiveEdgeBranch(state, cost, edge);
+        if (outputLimitReached()) {
+            return;
+        }
+
+        if (cost + 1 > threshold) {
+            stats.prun_calls++;
+            return;
+        }
+
+        size_t mark = markBlackWhiteState();
+        if (state.color[edge.u] == COLOR_UNSELECTED &&
+            isSelected(state, edge.anchor) &&
+            getBlackWhiteEdgeState(state, edge.u, edge.anchor) == EDGE_UNDECIDED) {
+            setBlackWhiteEdgeState(state, edge.u, edge.anchor, EDGE_MISSING);
+            executeBlackWhiteTopEdges(state, cost + 1, top_edges, edge_idx + 1);
+        }
+        rollbackBlackWhiteState(state, mark);
+    }
+
+    void bwSearch(BlackWhiteState &state, ui cost)
+    {
+        if (outputLimitReached()) {
+            stats.output_limit_reached = true;
+            return;
+        }
+        if (cost > threshold) {
+            stats.prun_calls++;
+            return;
+        }
+
+        stats.recursion_calls++;
+
+        if (state.selected_count == qn) {
+            if (state.white_count == 0) {
+                emitBlackWhiteResult(state);
+                return;
+            }
+
+            ui white_u = chooseWhiteVertexToMaterialize(state);
+            if (white_u == qn) {
+                stats.prun_calls++;
+                return;
+            }
+            materializeWhiteVertexBranches(state, cost, white_u,
+                [&](BlackWhiteState &next_state, ui next_cost) -> bool {
+                    bwSearch(next_state, next_cost);
+                    return true;
+                });
+            return;
+        }
+
+        vector<BlackWhiteActiveEdge> &top_edges =
+            blackWhiteTopEdgesBuffer(state.selected_count);
+        ui max_branch_edges = threshold - cost + 1;
+        if (!collectTopBlackWhiteActiveEdges(state, max_branch_edges, top_edges)) {
+            stats.prun_calls++;
+            return;
+        }
+
+        executeBlackWhiteTopEdges(state, cost, top_edges, 0);
     }
     // ========================================================================
 
@@ -2180,7 +3258,7 @@ private:
         vector<ActiveEdge> &top_edges = buf.top_edges;
         ui current_cost = cost;
         double selected_component_support_sum = std::numeric_limits<double>::max();
-#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY && !CDE_EDGE_IE_FIXED_ORDER
+#if !CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY && !CDE_BLACK_WHITE_FIXED_ORDER
         bool selected_covered_component = false;
 #endif
         bool has_zero_support_component = false;
@@ -2233,7 +3311,7 @@ private:
 #endif
         }
 
-#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY && !CDE_EDGE_IE_FIXED_ORDER
+#if !CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY && !CDE_BLACK_WHITE_FIXED_ORDER
         bool all_selected_edges_have_zero_support = std::all_of(
             top_edges.begin(), top_edges.end(),
             [](const ActiveEdge &edge) {
@@ -2250,7 +3328,7 @@ private:
 #ifndef NDEBUG
             Timer t_component;
 #endif
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY || CDE_EDGE_IE_FIXED_ORDER
+#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY || CDE_BLACK_WHITE_FIXED_ORDER
             (void)buf.branch_selector.restrictTopEdgesToCoveredComponent(top_edges,
                 buf.edge_score_cache, buf.component_id, buf.component_frontiers,
                 buf.component_edge_counts, buf.component_seen_counts,
@@ -2269,7 +3347,7 @@ private:
         }
         stats.frontier_time += t_frontier.elapsed();
 
-#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY && !CDE_EDGE_IE_FIXED_ORDER
+#if !CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY && !CDE_BLACK_WHITE_FIXED_ORDER
         if (has_zero_support_component ||
             (selected_covered_component && selected_component_support_sum == 0)) {
             stats.prun_calls++;
@@ -2282,7 +3360,7 @@ private:
 
         ui first_branch_edge = 0;
         bool pruned_by_forced_zero = false;
-#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY && !CDE_EDGE_IE_FIXED_ORDER
+#if !CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY && !CDE_BLACK_WHITE_FIXED_ORDER
         for (; first_branch_edge < top_edges.size(); ++first_branch_edge) {
             const ActiveEdge &edge = top_edges[first_branch_edge];
             if (edge.anchor_support != 0) break;
@@ -2442,14 +3520,14 @@ private:
 };
 
 // ============================================================
-// Top-level function: Approximate_CDE_EdgeIE
+// Top-level function: Approximate_CDE_BlackWhite
 // ============================================================
-void Approximate_CDE_EdgeIE(const Graph *query_graph, const Graph *data_graph, vector<vector<pair<ui, ui> > > &M_ANS, ui threshold)
+void Approximate_CDE_BlackWhite(const Graph *query_graph, const Graph *data_graph, vector<vector<pair<ui, ui> > > &M_ANS, ui threshold)
 {
     Timer t_total;
     t_total.restart();
 
-    MatchingSolver solver;
+    CDEBlackWhiteSolver solver;
     if (solver.init(query_graph, data_graph, threshold)) {
         solver.match(M_ANS);
     }
