@@ -16,7 +16,6 @@
 #include "matching/run_matching.h"
 #include "utility/utility.h"
 #include "utility/mybitset.h"
-#include <unordered_map>
 using namespace std;
 
 // ============================================================================
@@ -36,16 +35,12 @@ class CDEBlackWhiteSolver {
     };
 
     struct WhiteCandidateBuckets {
-        static constexpr ui INVALID_DELTA = std::numeric_limits<ui>::max();
-
-        vector<vector<ui>> buckets;
-        unordered_map<ui, ui> candidate_delta;
+        vector<ui> candidates;
         ui feasible_count = 0;
 
         void clear()
         {
-            buckets.clear();
-            candidate_delta.clear();
+            candidates.clear();
             feasible_count = 0;
         }
 
@@ -54,19 +49,14 @@ class CDEBlackWhiteSolver {
             return feasible_count == 0;
         }
 
-        bool isActiveCandidate(ui candidate, ui delta) const
+        void reserve(size_t size)
         {
-            auto it = candidate_delta.find(candidate);
-            return it != candidate_delta.end() && it->second == delta;
+            candidates.reserve(size);
         }
 
-        void addCandidate(ui candidate, ui delta)
+        void addCandidate(ui candidate)
         {
-            if (delta >= buckets.size()) {
-                buckets.resize((size_t)delta + 1);
-            }
-            buckets[delta].push_back(candidate);
-            candidate_delta[candidate] = delta;
+            candidates.push_back(candidate);
             feasible_count++;
         }
     };
@@ -99,8 +89,7 @@ class CDEBlackWhiteSolver {
         BW_UNDO_PART_M_SIZE = 4,
         BW_UNDO_SELECTED_COUNT = 5,
         BW_UNDO_WHITE_COUNT = 6,
-        BW_UNDO_WHITE_BUCKET = 7,
-        BW_UNDO_WHITE_CANDIDATE = 8
+        BW_UNDO_WHITE_BUCKET = 7
     };
 
     struct BlackWhiteUndo {
@@ -113,8 +102,6 @@ class CDEBlackWhiteSolver {
         EdgeState old_edge_vu = EDGE_UNDECIDED;
         size_t old_size = 0;
         ui old_count = 0;
-        ui old_delta = WhiteCandidateBuckets::INVALID_DELTA;
-        bool old_present = false;
         WhiteCandidateBuckets old_white;
     };
 
@@ -391,7 +378,6 @@ private:
     vector<ui> active_frontier;
     vector<ui> data_vertex_mark;
     vector<ui> data_vertex_mark_pos;
-    vector<ui> bw_white_update_candidates;
     bool terminal_buckets_enabled = true;
     ui data_vertex_mark_token = 0;
 
@@ -469,7 +455,6 @@ private:
         active_frontier.clear();
         data_vertex_mark.assign(gn, 0);
         data_vertex_mark_pos.assign(gn, 0);
-        bw_white_update_candidates.clear();
         data_vertex_mark_token = 0;
         black_white_undo.clear();
         stats = TimeStats();
@@ -2160,15 +2145,6 @@ private:
             case BW_UNDO_WHITE_BUCKET:
                 state.white[undo.u] = std::move(undo.old_white);
                 break;
-            case BW_UNDO_WHITE_CANDIDATE:
-                state.white[undo.u].feasible_count = undo.old_count;
-                if (undo.old_present) {
-                    state.white[undo.u].candidate_delta[undo.v] = undo.old_delta;
-                }
-                else {
-                    state.white[undo.u].candidate_delta.erase(undo.v);
-                }
-                break;
             }
         }
     }
@@ -2255,62 +2231,6 @@ private:
         state.white[u] = std::move(bucket);
     }
 
-    void setWhiteCandidateDelta(BlackWhiteState &state, ui white_u,
-        ui candidate, ui new_delta)
-    {
-        WhiteCandidateBuckets &white = state.white[white_u];
-        auto it = white.candidate_delta.find(candidate);
-        if (it == white.candidate_delta.end()) {
-            return;
-        }
-
-        ui old_delta = it->second;
-        if (old_delta == new_delta) {
-            return;
-        }
-
-        BlackWhiteUndo undo;
-        undo.kind = BW_UNDO_WHITE_CANDIDATE;
-        undo.u = white_u;
-        undo.v = candidate;
-        undo.old_count = white.feasible_count;
-        undo.old_delta = old_delta;
-        undo.old_present = true;
-        black_white_undo.push_back(std::move(undo));
-
-        if (new_delta == WhiteCandidateBuckets::INVALID_DELTA) {
-            white.candidate_delta.erase(it);
-            assert(white.feasible_count > 0);
-            white.feasible_count--;
-            return;
-        }
-
-        if (new_delta >= white.buckets.size()) {
-            white.buckets.resize((size_t)new_delta + 1);
-        }
-        white.buckets[new_delta].push_back(candidate);
-        it->second = new_delta;
-    }
-
-    void removeWhiteCandidatesOverBudget(BlackWhiteState &state, ui white_u,
-        ui remaining_budget)
-    {
-        WhiteCandidateBuckets &white = state.white[white_u];
-        if (white.buckets.size() <= (size_t)remaining_budget + 1) {
-            return;
-        }
-
-        for (size_t delta = (size_t)remaining_budget + 1;
-            delta < white.buckets.size(); ++delta) {
-            for (ui candidate : white.buckets[delta]) {
-                if (white.isActiveCandidate(candidate, (ui)delta)) {
-                    setWhiteCandidateDelta(state, white_u, candidate,
-                        WhiteCandidateBuckets::INVALID_DELTA);
-                }
-            }
-        }
-    }
-
     bool computeBlackNeighborDelta(const BlackWhiteState &state, ui u, ui v,
         ui cost, ui &delta) const
     {
@@ -2339,6 +2259,29 @@ private:
         return true;
     }
 
+    bool rebuildWhiteCandidatesForCurrentState(BlackWhiteState &state,
+        ui white_u, ui cost)
+    {
+        const WhiteCandidateBuckets &white = state.white[white_u];
+        WhiteCandidateBuckets next_white;
+        next_white.reserve(white.candidates.size());
+
+        for (ui candidate : white.candidates) {
+            if (isDataVertexUsed(state, candidate)) {
+                continue;
+            }
+
+            ui delta = 0;
+            if (computeBlackNeighborDelta(state, white_u, candidate, cost, delta)) {
+                next_white.addCandidate(candidate);
+            }
+        }
+
+        bool has_candidate = !next_white.empty();
+        replaceBlackWhiteBucket(state, white_u, std::move(next_white));
+        return has_candidate;
+    }
+
     bool buildWhiteCandidateBuckets(const BlackWhiteState &state, ui u, ui cost,
         WhiteCandidateBuckets &white_candidate_buckets) const
     {
@@ -2346,9 +2289,6 @@ private:
         if (cost > threshold || !isSelectedByBlackNeighbor(state, u)) {
             return false;
         }
-
-        ui remaining_budget = threshold - cost;
-        white_candidate_buckets.buckets.assign((size_t)remaining_budget + 1, vector<ui>());
 
         for (int candidate : candidates[u]) {
             ui v = (ui)candidate;
@@ -2361,9 +2301,7 @@ private:
                 continue;
             }
 
-            if (delta <= remaining_budget) {
-                white_candidate_buckets.addCandidate(v, delta);
-            }
+            white_candidate_buckets.addCandidate(v);
         }
         return !white_candidate_buckets.empty();
     }
@@ -2421,93 +2359,13 @@ private:
     {
         assert(isWhite(state, white_u));
         assert(isBlack(state, black_u));
+        (void)black_u;
+        (void)black_v;
         if (cost > threshold) {
             return false;
         }
 
-        ui remaining_budget = threshold - cost;
-        EdgeState state_uv = getBlackWhiteEdgeState(state, white_u, black_u);
-
-        WhiteCandidateBuckets &white_bucket = state.white[white_u];
-        if (white_bucket.empty()) {
-            return false;
-        }
-
-        removeWhiteCandidatesOverBudget(state, white_u, remaining_budget);
-
-        auto black_it = white_bucket.candidate_delta.find(black_v);
-        if (black_it != white_bucket.candidate_delta.end()) {
-            setWhiteCandidateDelta(state, white_u, black_v,
-                WhiteCandidateBuckets::INVALID_DELTA);
-        }
-        if (white_bucket.empty()) {
-            return false;
-        }
-
-        ui adjacent_token = markDataVertexNeighbors(black_v);
-        bw_white_update_candidates.clear();
-
-        if (state_uv == EDGE_PRESENT) {
-            for (const auto &entry : white_bucket.candidate_delta) {
-                ui candidate = entry.first;
-                if (isDataVertexUsed(state, candidate) ||
-                    data_vertex_mark[candidate] != adjacent_token) {
-                    bw_white_update_candidates.push_back(candidate);
-                }
-            }
-            for (ui candidate : bw_white_update_candidates) {
-                setWhiteCandidateDelta(state, white_u, candidate,
-                    WhiteCandidateBuckets::INVALID_DELTA);
-            }
-        }
-        else if (state_uv == EDGE_MISSING) {
-            ui deg = 0;
-            const ui *nbrs = data_graph->getVertexNeighbors(black_v, deg);
-            for (ui i = 0; i < deg; ++i) {
-                ui candidate = nbrs[i];
-                if (white_bucket.candidate_delta.find(candidate) !=
-                    white_bucket.candidate_delta.end()) {
-                    bw_white_update_candidates.push_back(candidate);
-                }
-            }
-            for (ui candidate : bw_white_update_candidates) {
-                setWhiteCandidateDelta(state, white_u, candidate,
-                    WhiteCandidateBuckets::INVALID_DELTA);
-            }
-        }
-        else {
-            for (const auto &entry : white_bucket.candidate_delta) {
-                ui candidate = entry.first;
-                if (isDataVertexUsed(state, candidate) ||
-                    data_vertex_mark[candidate] != adjacent_token) {
-                    bw_white_update_candidates.push_back(candidate);
-                }
-            }
-            for (ui candidate : bw_white_update_candidates) {
-                auto it = white_bucket.candidate_delta.find(candidate);
-                if (it == white_bucket.candidate_delta.end()) {
-                    continue;
-                }
-                if (isDataVertexUsed(state, candidate)) {
-                    setWhiteCandidateDelta(state, white_u, candidate,
-                        WhiteCandidateBuckets::INVALID_DELTA);
-                    continue;
-                }
-                ui next_delta = it->second + 1;
-                if (next_delta > remaining_budget) {
-                    setWhiteCandidateDelta(state, white_u, candidate,
-                        WhiteCandidateBuckets::INVALID_DELTA);
-                }
-                else {
-                    setWhiteCandidateDelta(state, white_u, candidate, next_delta);
-                }
-            }
-        }
-
-        if (white_bucket.empty()) {
-            return false;
-        }
-        return true;
+        return rebuildWhiteCandidatesForCurrentState(state, white_u, cost);
     }
 
     bool commitNewBlackVertex(BlackWhiteState &state, ui cost, ui u, ui v,
@@ -2689,30 +2547,30 @@ private:
         }
 
         bool emitted_branch = false;
-        size_t bucket_count = state.white[white_u].buckets.size();
-        for (size_t delta = 0; delta < bucket_count; ++delta) {
-            if (cost + delta > threshold) {
+        const vector<ui> &white_candidates = state.white[white_u].candidates;
+        for (ui candidate : white_candidates) {
+            if (isDataVertexUsed(state, candidate)) {
                 continue;
             }
-            const vector<ui> &bucket = state.white[white_u].buckets[delta];
-            for (ui candidate : bucket) {
-                if (!state.white[white_u].isActiveCandidate(candidate, (ui)delta)) {
-                    continue;
-                }
-                size_t mark = markBlackWhiteState();
-                ui next_cost = cost;
-                if (!commitMaterializedWhiteVertex(state, cost, white_u,
-                    candidate, (ui)delta, next_cost)) {
-                    rollbackBlackWhiteState(state, mark);
-                    continue;
-                }
-                if (continue_branch(state, next_cost)) {
-                    emitted_branch = true;
-                }
+
+            ui delta = 0;
+            if (!computeBlackNeighborDelta(state, white_u, candidate, cost, delta)) {
+                continue;
+            }
+
+            size_t mark = markBlackWhiteState();
+            ui next_cost = cost;
+            if (!commitMaterializedWhiteVertex(state, cost, white_u,
+                candidate, delta, next_cost)) {
                 rollbackBlackWhiteState(state, mark);
-                if (outputLimitReached()) {
-                    return true;
-                }
+                continue;
+            }
+            if (continue_branch(state, next_cost)) {
+                emitted_branch = true;
+            }
+            rollbackBlackWhiteState(state, mark);
+            if (outputLimitReached()) {
+                return true;
             }
         }
         return emitted_branch;

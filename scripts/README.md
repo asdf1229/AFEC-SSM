@@ -101,7 +101,7 @@ speedup = 1   Tie, shown as white.
 
 The farther the ratio is from `1`, the deeper the color.
 
-## Average Runtime Tables
+## Average Runtime Charts
 
 `make_average_runtime_tables.py` creates a narrower dataset-level runtime
 summary. It writes one HTML file named `avg_runtime_by_t.html` by default,
@@ -111,11 +111,8 @@ so it does not reuse the original chart output name.
 python3 -B scripts/make_average_runtime_tables.py result/20260423_174256
 ```
 
-By default, the report contains exactly seven tables for `t=0` through `t=6`.
-Each table has one row per dataset and one column per algorithm; each cell is
-the average runtime over all matching rows for that dataset and `t`. Below the
-tables, the report adds one line chart per dataset, with one line per
-algorithm.
+The report adds one line chart per dataset, with one line per algorithm. The x
+axis is `t`, and the y-axis is the average runtime on a logarithmic scale.
 
 By default, dataset names ending in `_15`, `_30`, `_45`, and `_60` are combined
 by prefix to match the chart grouping in `make_result_tables.py`. Pass

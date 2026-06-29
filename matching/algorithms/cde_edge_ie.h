@@ -109,6 +109,14 @@ public:
         ui filter_candidate_count = 0;
         // search breakdown
         long long dfs_time = 0;
+        long long dfs_buffer_clear_time = 0;
+        long long terminal_time = 0;
+        long long terminal_scan_time = 0;
+        long long terminal_tail_build_time = 0;
+        long long terminal_bucket_time = 0;
+        long long terminal_candidate_collect_time = 0;
+        long long terminal_min_delta_time = 0;
+        long long terminal_tail_enum_time = 0;
         long long frontier_time = 0; // building and ordering U_frontier
         long long frontier_select_time = 0;
         long long frontier_component_time = 0;
@@ -122,7 +130,6 @@ public:
         long long branch_cal_edge_support_time = 0;
         long long branch_count_anchors_time = 0;
         long long branch_delta_bucket_time = 0;
-        long long terminal_bucket_time = 0;
         long long support_update_time = 0;
         long long candidate_loop_time = 0;
         long long exclude_update_time = 0;
@@ -131,12 +138,12 @@ public:
         long long prun_calls = 0;
         size_t result_count = 0;
         bool output_limit_reached = false;
-#ifndef NDEBUG
+        unsigned long long terminal_scan_calls = 0;
+        unsigned long long terminal_tail_build_calls = 0;
         unsigned long long terminal_tail_calls = 0;
         unsigned long long terminal_prune_calls = 0;
         unsigned long long terminal_delayed_vertices = 0;
         unsigned long long terminal_bucket_candidate_checks = 0;
-#endif
     } stats;
 
     void printStats() const
@@ -145,33 +152,31 @@ public:
             return whole > 0 ? (double)part / whole * 100.0 : 0.0;
             };
 
-        long long search_accounted_time = stats.frontier_time + stats.branch_time;
+        long long search_accounted_time = stats.dfs_buffer_clear_time +
+            stats.terminal_time + stats.frontier_time + stats.branch_time;
         long long search_other_time = stats.dfs_time > search_accounted_time
             ? stats.dfs_time - search_accounted_time : 0;
 
         printf("\n--- CDE-Edge-IE Time Analysis ---\n");
-#ifdef NDEBUG
-        printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
-        printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
-        printf("  - Filter Time:     %.4lf ms\n", stats.filter_time / 1000.0);
-        printf("  - Label Deg Index: %.4lf ms\n", stats.init_label_degree_time / 1000.0);
-        printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
-        printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, pct(stats.dfs_time, stats.total_time));
-        printf("  - Frontier Time:   %.4lf ms (%.2f%% of Search)\n", stats.frontier_time / 1000.0, pct(stats.frontier_time, stats.dfs_time));
-        printf("  - Branch Time:     %.4lf ms (%.2f%% of Search)\n", stats.branch_time / 1000.0, pct(stats.branch_time, stats.dfs_time));
-        printf("  - Search Other:    %.4lf ms (%.2f%% of Search)\n", search_other_time / 1000.0, pct(search_other_time, stats.dfs_time));
-#else
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
         printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
         printf("  - Filter Time:     %.4lf ms (%.2f%% of Init)\n", stats.filter_time / 1000.0, pct(stats.filter_time, stats.init_time));
         printf("    - NLF:           %.4lf ms (%.2f%% of Filter)\n", stats.filter_nlf_time / 1000.0, pct(stats.filter_nlf_time, stats.filter_time));
-        printf("    - Bridge:        %.4lf ms (%.2f%% of Filter)\n", stats.filter_bridge_time / 1000.0, pct(stats.filter_bridge_time, stats.filter_time));
+        printf("    - Bridge/Index:  %.4lf ms (%.2f%% of Filter)\n", stats.filter_bridge_time / 1000.0, pct(stats.filter_bridge_time, stats.filter_time));
 #if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
         printf("    - Spoke:         %.4lf ms (%.2f%% of Filter)\n", stats.filter_spoke_time / 1000.0, pct(stats.filter_spoke_time, stats.filter_time));
 #endif
         printf("  - Label Deg Index: %.4lf ms (%.2f%% of Init)\n", stats.init_label_degree_time / 1000.0, pct(stats.init_label_degree_time, stats.init_time));
         printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
         printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, pct(stats.dfs_time, stats.total_time));
+        printf("  - DFS Buffer Clear:%.4lf ms (%.2f%% of Search)\n", stats.dfs_buffer_clear_time / 1000.0, pct(stats.dfs_buffer_clear_time, stats.dfs_time));
+        printf("  - Terminal Time:   %.4lf ms (%.2f%% of Search)\n", stats.terminal_time / 1000.0, pct(stats.terminal_time, stats.dfs_time));
+        printf("    - Scan:          %.4lf ms (%.2f%% of Terminal)\n", stats.terminal_scan_time / 1000.0, pct(stats.terminal_scan_time, stats.terminal_time));
+        printf("    - Tail Build:    %.4lf ms (%.2f%% of Terminal)\n", stats.terminal_tail_build_time / 1000.0, pct(stats.terminal_tail_build_time, stats.terminal_time));
+        printf("    - Cand Buckets:  %.4lf ms (%.2f%% of Terminal)\n", stats.terminal_bucket_time / 1000.0, pct(stats.terminal_bucket_time, stats.terminal_time));
+        printf("      - Collect Supp:%.4lf ms (%.2f%% of Cand Buckets)\n", stats.terminal_candidate_collect_time / 1000.0, pct(stats.terminal_candidate_collect_time, stats.terminal_bucket_time));
+        printf("    - Min Delta:     %.4lf ms (%.2f%% of Terminal)\n", stats.terminal_min_delta_time / 1000.0, pct(stats.terminal_min_delta_time, stats.terminal_time));
+        printf("    - Tail Enum:     %.4lf ms (%.2f%% of Terminal)\n", stats.terminal_tail_enum_time / 1000.0, pct(stats.terminal_tail_enum_time, stats.terminal_time));
         printf("  - Frontier Time:   %.4lf ms (%.2f%% of Search)\n", stats.frontier_time / 1000.0, pct(stats.frontier_time, stats.dfs_time));
         printf("    - Select Best:   %.4lf ms (%.2f%% of Frontier)\n", stats.frontier_select_time / 1000.0, pct(stats.frontier_select_time, stats.frontier_time));
         printf("    - Component:     %.4lf ms (%.2f%% of Frontier)\n", stats.frontier_component_time / 1000.0, pct(stats.frontier_component_time, stats.frontier_time));
@@ -187,20 +192,18 @@ public:
         printf("    - branch_cal_edge_support_ms: %.4lf (%.2f%% of Branch)\n", stats.branch_cal_edge_support_time / 1000.0, pct(stats.branch_cal_edge_support_time, stats.branch_time));
         printf("    - branch_count_anchors_ms:    %.4lf (%.2f%% of Branch)\n", stats.branch_count_anchors_time / 1000.0, pct(stats.branch_count_anchors_time, stats.branch_time));
         printf("    - branch_delta_bucket_ms:     %.4lf (%.2f%% of Branch)\n", stats.branch_delta_bucket_time / 1000.0, pct(stats.branch_delta_bucket_time, stats.branch_time));
-        printf("    - terminal_bucket_ms:         %.4lf (%.2f%% of Branch)\n", stats.terminal_bucket_time / 1000.0, pct(stats.terminal_bucket_time, stats.branch_time));
         printf("    - support_update_ms:          %.4lf (%.2f%% of Branch)\n", stats.support_update_time / 1000.0, pct(stats.support_update_time, stats.branch_time));
         printf("    - candidate_loop_ms:          %.4lf (%.2f%% of Branch)\n", stats.candidate_loop_time / 1000.0, pct(stats.candidate_loop_time, stats.branch_time));
         printf("    - exclude_update_ms:          %.4lf (%.2f%% of Branch)\n", stats.exclude_update_time / 1000.0, pct(stats.exclude_update_time, stats.branch_time));
         printf("  - Search Other:    %.4lf ms (%.2f%% of Search)\n", search_other_time / 1000.0, pct(search_other_time, stats.dfs_time));
-#endif
         printf("Recursion Calls:     %lld\n", stats.recursion_calls);
         printf("Pruning Calls:       %lld\n", stats.prun_calls);
-#ifndef NDEBUG
+        printf("Terminal Scan Calls: %llu\n", stats.terminal_scan_calls);
+        printf("Terminal Build Calls:%llu\n", stats.terminal_tail_build_calls);
         printf("Terminal Tail Calls: %llu\n", stats.terminal_tail_calls);
         printf("Terminal Prunes:     %llu\n", stats.terminal_prune_calls);
         printf("Terminal Delayed:    %llu\n", stats.terminal_delayed_vertices);
         printf("Terminal Cand Checks:%llu\n", stats.terminal_bucket_candidate_checks);
-#endif
         printf("Results Found:       %zu\n", stats.result_count);
 #if MATCH_OUTPUT_LIMIT > 0
         printf("Output Limit:        %zu%s\n",
@@ -446,13 +449,9 @@ private:
         template <typename Fn>
         bool timed(long long MatchingSolver::TimeStats::*field, Fn &&fn)
         {
-#ifndef NDEBUG
             Timer t;
-#endif
             bool ok = fn();
-#ifndef NDEBUG
             solver.stats.*field += t.elapsed();
-#endif
             return ok;
         }
 
@@ -1261,15 +1260,11 @@ private:
 
         ui estimateEdgeSupport(ui u, ui anchor) const
         {
-#ifndef NDEBUG
             Timer t_score;
-#endif
             ui estimate = solver.cheapEdgeSupport(u, anchor);
-#ifndef NDEBUG
             long long elapsed = t_score.elapsed();
             solver.stats.frontier_score_cheap_support_time += elapsed;
             solver.stats.frontier_score_time += elapsed;
-#endif
             return estimate;
         }
 
@@ -1651,6 +1646,7 @@ private:
     // when u becomes matched/unmatched, update anchor_count, active_frontier and anchor_support
     void updateFrontier(ui u, bool matched)
     {
+        Timer t_support_update;
         if (matched) updateFrontierStatus(u);
 
         // update u's neighbors in frontier
@@ -1672,6 +1668,7 @@ private:
         }
 
         if (!matched) updateFrontierStatus(u);
+        stats.support_update_time += t_support_update.elapsed();
     }
 
     // mark (u, anchor) as excluded, update anchor_count[u], active_frontier and anchor_support
@@ -1962,9 +1959,7 @@ private:
                 data_vertex_mark_pos[v] = (ui)candidate_vertices.size();
                 candidate_vertices.push_back(v);
                 candidate_support_counts.push_back(1);
-#ifndef NDEBUG
                 stats.terminal_bucket_candidate_checks++;
-#endif
             }
         }
         return live_anchor_count;
@@ -1974,17 +1969,19 @@ private:
         ui &feasible_count, ui &min_delta, vector<ui> &candidate_vertices,
         vector<ui> &candidate_support_counts)
     {
-#ifndef NDEBUG
         Timer t_terminal_bucket;
-#endif
         assert(cost <= threshold);
         ui remaining_budget = threshold - cost;
         buckets.assign((size_t)remaining_budget + 1, vector<ui>());
         feasible_count = 0;
         min_delta = std::numeric_limits<ui>::max();
+
+        Timer t_collect_support;
         ui live_anchor_count = collectTerminalCandidateSupports(u,
             candidate_vertices, candidate_support_counts);
+        stats.terminal_candidate_collect_time += t_collect_support.elapsed();
         if (live_anchor_count == 0) {
+            stats.terminal_bucket_time += t_terminal_bucket.elapsed();
             return false;
         }
 
@@ -2005,9 +2002,7 @@ private:
             }
         }
 
-#ifndef NDEBUG
         stats.terminal_bucket_time += t_terminal_bucket.elapsed();
-#endif
         return feasible_count > 0;
     }
 
@@ -2062,9 +2057,7 @@ private:
     void recordTerminalPrune()
     {
         stats.prun_calls++;
-#ifndef NDEBUG
         stats.terminal_prune_calls++;
-#endif
     }
 
     void enumerateTerminalTail(size_t pos, ui cost,
@@ -2075,9 +2068,7 @@ private:
             return;
         }
 
-#ifndef NDEBUG
         stats.terminal_tail_calls++;
-#endif
         assert(cost <= threshold);
 
         if (pos == tail_vertices.size()) {
@@ -2151,7 +2142,9 @@ private:
         stats.recursion_calls++;
 
         DfsBuffer &buf = dfsBufferForDepth(part_M.size());
+        Timer t_buffer_clear;
         buf.clearLocal();
+        stats.dfs_buffer_clear_time += t_buffer_clear.elapsed();
         SupportUndoScope support_undo_scope(*this, buf.local_support_snapshots);
         vector<ui> &candidate_vertices = buf.candidate_vertices;
         vector<ui> &candidate_anchor_counts = buf.candidate_anchor_counts;
@@ -2165,57 +2158,73 @@ private:
         const vector<char> *terminal_skip_vertices = nullptr;
 
         if (terminal_buckets_enabled) {
+            Timer t_terminal;
+            Timer t_terminal_scan;
             TerminalScan terminal_scan = markTerminalVertices(buf);
+            stats.terminal_scan_time += t_terminal_scan.elapsed();
+            stats.terminal_scan_calls++;
 
             if (terminal_scan.allRemainingTerminal()) {
+                Timer t_terminal_build;
+                stats.terminal_tail_build_calls++;
                 if (!buildTerminalTailVertices(buf.terminal_vertices,
                     current_cost, buf)) {
+                    stats.terminal_tail_build_time += t_terminal_build.elapsed();
+                    stats.terminal_time += t_terminal.elapsed();
                     recordTerminalPrune();
                     return;
                 }
+                stats.terminal_tail_build_time += t_terminal_build.elapsed();
 
+                Timer t_terminal_enum;
                 enumerateTerminalTail(0, current_cost, buf.terminal_tail_vertices);
+                stats.terminal_tail_enum_time += t_terminal_enum.elapsed();
+                stats.terminal_time += t_terminal.elapsed();
                 return;
             }
 
             if (terminal_scan.terminal_frontier_count > 0) {
+                Timer t_terminal_build;
+                stats.terminal_tail_build_calls++;
                 if (!buildTerminalTailVertices(buf.active_terminal_vertices,
                     current_cost, buf)) {
+                    stats.terminal_tail_build_time += t_terminal_build.elapsed();
+                    stats.terminal_time += t_terminal.elapsed();
                     recordTerminalPrune();
                     return;
                 }
+                stats.terminal_tail_build_time += t_terminal_build.elapsed();
 
                 ui remaining_budget = threshold - current_cost;
+                Timer t_min_delta;
                 if (terminalMinDeltaSum(buf.terminal_tail_vertices,
                     remaining_budget) > remaining_budget) {
+                    stats.terminal_min_delta_time += t_min_delta.elapsed();
+                    stats.terminal_time += t_terminal.elapsed();
                     recordTerminalPrune();
                     return;
                 }
+                stats.terminal_min_delta_time += t_min_delta.elapsed();
 
                 if (terminal_scan.hasNonterminalFrontier()) {
                     terminal_skip_vertices = &buf.terminal_skip;
-#ifndef NDEBUG
                     stats.terminal_delayed_vertices += terminal_scan.terminal_frontier_count;
-#endif
                 }
             }
+            stats.terminal_time += t_terminal.elapsed();
         }
 
         Timer t_frontier;
         ui max_branch_edges = threshold - current_cost + 1;
         {
-#ifndef NDEBUG
             Timer t_select;
-#endif
             if (!buf.branch_selector.collectTopActiveEdges(active_frontier,
                 max_branch_edges, top_edges, &buf.edge_score_cache,
                 terminal_skip_vertices)) {
                 stats.frontier_time += t_frontier.elapsed();
                 return;
             }
-#ifndef NDEBUG
             stats.frontier_select_time += t_select.elapsed();
-#endif
         }
 
 #if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY && !CDE_EDGE_IE_FIXED_ORDER
@@ -2232,9 +2241,7 @@ private:
 #endif
 
         {
-#ifndef NDEBUG
             Timer t_component;
-#endif
 #if CDE_EDGE_IE_TOPK_SUPPORT_DECAY || CDE_EDGE_IE_FIXED_ORDER
             (void)buf.branch_selector.restrictTopEdgesToCoveredComponent(top_edges,
                 buf.edge_score_cache, buf.component_id, buf.component_frontiers,
@@ -2248,9 +2255,7 @@ private:
                 buf.component_support_sums, selected_component_support_sum,
                 has_zero_support_component, terminal_skip_vertices);
 #endif
-#ifndef NDEBUG
             stats.frontier_component_time += t_component.elapsed();
-#endif
         }
         stats.frontier_time += t_frontier.elapsed();
 
@@ -2279,15 +2284,11 @@ private:
             assert(!excluded_edges[u][ua] && frontier_pos[u] != -1);
             assert(q_matrix[u][ua]);
 
-#ifndef NDEBUG
             Timer t_exclude_update;
-#endif
             current_cost++;
             excludeFrontierEdge(u, ua);
             buf.recordExcludedEdge(u, ua);
-#ifndef NDEBUG
             stats.exclude_update_time += t_exclude_update.elapsed();
-#endif
 
             if (current_cost > threshold) {
                 stats.prun_calls++;
@@ -2310,50 +2311,36 @@ private:
 
             // calculate the candidate vertices of u supported by anchor ua
             candidate_vertices.clear();
-#ifndef NDEBUG
             {
                 Timer t_cal_edge_support;
                 calEdgeSupport(u, ua, [&](ui v) {candidate_vertices.push_back(v);});
                 stats.branch_cal_edge_support_time += t_cal_edge_support.elapsed();
             }
-#else
-            calEdgeSupport(u, ua, [&](ui v) {candidate_vertices.push_back(v);});
-#endif
             // number of live anchors of u excluding anchor ua
             ui anchor_num = 0;
-#ifndef NDEBUG
             {
                 Timer t_count_anchors;
                 anchor_num = countAnchors(u, ua, candidate_vertices, candidate_anchor_counts);
                 stats.branch_count_anchors_time += t_count_anchors.elapsed();
             }
-#else
-            anchor_num = countAnchors(u, ua, candidate_vertices, candidate_anchor_counts);
-#endif
 
             ui remaining_budget = threshold - current_cost;
             buf.clearCandidateDeltaBuckets();
-#ifndef NDEBUG
             {
                 Timer t_delta_bucket;
-#endif
                 for (ui i = 0; i < candidate_vertices.size(); ++i) {
                     ui delta = anchor_num - candidate_anchor_counts[i];
                     if (delta <= remaining_budget) {
                         buf.addCandidateDelta(delta, candidate_vertices[i]);
                     }
                 }
-#ifndef NDEBUG
                 stats.branch_delta_bucket_time += t_delta_bucket.elapsed();
             }
-#endif
 
             // Include branch: use this frontier-anchor edge to add exactly one new query vertex.
-#ifndef NDEBUG
             Timer t_candidate_loop;
             long long candidate_child_time_before = child_dfs_time;
             long long candidate_support_update_time = 0;
-#endif
             for (ui delta = 0; delta <= remaining_budget; ++delta) {
                 const vector<ui> &delta_bucket = buf.candidate_delta_buckets[delta];
                 for (ui v : delta_bucket) {
@@ -2363,13 +2350,9 @@ private:
                     mapped_g[v] = (int)u;
                     part_M.push_back({ u, v });
 
-#ifndef NDEBUG
                     long long support_update_before = stats.support_update_time;
-#endif
                     updateFrontier(u, true);
-#ifndef NDEBUG
                     candidate_support_update_time += stats.support_update_time - support_update_before;
-#endif
 
                     Timer t_child;
                     dfs(next_cost);
@@ -2379,19 +2362,14 @@ private:
                     mapped_g[v] = -1;
                     mapped_q[u] = -1;
 
-#ifndef NDEBUG
                     support_update_before = stats.support_update_time;
-#endif
                     updateFrontier(u, false);
-#ifndef NDEBUG
                     candidate_support_update_time += stats.support_update_time - support_update_before;
-#endif
 
                     if (outputLimitReached()) break;
                 }
                 if (outputLimitReached()) break;
             }
-#ifndef NDEBUG
             {
                 long long candidate_elapsed = t_candidate_loop.elapsed();
                 long long candidate_excluded_time =
@@ -2400,22 +2378,17 @@ private:
                 stats.candidate_loop_time += candidate_elapsed > candidate_excluded_time
                     ? candidate_elapsed - candidate_excluded_time : 0;
             }
-#endif
 
             if (outputLimitReached()) break;
 
             // Exclude branch: skip this edge, no recursion, just update cost and state.
-#ifndef NDEBUG
             Timer t_exclude_update;
-#endif
             current_cost++;
             excludeFrontierEdge(u, ua);
             buf.recordExcludedEdge(u, ua);
 
             if (current_cost > threshold) {
-#ifndef NDEBUG
                 stats.exclude_update_time += t_exclude_update.elapsed();
-#endif
                 break;
             }
 
@@ -2426,9 +2399,7 @@ private:
                 }
             }
             markLiveAnchorSupportDirty(u);
-#ifndef NDEBUG
             stats.exclude_update_time += t_exclude_update.elapsed();
-#endif
         }
 
         {

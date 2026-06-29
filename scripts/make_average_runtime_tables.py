@@ -5,9 +5,9 @@ Build an average-runtime HTML report from SSM-GED summary results.
 The report is intentionally narrower than make_result_tables.py:
 
   - one output HTML file, named avg_runtime_by_t.html by default
-  - exactly one table for each selected t value, defaulting to t=0..6
   - one line chart per dataset, with t on the x axis and average runtime on
-    the y axis
+    a logarithmic y axis
+  - no per-t summary tables are written to the HTML output
 
 Runtime values are arithmetic means over all rows belonging to the same
 dataset, threshold, and algorithm. Timeout-like values are handled the same way
@@ -57,7 +57,7 @@ CountBuckets = Dict[Tuple[str, ...], Dict[str, Dict[str, int]]]
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create dataset-level average-runtime tables and line charts from "
+            "Create dataset-level average-runtime line charts from "
             "SSM-GED summary.tsv files."
         )
     )
@@ -93,7 +93,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--thresholds",
         default=",".join(DEFAULT_CHART_THRESHOLDS),
-        help="comma-separated t values to output; default: 0,1,2,3,4,5,6",
+        help="comma-separated t values to chart; default: 0,1,2,3,4,5,6",
     )
     parser.add_argument(
         "--dataset-columns",
@@ -264,24 +264,6 @@ def write_table_block(
     handle.write("</tbody></table></div></div>\n")
 
 
-def nice_tick_step(max_value: float, tick_count: int = 5) -> float:
-    if max_value <= 0:
-        return 1.0
-    raw_step = max_value / max(tick_count - 1, 1)
-    exponent = math.floor(math.log10(raw_step))
-    scale = 10.0 ** exponent
-    normalized = raw_step / scale
-    if normalized <= 1:
-        nice = 1.0
-    elif normalized <= 2:
-        nice = 2.0
-    elif normalized <= 5:
-        nice = 5.0
-    else:
-        nice = 10.0
-    return nice * scale
-
-
 def chart_segments(points: Sequence[Optional[Tuple[float, float]]]) -> List[List[Tuple[float, float]]]:
     segments: List[List[Tuple[float, float]]] = []
     current: List[Tuple[float, float]] = []
@@ -318,13 +300,26 @@ def build_line_chart_svg(
             '</div>'
         )
 
-    step = nice_tick_step(max(values))
-    y_max = max(step, math.ceil(max(values) / step) * step)
-    ticks = []
-    tick = 0.0
-    while tick <= y_max + step * 0.5:
-        ticks.append(tick)
-        tick += step
+    positive_values = [value for value in values if value > 0]
+    if not positive_values:
+        return (
+            '<div class="chart-card">'
+            f'<h3>{html.escape(title)}</h3>'
+            '<div class="chart-empty">No positive runtime data for this dataset.</div>'
+            '</div>'
+        )
+
+    min_value = min(positive_values)
+    max_value = max(positive_values)
+    min_exp = math.floor(math.log10(min_value))
+    max_exp = math.ceil(math.log10(max_value))
+    if min_exp == max_exp:
+        min_exp -= 1
+    while max_exp - min_exp > 8:
+        min_exp += 1
+    y_min = 10.0 ** min_exp
+    y_max = 10.0 ** max_exp
+    ticks = [10.0 ** exponent for exponent in range(min_exp, max_exp + 1)]
 
     left = 68
     right = 22
@@ -342,9 +337,9 @@ def build_line_chart_svg(
         return left + plot_width * index / (len(thresholds) - 1)
 
     def y_position(value: float) -> float:
-        if y_max <= 0:
-            return axis_bottom
-        return top + plot_height * (1.0 - min(max(value, 0.0), y_max) / y_max)
+        clipped = min(max(value, y_min), y_max)
+        portion = (math.log10(clipped) - min_exp) / (max_exp - min_exp)
+        return top + plot_height * (1.0 - portion)
 
     parts = [
         '<div class="chart-card">',
@@ -433,7 +428,7 @@ def build_line_chart_svg(
     parts.append(
         f'<text x="{y_title_x}" y="{y_title_y:.2f}" text-anchor="middle" '
         f'transform="rotate(-90 {y_title_x} {y_title_y:.2f})" '
-        'class="axis-title">Average runtime (ms)</text>'
+        'class="axis-title">Average runtime (ms, log scale)</text>'
     )
     parts.append(
         f'<text x="{left + plot_width / 2.0:.2f}" y="{height - 10}" '
@@ -462,12 +457,6 @@ h1 { font-size: 24px; margin: 0 0 8px; }
 h2 { font-size: 18px; margin: 28px 0 8px; }
 h3 { font-size: 14px; margin: 0 0 7px; }
 p { color: #4b5563; margin: 0 0 18px; }
-table { border-collapse: collapse; width: 100%; margin-bottom: 24px; font-size: 13px; }
-th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: right; white-space: nowrap; }
-th { background: #f3f4f6; position: sticky; top: 0; z-index: 1; }
-td.text, th.text { text-align: left; }
-.table-block { margin-bottom: 20px; }
-.table-wrap { overflow-x: auto; }
 .summary { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 18px; font-size: 12px; color: #374151; }
 .summary span { background: #f9fafb; border: 1px solid #e5e7eb; padding: 4px 8px; }
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 620px), 1fr)); gap: 12px; }
@@ -505,19 +494,6 @@ td.text, th.text { text-align: left; }
             f"<span>t values: {html.escape(', '.join(thresholds))}</span>"
             "</div>\n"
         )
-
-        columns = table_columns(dataset_columns, algorithms)
-        for threshold in thresholds:
-            handle.write(f"<h2>t={html.escape(threshold)}</h2>\n")
-            rows = table_rows_for_threshold(
-                dataset_keys,
-                algorithms,
-                threshold,
-                averages,
-                counts,
-                dataset_columns,
-            )
-            write_table_block(handle, columns, rows, dataset_columns)
 
         handle.write("<h2>Average runtime lines</h2>\n")
         handle.write('<div class="chart-grid">\n')
