@@ -7,9 +7,6 @@
 #define CDE_BLACK_WHITE_FIXED_ORDER 0
 #define CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY 1
 #define CDE_BLACK_WHITE_USE_DYNAMIC_SEARCH 1
-#ifndef CDE_BLACK_WHITE_DEFAULT_WHITE
-#define CDE_BLACK_WHITE_DEFAULT_WHITE 0
-#endif
 #define CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY_GAMMA 0.9
 
 #include "graph/graph.h"
@@ -147,6 +144,8 @@ public:
             return false;
         }
 
+        initBlackWhiteStaticColors();
+
 #if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
         initDataLabelDegreeIndex();
 #endif
@@ -166,7 +165,7 @@ public:
         results_ptr->clear();
 
 #if CDE_BLACK_WHITE_USE_DYNAMIC_SEARCH
-        ui root = selectInitialRootBlackWhite();
+        ui root = bw_static_root < qn ? bw_static_root : selectInitialRootBlackWhite();
         for (ui v0 : candidates[root]) {
             BlackWhiteState state;
             initBlackWhiteState(state);
@@ -360,6 +359,8 @@ private:
 #endif
 
     vector<MyBitset> candidates;
+    ui bw_static_root = 0;
+    vector<VertexColor> bw_static_color;
 
     vector<int> mapped_q;
     vector<int> mapped_g;
@@ -459,6 +460,8 @@ private:
         black_white_undo.clear();
         stats = TimeStats();
         terminal_buckets_enabled = CDE_BLACK_WHITE_TERMINAL_BUCKETS_DEFAULT != 0;
+        bw_static_root = 0;
+        bw_static_color.clear();
     }
 
     // ========================================================================
@@ -2068,6 +2071,20 @@ private:
         return root;
     }
 
+    void initBlackWhiteStaticColors()
+    {
+        bw_static_root = selectInitialRootBlackWhite();
+        bw_static_color.assign(qn, COLOR_WHITE);
+        if (bw_static_root < qn) {
+            bw_static_color[bw_static_root] = COLOR_BLACK;
+        }
+    }
+
+    bool shouldPreferStaticWhite(ui u) const
+    {
+        return u < bw_static_color.size() && bw_static_color[u] == COLOR_WHITE;
+    }
+
     bool commitRootBlack(BlackWhiteState &state, ui root, ui v) const
     {
         if (root >= qn || v >= gn || !candidates[root].contains(v)) {
@@ -2331,27 +2348,16 @@ private:
     bool chooseBlackWhite(const BlackWhiteState &state, ui u,
         const WhiteCandidateBuckets &white_candidate_buckets) const
     {
-#if CDE_BLACK_WHITE_DEFAULT_WHITE
-        if (white_candidate_buckets.feasible_count < 8) {
+        if (!shouldPreferStaticWhite(u) || white_candidate_buckets.empty()) {
             return false;
         }
 
-        bool has_future_neighbor = false;
         for (ui neighbor : q_neighbors[u]) {
             if (isWhite(state, neighbor)) {
                 return false;
             }
-            if (state.color[neighbor] == COLOR_UNSELECTED) {
-                has_future_neighbor = true;
-            }
         }
-        return has_future_neighbor;
-#else
-        (void)state;
-        (void)u;
-        (void)white_candidate_buckets;
-        return false;
-#endif
+        return true;
     }
 
     bool updateWhiteBucketForBlackNeighbor(BlackWhiteState &state, ui white_u,
@@ -2605,7 +2611,6 @@ private:
             return false;
         }
 
-#if CDE_BLACK_WHITE_DEFAULT_WHITE
         vector<ui> &white_neighbors =
             blackWhiteWhiteNeighborsBuffer(state.selected_count);
         collectSelectedWhiteNeighbors(state, u, white_neighbors);
@@ -2625,7 +2630,6 @@ private:
         if (emitted_white_branch) {
             return true;
         }
-#endif
         return addBlackVertexBranches(state, cost, u, anchor);
     }
 
@@ -2845,6 +2849,140 @@ private:
         return chosen;
     }
 
+    bool buildBlackWhiteTerminalWhiteCandidateBuckets(
+        const BlackWhiteState &state, ui white_u, ui cost,
+        vector<vector<ui>> &buckets, ui &feasible_count, ui &min_delta) const
+    {
+        assert(cost <= threshold);
+        if (!isWhite(state, white_u) || state.mapped_q[white_u] != -1) {
+            return false;
+        }
+
+        for (ui neighbor : q_neighbors[white_u]) {
+            if (isWhite(state, neighbor)) {
+                return false;
+            }
+        }
+
+        ui remaining_budget = threshold - cost;
+        buckets.assign((size_t)remaining_budget + 1, vector<ui>());
+        feasible_count = 0;
+        min_delta = std::numeric_limits<ui>::max();
+
+        const WhiteCandidateBuckets &white = state.white[white_u];
+        for (ui candidate : white.candidates) {
+            if (isDataVertexUsed(state, candidate)) {
+                continue;
+            }
+
+            ui delta = 0;
+            if (!computeBlackNeighborDelta(state, white_u, candidate, cost, delta)) {
+                continue;
+            }
+            if (delta > remaining_budget) {
+                continue;
+            }
+
+            buckets[delta].push_back(candidate);
+            feasible_count++;
+            if (delta < min_delta) {
+                min_delta = delta;
+            }
+        }
+
+        return feasible_count > 0;
+    }
+
+    bool buildBlackWhiteTerminalWhiteTailVertices(const BlackWhiteState &state,
+        ui cost, vector<TerminalTailVertex> &tail_vertices) const
+    {
+        tail_vertices.clear();
+        tail_vertices.reserve(state.white_count);
+
+        for (ui u = 0; u < qn; ++u) {
+            if (!isWhite(state, u)) {
+                continue;
+            }
+
+            TerminalTailVertex tail_vertex;
+            tail_vertex.u = u;
+            if (!buildBlackWhiteTerminalWhiteCandidateBuckets(state, u, cost,
+                tail_vertex.buckets, tail_vertex.feasible_count,
+                tail_vertex.min_delta)) {
+                return false;
+            }
+            tail_vertices.push_back(std::move(tail_vertex));
+        }
+
+        if (tail_vertices.size() != (size_t)state.white_count) {
+            return false;
+        }
+
+        std::sort(tail_vertices.begin(), tail_vertices.end(),
+            [this](const TerminalTailVertex &lhs, const TerminalTailVertex &rhs) {
+                if (lhs.feasible_count != rhs.feasible_count) {
+                    return lhs.feasible_count < rhs.feasible_count;
+                }
+                if (lhs.min_delta != rhs.min_delta) {
+                    return lhs.min_delta < rhs.min_delta;
+                }
+                if (q_degree[lhs.u] != q_degree[rhs.u]) {
+                    return q_degree[lhs.u] > q_degree[rhs.u];
+                }
+                return lhs.u < rhs.u;
+            });
+        return true;
+    }
+
+    void enumerateBlackWhiteTerminalWhiteTail(BlackWhiteState &state,
+        size_t pos, ui cost, vector<TerminalTailVertex> &tail_vertices)
+    {
+        if (outputLimitReached()) {
+            stats.output_limit_reached = true;
+            return;
+        }
+        assert(cost <= threshold);
+
+        if (pos == tail_vertices.size()) {
+            emitBlackWhiteResult(state);
+            return;
+        }
+
+        TerminalTailVertex &tail_vertex = tail_vertices[pos];
+        ui u = tail_vertex.u;
+        assert(isWhite(state, u));
+        assert(state.mapped_q[u] == -1);
+
+        ui remaining_budget = threshold - cost;
+        ui max_delta = std::min((ui)tail_vertex.buckets.size() - 1,
+            remaining_budget);
+        for (ui missing_delta = 0; missing_delta <= max_delta; ++missing_delta) {
+            const vector<ui> &bucket = tail_vertex.buckets[missing_delta];
+            for (ui v : bucket) {
+                if (isDataVertexUsed(state, v)) {
+                    continue;
+                }
+
+                state.mapped_q[u] = (int)v;
+                state.used_data_vertices.push_back(v);
+                state.used_data_flag[v] = 1;
+                state.part_M.push_back({ u, v });
+
+                enumerateBlackWhiteTerminalWhiteTail(state, pos + 1,
+                    cost + missing_delta, tail_vertices);
+
+                state.part_M.pop_back();
+                state.used_data_flag[v] = 0;
+                state.used_data_vertices.pop_back();
+                state.mapped_q[u] = -1;
+
+                if (outputLimitReached()) {
+                    return;
+                }
+            }
+        }
+    }
+
     void emitBlackWhiteResult(const BlackWhiteState &state)
     {
         assert(state.part_M.size() == qn);
@@ -2903,16 +3041,13 @@ private:
                 return;
             }
 
-            ui white_u = chooseWhiteVertexToMaterialize(state);
-            if (white_u == qn) {
+            vector<TerminalTailVertex> tail_vertices;
+            if (!buildBlackWhiteTerminalWhiteTailVertices(state, cost,
+                tail_vertices)) {
                 stats.prun_calls++;
                 return;
             }
-            materializeWhiteVertexBranches(state, cost, white_u,
-                [&](BlackWhiteState &next_state, ui next_cost) -> bool {
-                    bwSearch(next_state, next_cost);
-                    return true;
-                });
+            enumerateBlackWhiteTerminalWhiteTail(state, 0, cost, tail_vertices);
             return;
         }
 
