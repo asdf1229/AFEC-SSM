@@ -1,18 +1,32 @@
 #ifndef MATCHING_ALGORITHMS_CDE_BLACK_WHITE_H_
 #define MATCHING_ALGORITHMS_CDE_BLACK_WHITE_H_
 
-#define CDE_BLACK_WHITE_TERMINAL_BUCKETS_DEFAULT 0
 #define CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING 1
 #define CDE_BLACK_WHITE_ENABLE_BRIDGE_FILTERING 1
 #define CDE_BLACK_WHITE_FIXED_ORDER 0
+#define CDE_BLACK_WHITE_STATIC_COLOR 1
 #define CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY 1
-#define CDE_BLACK_WHITE_USE_DYNAMIC_SEARCH 1
 #define CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY_GAMMA 0.9
+#ifndef CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE
+#define CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE 1
+#endif
+#ifndef CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_ANCHOR_BRANCH
+#define CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_ANCHOR_BRANCH 1
+#endif
+#ifndef CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SUPPORT
+#define CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SUPPORT 1
+#endif
+
+#if CDE_BLACK_WHITE_FIXED_ORDER && CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
+#error "CDE_BLACK_WHITE_FIXED_ORDER and CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY are mutually exclusive."
+#endif
 
 #include "graph/graph.h"
 #include "matching/run_matching.h"
 #include "utility/utility.h"
 #include "utility/mybitset.h"
+#include <iterator>
+#include <unordered_map>
 using namespace std;
 
 // ============================================================================
@@ -32,29 +46,20 @@ class CDEBlackWhiteSolver {
     };
 
     struct WhiteCandidateBuckets {
-        vector<ui> candidates;
+        size_t begin = 0;
+        ui count = 0;
         ui feasible_count = 0;
 
         void clear()
         {
-            candidates.clear();
+            begin = 0;
+            count = 0;
             feasible_count = 0;
         }
 
         bool empty() const
         {
             return feasible_count == 0;
-        }
-
-        void reserve(size_t size)
-        {
-            candidates.reserve(size);
-        }
-
-        void addCandidate(ui candidate)
-        {
-            candidates.push_back(candidate);
-            feasible_count++;
         }
     };
 
@@ -65,6 +70,7 @@ class CDEBlackWhiteSolver {
         vector<VertexColor> color;
         vector<EdgeState> edge_state;
         vector<WhiteCandidateBuckets> white;
+        vector<ui> white_candidate_pool;
         vector<pair<ui, ui>> part_M;
         ui selected_count = 0;
         ui white_count = 0;
@@ -76,6 +82,11 @@ class CDEBlackWhiteSolver {
         double rank_support = std::numeric_limits<double>::max();
         ui live_anchor_count = 0;
         ui query_degree = 0;
+    };
+
+    struct CandidateAdjRange {
+        size_t begin = 0;
+        ui len = 0;
     };
 
     enum BlackWhiteUndoKind : unsigned char {
@@ -121,8 +132,7 @@ public:
 
         resetState();
 
-        // init q_matrix and q_neighbors
-        q_matrix.assign(qn, vector<char>(qn, 0));
+        // init q_neighbors
         q_neighbors.assign(qn, vector<ui>());
         q_degree.assign(qn, 0);
         for (ui u = 0; u < qn; ++u) {
@@ -130,7 +140,6 @@ public:
             q_neighbors[u].reserve(deg);
             for (ui i = 0; i < deg; ++i) {
                 ui u1 = nbrs[i];
-                q_matrix[u][u1] = 1;
                 q_neighbors[u].push_back(u1);
             }
             q_degree[u] = (ui)q_neighbors[u].size();
@@ -144,14 +153,16 @@ public:
             return false;
         }
 
-        initBlackWhiteStaticColors();
+        initBlackWhiteCandidateAdjIndex();
 
-#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
-        initDataLabelDegreeIndex();
+#if CDE_BLACK_WHITE_STATIC_COLOR
+        initBWColor();
 #endif
+
 #if CDE_BLACK_WHITE_FIXED_ORDER
-        initFixedEdgePriorities();
+        initBlackWhiteFixedEdgePriorities();
 #endif
+
         stats.init_time = t_init.elapsed();
         return true;
     }
@@ -164,8 +175,7 @@ public:
         results_ptr = &results;
         results_ptr->clear();
 
-#if CDE_BLACK_WHITE_USE_DYNAMIC_SEARCH
-        ui root = bw_static_root < qn ? bw_static_root : selectInitialRootBlackWhite();
+        ui root = bw_static_root < qn ? bw_static_root : selectBWRoot();
         for (ui v0 : candidates[root]) {
             BlackWhiteState state;
             initBlackWhiteState(state);
@@ -175,33 +185,9 @@ public:
             bwSearch(state, 0);
             if (outputLimitReached()) break;
         }
-#else
-        initDfsBuffer();
 
-        BranchSelector branch_selector(*this);
-        ui root = branch_selector.selectInitialRoot();
-
-        for (ui v0 : candidates[root]) {
-            mapped_q[root] = (int)v0;
-            mapped_g[v0] = (int)root;
-            part_M.push_back({ root, v0 });
-
-            updateFrontier(root, true);
-
-            dfs(0);
-
-            part_M.pop_back();
-
-            mapped_g[v0] = -1;
-            mapped_q[root] = -1;
-            updateFrontier(root, false);
-
-            if (outputLimitReached()) break;
-        }
-#endif
-
-        stats.dfs_time = t_search.elapsed();
-        stats.total_time = stats.init_time + stats.dfs_time;
+        stats.search_time = t_search.elapsed();
+        stats.total_time = stats.init_time + stats.search_time;
     }
 
     struct TimeStats {
@@ -214,33 +200,18 @@ public:
         long long filter_spoke_time = 0;
         ui filter_candidate_count = 0;
         // search breakdown
-        long long dfs_time = 0;
-        long long frontier_time = 0; // building and ordering U_frontier
-        long long frontier_select_time = 0;
-        long long frontier_component_time = 0;
-        long long frontier_sort_time = 0;
-        long long frontier_score_time = 0;
-        long long frontier_score_live_anchor_time = 0;
-        long long frontier_score_live_candidate_time = 0;
-        long long frontier_score_query_degree_time = 0;
-        long long frontier_score_anchor_support_time = 0;
-        long long branch_time = 0;   // candidate enumeration & matching in dfs
-        long long branch_cal_edge_support_time = 0;
-        long long branch_count_anchors_time = 0;
-        long long support_update_time = 0;
-        long long candidate_loop_time = 0;
-        long long exclude_update_time = 0;
+        long long search_time = 0;
         // counters
         long long recursion_calls = 0;
         long long prun_calls = 0;
+        long long white_bucket_rebuilds = 0;
+        long long graph_has_edge_checks = 0;
+        long long candidate_range_hits = 0;
+        long long candidate_range_misses = 0;
+        long long candidate_intersection_calls = 0;
+        long long candidate_edge_check_calls = 0;
         size_t result_count = 0;
         bool output_limit_reached = false;
-#ifndef NDEBUG
-        unsigned long long terminal_tail_calls = 0;
-        unsigned long long terminal_prune_calls = 0;
-        unsigned long long terminal_delayed_vertices = 0;
-        unsigned long long terminal_bucket_candidate_checks = 0;
-#endif
     } stats;
 
     void printStats() const
@@ -249,20 +220,13 @@ public:
             return whole > 0 ? (double)part / whole * 100.0 : 0.0;
             };
 
-        long long search_accounted_time = stats.frontier_time + stats.branch_time;
-        long long search_other_time = stats.dfs_time > search_accounted_time
-            ? stats.dfs_time - search_accounted_time : 0;
-
         printf("\n--- CDE-Black-White Time Analysis ---\n");
 #ifdef NDEBUG
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
         printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
         printf("  - Filter Time:     %.4lf ms\n", stats.filter_time / 1000.0);
         printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
-        printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, pct(stats.dfs_time, stats.total_time));
-        printf("  - Frontier Time:   %.4lf ms (%.2f%% of Search)\n", stats.frontier_time / 1000.0, pct(stats.frontier_time, stats.dfs_time));
-        printf("  - Branch Time:     %.4lf ms (%.2f%% of Search)\n", stats.branch_time / 1000.0, pct(stats.branch_time, stats.dfs_time));
-        printf("  - Search Other:    %.4lf ms (%.2f%% of Search)\n", search_other_time / 1000.0, pct(search_other_time, stats.dfs_time));
+        printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.search_time / 1000.0, pct(stats.search_time, stats.total_time));
 #else
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
         printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
@@ -273,34 +237,16 @@ public:
         printf("    - Spoke:         %.4lf ms (%.2f%% of Filter)\n", stats.filter_spoke_time / 1000.0, pct(stats.filter_spoke_time, stats.filter_time));
 #endif
         printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
-        printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.dfs_time / 1000.0, pct(stats.dfs_time, stats.total_time));
-        printf("  - Frontier Time:   %.4lf ms (%.2f%% of Search)\n", stats.frontier_time / 1000.0, pct(stats.frontier_time, stats.dfs_time));
-        printf("    - Select Best:   %.4lf ms (%.2f%% of Frontier)\n", stats.frontier_select_time / 1000.0, pct(stats.frontier_select_time, stats.frontier_time));
-        printf("    - Component:     %.4lf ms (%.2f%% of Frontier)\n", stats.frontier_component_time / 1000.0, pct(stats.frontier_component_time, stats.frontier_time));
-#ifdef ENABLE_FRONTIER_ORDERING
-        printf("    - Sort Hook:     %.4lf ms (%.2f%% of Frontier)\n", stats.frontier_sort_time / 1000.0, pct(stats.frontier_sort_time, stats.frontier_time));
-#endif
-        printf("    - Score Total:   %.4lf ms (%.2f%% of Select+Sort)\n", stats.frontier_score_time / 1000.0, pct(stats.frontier_score_time, stats.frontier_select_time + stats.frontier_sort_time));
-        printf("      - Live Anchors:   %.4lf ms (%.2f%% of Score)\n", stats.frontier_score_live_anchor_time / 1000.0, pct(stats.frontier_score_live_anchor_time, stats.frontier_score_time));
-        printf("      - Live Candidates:%.4lf ms (%.2f%% of Score)\n", stats.frontier_score_live_candidate_time / 1000.0, pct(stats.frontier_score_live_candidate_time, stats.frontier_score_time));
-        printf("      - Query Degree:   %.4lf ms (%.2f%% of Score)\n", stats.frontier_score_query_degree_time / 1000.0, pct(stats.frontier_score_query_degree_time, stats.frontier_score_time));
-        printf("      - Anchor Support: %.4lf ms (%.2f%% of Score)\n", stats.frontier_score_anchor_support_time / 1000.0, pct(stats.frontier_score_anchor_support_time, stats.frontier_score_time));
-        printf("  - Branch Time:     %.4lf ms (%.2f%% of Search)\n", stats.branch_time / 1000.0, pct(stats.branch_time, stats.dfs_time));
-        printf("    - branch_cal_edge_support_ms: %.4lf (%.2f%% of Branch)\n", stats.branch_cal_edge_support_time / 1000.0, pct(stats.branch_cal_edge_support_time, stats.branch_time));
-        printf("    - branch_count_anchors_ms:    %.4lf (%.2f%% of Branch)\n", stats.branch_count_anchors_time / 1000.0, pct(stats.branch_count_anchors_time, stats.branch_time));
-        printf("    - support_update_ms:          %.4lf (%.2f%% of Branch)\n", stats.support_update_time / 1000.0, pct(stats.support_update_time, stats.branch_time));
-        printf("    - candidate_loop_ms:          %.4lf (%.2f%% of Branch)\n", stats.candidate_loop_time / 1000.0, pct(stats.candidate_loop_time, stats.branch_time));
-        printf("    - exclude_update_ms:          %.4lf (%.2f%% of Branch)\n", stats.exclude_update_time / 1000.0, pct(stats.exclude_update_time, stats.branch_time));
-        printf("  - Search Other:    %.4lf ms (%.2f%% of Search)\n", search_other_time / 1000.0, pct(search_other_time, stats.dfs_time));
+        printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.search_time / 1000.0, pct(stats.search_time, stats.total_time));
 #endif
         printf("Recursion Calls:     %lld\n", stats.recursion_calls);
         printf("Pruning Calls:       %lld\n", stats.prun_calls);
-#ifndef NDEBUG
-        printf("Terminal Tail Calls: %llu\n", stats.terminal_tail_calls);
-        printf("Terminal Prunes:     %llu\n", stats.terminal_prune_calls);
-        printf("Terminal Delayed:    %llu\n", stats.terminal_delayed_vertices);
-        printf("Terminal Cand Checks:%llu\n", stats.terminal_bucket_candidate_checks);
-#endif
+        printf("White Rebuilds:      %lld\n", stats.white_bucket_rebuilds);
+        printf("Graph hasEdge Calls: %lld\n", stats.graph_has_edge_checks);
+        printf("Range Hits/Misses:   %lld / %lld\n",
+            stats.candidate_range_hits, stats.candidate_range_misses);
+        printf("Range Intersections: %lld\n", stats.candidate_intersection_calls);
+        printf("Range Edge Checks:   %lld\n", stats.candidate_edge_check_calls);
         printf("Results Found:       %zu\n", stats.result_count);
 #if MATCH_OUTPUT_LIMIT > 0
         printf("Output Limit:        %zu%s\n",
@@ -312,34 +258,6 @@ public:
     }
 
 private:
-#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
-    struct DataLabelDegreeCount {
-        LabelID label = 0;
-        ui count = 0;
-    };
-#endif
-
-    struct ActiveEdge {
-        ui u = 0;       // unmatched endpoint
-        ui anchor = 0;  // matched endpoint
-        ui anchor_support = std::numeric_limits<ui>::max();
-        double rank_support = std::numeric_limits<double>::max();
-        ui live_anchor_count = 0;
-        ui query_degree = 0;
-    };
-
-    struct EdgeScoreCache {
-        vector<vector<ActiveEdge>> active_edges_by_vertex;
-        vector<char> active_edges_cached;
-    };
-
-    struct SupportSnapshot {
-        ui u = 0;
-        ui anchor = 0;
-        ui value = 0;
-        char dirty = 0;
-    };
-
     const Graph *query_graph;
     const Graph *data_graph;
     vector<vector<pair<ui, ui>>> *results_ptr;
@@ -347,59 +265,29 @@ private:
     ui qn, gn;
     ui label_count;
     ui max_g_deg;
-    vector<vector<char>> q_matrix;
     vector<vector<ui>> q_neighbors;
     vector<ui> q_degree;
     vector<vector<char>> q_neighbor_is_bridge;
-#if CDE_BLACK_WHITE_FIXED_ORDER
-    vector<vector<ui>> fixed_edge_priority;
-#endif
-#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
-    vector<vector<DataLabelDegreeCount>> data_label_degrees;
-#endif
 
     vector<MyBitset> candidates;
     ui bw_static_root = 0;
     vector<VertexColor> bw_static_color;
-    vector<ui> bw_static_candidate_count;
     vector<vector<unsigned long long>> bw_static_edge_support;
+#if CDE_BLACK_WHITE_FIXED_ORDER
+    vector<vector<ui>> bw_static_edge_priority;
+#endif
 
-    vector<int> mapped_q;
-    vector<int> mapped_g;
-    vector<vector<char>> excluded_edges;
-    vector<MyBitset> excluded_cands;
-    vector<pair<ui, ui>> part_M;
     vector<BlackWhiteUndo> black_white_undo;
 
-    vector<ui> anchor_count;
-    vector<vector<ui>> support;
-    vector<vector<char>> support_dirty;
-    vector<SupportSnapshot> *active_support_snapshots = nullptr;
+    vector<unordered_map<unsigned long long, CandidateAdjRange>> bw_candidate_adj_index;
+    vector<ui> bw_candidate_adj_pool;
+    vector<CandidateAdjRange> bw_candidate_range_buffer;
+    vector<ui> bw_candidate_source_buffer;
+    vector<ui> bw_candidate_result_buffer;
+    vector<ui> bw_candidate_intersection_buffer;
+
     vector<vector<BlackWhiteActiveEdge>> bw_top_edges_buffer_by_depth;
     vector<vector<ui>> bw_white_neighbors_buffer_by_depth;
-    vector<int> frontier_pos;
-    vector<ui> active_frontier;
-    vector<ui> data_vertex_mark;
-    vector<ui> data_vertex_mark_pos;
-    bool terminal_buckets_enabled = true;
-    ui data_vertex_mark_token = 0;
-
-    struct TerminalScan {
-        ui unmatched_count = 0;
-        ui terminal_count = 0;
-        ui terminal_frontier_count = 0;
-        ui nonterminal_frontier_count = 0;
-
-        bool allRemainingTerminal() const
-        {
-            return unmatched_count > 0 && unmatched_count == terminal_count;
-        }
-
-        bool hasNonterminalFrontier() const
-        {
-            return nonterminal_frontier_count > 0;
-        }
-    };
 
     struct TerminalTailVertex {
         ui u = 0;
@@ -423,49 +311,31 @@ private:
 
     void resetState()
     {
-        mapped_q.assign(qn, -1);
-        mapped_g.assign(gn, -1);
-        excluded_edges.assign(qn, vector<char>(qn, 0));
-        part_M.clear();
-        part_M.reserve(qn);
-
         candidates.clear();
         candidates.assign(qn, MyBitset(gn));
 
-        excluded_cands.clear();
-        excluded_cands.assign(qn, MyBitset(gn));
-
-        q_matrix.clear();
         q_neighbors.clear();
         q_degree.clear();
         q_neighbor_is_bridge.clear();
-#if CDE_BLACK_WHITE_FIXED_ORDER
-        fixed_edge_priority.clear();
-#endif
-#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
-        data_label_degrees.clear();
-#endif
 
-        anchor_count.assign(qn, 0);
-        support.assign(qn, vector<ui>(qn, 0));
-        support_dirty.assign(qn, vector<char>(qn, 1));
-        active_support_snapshots = nullptr;
         bw_top_edges_buffer_by_depth.clear();
         bw_top_edges_buffer_by_depth.resize((size_t)qn + 1);
         bw_white_neighbors_buffer_by_depth.clear();
         bw_white_neighbors_buffer_by_depth.resize((size_t)qn + 1);
-        frontier_pos.assign(qn, -1);
-        active_frontier.clear();
-        data_vertex_mark.assign(gn, 0);
-        data_vertex_mark_pos.assign(gn, 0);
-        data_vertex_mark_token = 0;
         black_white_undo.clear();
+        bw_candidate_adj_index.clear();
+        bw_candidate_adj_pool.clear();
+        bw_candidate_range_buffer.clear();
+        bw_candidate_source_buffer.clear();
+        bw_candidate_result_buffer.clear();
+        bw_candidate_intersection_buffer.clear();
         stats = TimeStats();
-        terminal_buckets_enabled = CDE_BLACK_WHITE_TERMINAL_BUCKETS_DEFAULT != 0;
         bw_static_root = 0;
         bw_static_color.clear();
-        bw_static_candidate_count.clear();
         bw_static_edge_support.clear();
+#if CDE_BLACK_WHITE_FIXED_ORDER
+        bw_static_edge_priority.clear();
+#endif
     }
 
     // ========================================================================
@@ -1063,943 +933,109 @@ private:
         return CandidateFilter(*this).run();
     }
 
-#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
-    void initDataLabelDegreeIndex()
+    unsigned long long blackWhiteCandidateAdjKey(ui data_vertex, ui query_neighbor) const
     {
-        data_label_degrees.assign(gn, vector<DataLabelDegreeCount>());
-        vector<ui> label_counts(label_count, 0);
-
-        for (ui v = 0; v < gn; ++v) {
-            ui deg = 0;
-            const ui *neighbors = data_graph->getVertexNeighbors(v, deg);
-            data_label_degrees[v].reserve(std::min(deg, label_count));
-
-            for (ui i = 0; i < deg; ++i) {
-                LabelID label = data_graph->getVertexLabel(neighbors[i]);
-                assert(label >= 0 && (ui)label < label_count);
-                label_counts[(ui)label]++;
-            }
-
-            for (ui label = 0; label < label_count; ++label) {
-                ui count = label_counts[label];
-                if (count != 0) {
-                    data_label_degrees[v].push_back({ (LabelID)label, count });
-                    label_counts[label] = 0;
-                }
-            }
-        }
+        return ((unsigned long long)data_vertex << 32) |
+            (unsigned long long)query_neighbor;
     }
 
-    ui dataLabelDegree(ui v, LabelID label) const
+    void initBlackWhiteCandidateAdjIndex()
     {
-        if (v >= gn || label < 0 || (ui)label >= label_count) {
-            return 0;
-        }
+        bw_candidate_adj_index.clear();
+        bw_candidate_adj_index.resize(qn);
+        bw_candidate_adj_pool.clear();
 
-        const vector<DataLabelDegreeCount> &counts = data_label_degrees[v];
-        auto it = std::lower_bound(counts.begin(), counts.end(), label,
-            [](const DataLabelDegreeCount &item, LabelID target_label) {
-                return item.label < target_label;
-            });
-        if (it == counts.end() || it->label != label) {
-            return 0;
-        }
-        return it->count;
-    }
-
-    double initialTopkDecayRankSupport(ui u, ui anchor)
-    {
-        if (u >= qn || anchor >= qn || mapped_q[anchor] == -1) {
-            return 0.0;
-        }
-
-        LabelID label = query_graph->getVertexLabel(u);
-        ui label_degree = dataLabelDegree((ui)mapped_q[anchor], label);
-        ui candidate_count = (ui)candidates[u].size();
-        return (double)std::min(candidate_count, label_degree);
-    }
-#endif
-
-#if CDE_BLACK_WHITE_FIXED_ORDER
-    struct FixedEdgePriorityEntry {
-        ui u = 0;
-        ui anchor = 0;
-        unsigned long long pair_support = 0;
-        ui u_candidate_count = 0;
-        ui anchor_candidate_count = 0;
-    };
-
-    unsigned long long countStaticCandidateEdgePairs(ui u, ui u1) const
-    {
-        unsigned long long count = 0;
-        for (ui v : candidates[u]) {
-            ui degree = 0;
-            const ui *neighbors = data_graph->getVertexNeighbors(v, degree);
-            for (ui i = 0; i < degree; ++i) {
-                if (candidates[u1].contains(neighbors[i])) {
-                    count++;
-                }
-            }
-        }
-        return count;
-    }
-
-    void initFixedEdgePriorities()
-    {
-        const ui invalid_priority = std::numeric_limits<ui>::max();
-        fixed_edge_priority.assign(qn, vector<ui>(qn, invalid_priority));
-
-        vector<FixedEdgePriorityEntry> entries;
-        size_t directed_edge_count = 0;
+        size_t total_candidate_count = 0;
         for (ui u = 0; u < qn; ++u) {
-            directed_edge_count += q_neighbors[u].size();
+            total_candidate_count += (size_t)candidates[u].size();
+            bw_candidate_adj_index[u].reserve(
+                (size_t)candidates[u].size() * q_neighbors[u].size());
         }
-        entries.reserve(directed_edge_count);
+        bw_candidate_source_buffer.reserve(total_candidate_count);
+        bw_candidate_result_buffer.reserve(total_candidate_count);
+        bw_candidate_intersection_buffer.reserve(total_candidate_count);
+        bw_candidate_range_buffer.reserve(qn);
 
         for (ui u = 0; u < qn; ++u) {
-            for (ui u1 : q_neighbors[u]) {
-                if (u >= u1) {
-                    continue;
+            for (ui v : candidates[u]) {
+                ui degree = 0;
+                const ui *neighbors = data_graph->getVertexNeighbors(v, degree);
+
+                for (ui query_neighbor : q_neighbors[u]) {
+                    size_t begin = bw_candidate_adj_pool.size();
+                    for (ui i = 0; i < degree; ++i) {
+                        ui data_neighbor = neighbors[i];
+                        if (candidates[query_neighbor].contains(data_neighbor)) {
+                            bw_candidate_adj_pool.push_back(data_neighbor);
+                        }
+                    }
+
+                    ui len = (ui)(bw_candidate_adj_pool.size() - begin);
+                    if (len == 0) {
+                        continue;
+                    }
+
+                    CandidateAdjRange range;
+                    range.begin = begin;
+                    range.len = len;
+                    bw_candidate_adj_index[u].emplace(
+                        blackWhiteCandidateAdjKey(v, query_neighbor), range);
                 }
-
-                ui u_candidate_count = (ui)candidates[u].size();
-                ui u1_candidate_count = (ui)candidates[u1].size();
-                ui scan_u = u_candidate_count <= u1_candidate_count ? u : u1;
-                ui target_u = scan_u == u ? u1 : u;
-                unsigned long long pair_support =
-                    countStaticCandidateEdgePairs(scan_u, target_u);
-
-                FixedEdgePriorityEntry forward;
-                forward.u = u;
-                forward.anchor = u1;
-                forward.pair_support = pair_support;
-                forward.u_candidate_count = u_candidate_count;
-                forward.anchor_candidate_count = u1_candidate_count;
-                entries.push_back(forward);
-
-                FixedEdgePriorityEntry reverse;
-                reverse.u = u1;
-                reverse.anchor = u;
-                reverse.pair_support = pair_support;
-                reverse.u_candidate_count = u1_candidate_count;
-                reverse.anchor_candidate_count = u_candidate_count;
-                entries.push_back(reverse);
             }
-        }
-
-        std::sort(entries.begin(), entries.end(),
-            [&](const FixedEdgePriorityEntry &lhs,
-                const FixedEdgePriorityEntry &rhs) {
-                // pair_support / |Cand(anchor)| estimates the support seen after
-                // fixing one candidate for the anchor. Compare the ratios
-                // exactly so the priority is deterministic.
-                __uint128_t lhs_scaled =
-                    (__uint128_t)lhs.pair_support *
-                    std::max((ui)1, rhs.anchor_candidate_count);
-                __uint128_t rhs_scaled =
-                    (__uint128_t)rhs.pair_support *
-                    std::max((ui)1, lhs.anchor_candidate_count);
-                if (lhs_scaled != rhs_scaled) {
-                    return lhs_scaled < rhs_scaled;
-                }
-                if (lhs.u_candidate_count != rhs.u_candidate_count) {
-                    return lhs.u_candidate_count < rhs.u_candidate_count;
-                }
-                if (lhs.pair_support != rhs.pair_support) {
-                    return lhs.pair_support < rhs.pair_support;
-                }
-                if (q_degree[lhs.u] != q_degree[rhs.u]) {
-                    return q_degree[lhs.u] > q_degree[rhs.u];
-                }
-                if (q_degree[lhs.anchor] != q_degree[rhs.anchor]) {
-                    return q_degree[lhs.anchor] > q_degree[rhs.anchor];
-                }
-                if (lhs.u != rhs.u) {
-                    return lhs.u < rhs.u;
-                }
-                return lhs.anchor < rhs.anchor;
-            });
-
-        assert(entries.size() <= (size_t)std::numeric_limits<ui>::max());
-        for (size_t rank = 0; rank < entries.size(); ++rank) {
-            const FixedEdgePriorityEntry &entry = entries[rank];
-            fixed_edge_priority[entry.u][entry.anchor] = (ui)rank;
         }
     }
-#endif
-    // ========================================================================
 
-    // ========================================================================
-    // Branching
-    // ========================================================================
-    struct BranchSelector {
-    private:
-        CDEBlackWhiteSolver &solver;
-
-    public:
-        explicit BranchSelector(CDEBlackWhiteSolver &solver) : solver(solver) {}
-
-        ui selectInitialRoot() const
-        {
-            ui root = 0;
-            for (ui u = 1; u < solver.qn; ++u) {
-                if (solver.candidates[u].size() < solver.candidates[root].size() ||
-                    (solver.candidates[u].size() == solver.candidates[root].size() &&
-                        solver.q_degree[u] > solver.q_degree[root])) {
-                    root = u;
-                }
-            }
-            return root;
+    const CandidateAdjRange *findBlackWhiteCandidateAdjRange(ui from_query,
+        ui from_data, ui to_query) const
+    {
+        if (from_query >= bw_candidate_adj_index.size()) {
+            return nullptr;
         }
 
-        bool collectTopActiveEdges(const vector<ui> &component_frontier, ui max_count,
-            vector<ActiveEdge> &top_edges, EdgeScoreCache *edge_score_cache = nullptr,
-            const vector<char> *skip_query_vertices = nullptr) const
-        {
-            top_edges.clear();
-            if (max_count == 0) {
-                return false;
-            }
-
-            vector<ActiveEdge> uncached_edges;
-            for (ui u : component_frontier) {
-                if (u >= solver.qn) {
-                    continue;
-                }
-                if (shouldSkipQueryVertex(u, skip_query_vertices)) {
-                    continue;
-                }
-                if (edge_score_cache != nullptr) {
-                    const vector<ActiveEdge> &cached_edges = cachedActiveEdgesForVertex(u, *edge_score_cache);
-                    top_edges.insert(top_edges.end(), cached_edges.begin(), cached_edges.end());
-                }
-                else {
-                    collectActiveEdgesForVertex(u, uncached_edges);
-                    top_edges.insert(top_edges.end(), uncached_edges.begin(), uncached_edges.end());
-                }
-            }
-
-            if (top_edges.empty()) {
-                return false;
-            }
-
-#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
-            selectTopActiveEdgesWithDecay(max_count, top_edges);
-#else
-            auto better_edge = [&](const ActiveEdge &lhs, const ActiveEdge &rhs) {
-                return isBetterActiveEdge(lhs, rhs);
-                };
-            if (top_edges.size() > max_count) {
-                partial_sort(top_edges.begin(), top_edges.begin() + max_count,
-                    top_edges.end(), better_edge);
-                top_edges.resize(max_count);
-            }
-            else {
-                sort(top_edges.begin(), top_edges.end(), better_edge);
-            }
-#endif
-            return true;
+        const auto &index = bw_candidate_adj_index[from_query];
+        auto it = index.find(blackWhiteCandidateAdjKey(from_data, to_query));
+        if (it == index.end()) {
+            return nullptr;
         }
+        return &it->second;
+    }
 
-        bool restrictTopEdgesToCoveredComponent(vector<ActiveEdge> &top_edges,
-            EdgeScoreCache &edge_score_cache, vector<int> &component_id,
-            vector<vector<ui>> &component_frontiers,
-            vector<ui> &component_edge_counts, vector<ui> &component_seen_counts,
-            vector<double> &component_support_sums,
-            double &covered_component_support_sum, bool &has_zero_support_component,
-            const vector<char> *skip_query_vertices = nullptr) const
-        {
-            covered_component_support_sum = std::numeric_limits<double>::max();
-            has_zero_support_component = false;
-            if (top_edges.empty()) {
-                return false;
-            }
+    const ui *blackWhiteRangeBegin(const CandidateAdjRange &range) const
+    {
+        return bw_candidate_adj_pool.data() + range.begin;
+    }
 
-            size_t component_count = labelUnmatchedComponents(component_id,
-                component_frontiers, skip_query_vertices);
-            component_edge_counts.assign(component_count, 0);
-            component_seen_counts.assign(component_count, 0);
-            component_support_sums.assign(component_count, 0.0);
+    const ui *blackWhiteRangeEnd(const CandidateAdjRange &range) const
+    {
+        return blackWhiteRangeBegin(range) + range.len;
+    }
 
-            for (size_t id = 0; id < component_count; ++id) {
-                for (ui component_u : component_frontiers[id]) {
-                    const vector<ActiveEdge> &edges =
-                        cachedActiveEdgesForVertex(component_u, edge_score_cache);
-                    component_edge_counts[id] += (ui)edges.size();
-#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
-                    for (const ActiveEdge &edge : edges) {
-                        component_support_sums[id] += edge.rank_support;
-                    }
-#elif !CDE_BLACK_WHITE_FIXED_ORDER
-                    for (const ActiveEdge &edge : edges) {
-                        component_support_sums[id] += edge.anchor_support;
-                    }
-#endif
-                }
-            }
+    bool blackWhiteRangeContains(const CandidateAdjRange &range, ui value) const
+    {
+        return std::binary_search(blackWhiteRangeBegin(range),
+            blackWhiteRangeEnd(range), value);
+    }
 
-            for (size_t edge_idx = 0; edge_idx < top_edges.size(); ++edge_idx) {
-                const ActiveEdge &edge = top_edges[edge_idx];
-                if (edge.u >= component_id.size() || component_id[edge.u] < 0) {
-                    continue;
-                }
-
-                size_t id = (size_t)component_id[edge.u];
-                if (id >= component_edge_counts.size() ||
-                    component_edge_counts[id] == 0) {
-                    continue;
-                }
-
-                component_seen_counts[id]++;
-                if (component_seen_counts[id] != component_edge_counts[id]) {
-                    continue;
-                }
-
-#if !CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY && !CDE_BLACK_WHITE_FIXED_ORDER
-                if (component_support_sums[id] == 0.0) {
-                    has_zero_support_component = true;
-                    return false;
-                }
-#endif
-
-                covered_component_support_sum = component_support_sums[id];
-                top_edges.resize(edge_idx + 1);
-                return true;
-            }
-
+    bool blackWhiteCandidateAdjacent(ui from_query, ui from_data,
+        ui to_query, ui to_data)
+    {
+        stats.candidate_edge_check_calls++;
+        const CandidateAdjRange *range =
+            findBlackWhiteCandidateAdjRange(from_query, from_data, to_query);
+        if (range == nullptr) {
+            stats.candidate_range_misses++;
             return false;
         }
 
-    private:
-        bool shouldSkipQueryVertex(ui u, const vector<char> *skip_query_vertices) const
-        {
-            return skip_query_vertices != nullptr &&
-                u < skip_query_vertices->size() && (*skip_query_vertices)[u];
-        }
-
-        ui countLiveAnchors(ui u) const
-        {
-            ui count = 0;
-            for (ui anchor : solver.q_neighbors[u]) {
-                if (solver.mapped_q[anchor] != -1 && !solver.excluded_edges[u][anchor]) {
-                    count++;
-                }
-            }
-            return count;
-        }
-
-        ui countEdgeSupport(ui u, ui anchor) const
-        {
-            if (u >= solver.qn || anchor >= solver.qn ||
-                solver.mapped_q[anchor] == -1 || solver.excluded_edges[u][anchor]) {
-                return 0;
-            }
-
-            if (solver.support_dirty[u][anchor]) {
-#ifndef NDEBUG
-                Timer t_score;
-#endif
-                solver.recordSupportSnapshot(u, anchor);
-                solver.support[u][anchor] = solver.calEdgeSupport(u, anchor, [](ui) {});
-                solver.support_dirty[u][anchor] = 0;
-#ifndef NDEBUG
-                long long elapsed = t_score.elapsed();
-                solver.stats.frontier_score_anchor_support_time += elapsed;
-                solver.stats.frontier_score_time += elapsed;
-#endif
-            }
-#ifndef NDEBUG
-            else {
-                Timer t_score;
-                ui exact_count = solver.calEdgeSupport(u, anchor, [](ui) {});
-                long long elapsed = t_score.elapsed();
-                solver.stats.frontier_score_anchor_support_time += elapsed;
-                solver.stats.frontier_score_time += elapsed;
-                assert(solver.support[u][anchor] >= exact_count);
-            }
-#endif
-            return solver.support[u][anchor];
-        }
-
-        bool isBetterActiveEdge(const ActiveEdge &lhs, const ActiveEdge &rhs) const
-        {
-#if CDE_BLACK_WHITE_FIXED_ORDER
-            ui lhs_priority = solver.fixed_edge_priority[lhs.u][lhs.anchor];
-            ui rhs_priority = solver.fixed_edge_priority[rhs.u][rhs.anchor];
-            if (lhs_priority != rhs_priority) {
-                return lhs_priority < rhs_priority;
-            }
-            if (lhs.u != rhs.u) {
-                return lhs.u < rhs.u;
-            }
-            return lhs.anchor < rhs.anchor;
-#elif CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
-            double lhs_scaled =
-                lhs.rank_support * (double)std::max((ui)1, rhs.live_anchor_count);
-            double rhs_scaled =
-                rhs.rank_support * (double)std::max((ui)1, lhs.live_anchor_count);
-            double scale = std::max(1.0,
-                std::max(std::fabs(lhs_scaled), std::fabs(rhs_scaled)));
-            if (std::fabs(lhs_scaled - rhs_scaled) > 1e-12 * scale) {
-                return lhs_scaled < rhs_scaled;
-            }
-            if (lhs.live_anchor_count != rhs.live_anchor_count) {
-                return lhs.live_anchor_count > rhs.live_anchor_count;
-            }
-            if (lhs.query_degree != rhs.query_degree) {
-                return lhs.query_degree > rhs.query_degree;
-            }
-            if (lhs.u != rhs.u) {
-                return lhs.u < rhs.u;
-            }
-            return lhs.anchor < rhs.anchor;
-#else
-            if (lhs.anchor_support != rhs.anchor_support) {
-                return lhs.anchor_support < rhs.anchor_support;
-            }
-            if (lhs.live_anchor_count != rhs.live_anchor_count) {
-                return lhs.live_anchor_count > rhs.live_anchor_count;
-            }
-            if (lhs.query_degree != rhs.query_degree) {
-                return lhs.query_degree > rhs.query_degree;
-            }
-            if (lhs.u != rhs.u) {
-                return lhs.u < rhs.u;
-            }
-            return lhs.anchor < rhs.anchor;
-#endif
-        }
-
-#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
-        void selectTopActiveEdgesWithDecay(ui max_count, vector<ActiveEdge> &top_edges) const
-        {
-            size_t selected_limit = top_edges.size();
-            if ((size_t)max_count < selected_limit) {
-                selected_limit = (size_t)max_count;
-            }
-
-            const double gamma = (double)CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY_GAMMA;
-            for (size_t selected_idx = 0; selected_idx < selected_limit; ++selected_idx) {
-                size_t best_idx = selected_idx;
-                for (size_t i = selected_idx + 1; i < top_edges.size(); ++i) {
-                    if (isBetterActiveEdge(top_edges[i], top_edges[best_idx])) {
-                        best_idx = i;
-                    }
-                }
-
-                if (best_idx != selected_idx) {
-                    std::swap(top_edges[selected_idx], top_edges[best_idx]);
-                }
-
-                const ActiveEdge &selected = top_edges[selected_idx];
-                double candidate_count = (double)solver.candidates[selected.u].size();
-                if (candidate_count <= 0.0) {
-                    continue;
-                }
-
-                double factor = 1.0 - gamma * selected.rank_support / candidate_count;
-                if (factor < 0.0) {
-                    factor = 0.0;
-                }
-                else if (factor > 1.0) {
-                    factor = 1.0;
-                }
-
-                if (factor == 1.0) {
-                    continue;
-                }
-
-                for (size_t i = selected_idx + 1; i < top_edges.size(); ++i) {
-                    if (top_edges[i].u == selected.u) {
-                        top_edges[i].rank_support *= factor;
-                    }
-                }
-            }
-
-            top_edges.resize(selected_limit);
-        }
-#endif
-
-        void collectActiveEdgesForVertex(ui u, vector<ActiveEdge> &edges) const
-        {
-            edges.clear();
-            if (u >= solver.qn || solver.mapped_q[u] != -1 || solver.frontier_pos[u] == -1) {
-                return;
-            }
-
-            ui live_anchor_count = countLiveAnchors(u);
-            if (live_anchor_count == 0) {
-                return;
-            }
-
-            for (ui anchor : solver.q_neighbors[u]) {
-                if (solver.mapped_q[anchor] == -1 || solver.excluded_edges[u][anchor]) {
-                    continue;
-                }
-
-                ActiveEdge edge;
-                edge.u = u;
-                edge.anchor = anchor;
-#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
-                edge.rank_support = solver.initialTopkDecayRankSupport(u, anchor);
-#elif !CDE_BLACK_WHITE_FIXED_ORDER
-                edge.anchor_support = countEdgeSupport(u, anchor);
-#endif
-                edge.live_anchor_count = live_anchor_count;
-                edge.query_degree = solver.q_degree[u];
-                edges.push_back(edge);
-            }
-        }
-
-        const vector<ActiveEdge> &cachedActiveEdgesForVertex(ui u, EdgeScoreCache &cache) const
-        {
-            if (cache.active_edges_by_vertex.empty()) {
-                cache.active_edges_by_vertex.resize(solver.qn);
-                cache.active_edges_cached.assign(solver.qn, 0);
-            }
-            if (!cache.active_edges_cached[u]) {
-                collectActiveEdgesForVertex(u, cache.active_edges_by_vertex[u]);
-                cache.active_edges_cached[u] = 1;
-            }
-            return cache.active_edges_by_vertex[u];
-        }
-
-        size_t labelUnmatchedComponents(vector<int> &component_id,
-            vector<vector<ui>> &component_frontiers,
-            const vector<char> *skip_query_vertices) const
-        {
-            // Label every unmatched component in one graph sweep, then reuse the
-            // labels for all top edges in this DFS state.
-            component_id.assign(solver.qn, -1);
-            for (vector<ui> &frontier : component_frontiers) {
-                frontier.clear();
-            }
-
-            size_t component_count = 0;
-            queue<ui> q;
-            for (ui start = 0; start < solver.qn; ++start) {
-                if (solver.mapped_q[start] != -1 ||
-                    shouldSkipQueryVertex(start, skip_query_vertices) ||
-                    component_id[start] != -1) {
-                    continue;
-                }
-
-                int id = (int)component_count++;
-                if ((size_t)id == component_frontiers.size()) {
-                    component_frontiers.emplace_back();
-                }
-                component_id[start] = id;
-                q.push(start);
-
-                while (!q.empty()) {
-                    ui curr = q.front();
-                    q.pop();
-
-                    if (solver.frontier_pos[curr] != -1) {
-                        component_frontiers[(size_t)id].push_back(curr);
-                    }
-
-                    for (ui nbr : solver.q_neighbors[curr]) {
-                        if (solver.mapped_q[nbr] == -1 &&
-                            !shouldSkipQueryVertex(nbr, skip_query_vertices) &&
-                            component_id[nbr] == -1) {
-                            component_id[nbr] = id;
-                            q.push(nbr);
-                        }
-                    }
-                }
-            }
-            return component_count;
-        }
-
-    };
-
-    ui nextDataVertexMarkToken()
-    {
-        if (++data_vertex_mark_token == 0) {
-            std::fill(data_vertex_mark.begin(), data_vertex_mark.end(), 0);
-            data_vertex_mark_token = 1;
-        }
-        return data_vertex_mark_token;
+        stats.candidate_range_hits++;
+        return blackWhiteRangeContains(*range, to_data);
     }
 
-    ui markDataVertexNeighbors(ui v)
+    bool blackWhiteGraphHasEdge(ui u, ui v)
     {
-        ui token = nextDataVertexMarkToken();
-        if (v >= gn) {
-            return token;
-        }
-
-        ui deg = 0;
-        const ui *nbrs = data_graph->getVertexNeighbors(v, deg);
-        for (ui i = 0; i < deg; ++i) {
-            data_vertex_mark[nbrs[i]] = token;
-        }
-        return token;
+        stats.graph_has_edge_checks++;
+        return data_graph->hasEdge(u, v);
     }
-
-    ui countAnchorsByMark(ui u, ui selected_anchor, const vector<ui> &candidate_vertices, vector<ui> &anchor_counts)
-    {
-        anchor_counts.assign(candidate_vertices.size(), 0);
-        ui token = nextDataVertexMarkToken();
-        for (ui i = 0; i < candidate_vertices.size(); ++i) {
-            ui v = candidate_vertices[i];
-            assert(v < gn);
-            data_vertex_mark[v] = token;
-            data_vertex_mark_pos[v] = i;
-        }
-        ui anchor_num = 0;
-
-        for (ui anchor : q_neighbors[u]) {
-            if (anchor == selected_anchor) continue;
-            if (mapped_q[anchor] == -1 || excluded_edges[u][anchor]) continue;
-
-            anchor_num++;
-            ui deg = 0;
-            const ui *nbrs = data_graph->getVertexNeighbors((ui)mapped_q[anchor], deg);
-            for (ui i = 0; i < deg; ++i) {
-                ui v = nbrs[i];
-                if (data_vertex_mark[v] == token) {
-                    anchor_counts[data_vertex_mark_pos[v]]++;
-                }
-            }
-        }
-
-        return anchor_num;
-    }
-
-    ui countAnchorsByHasEdge(ui u, ui selected_anchor, const vector<ui> &candidate_vertices, vector<ui> &anchor_counts) const
-    {
-        anchor_counts.assign(candidate_vertices.size(), 0);
-        ui anchor_num = 0;
-        for (ui anchor : q_neighbors[u]) {
-            if (anchor == selected_anchor) continue;
-            if (mapped_q[anchor] == -1 || excluded_edges[u][anchor]) continue;
-            anchor_num++;
-        }
-
-        for (ui i = 0; i < candidate_vertices.size(); ++i) {
-            ui v = candidate_vertices[i];
-            for (ui anchor : q_neighbors[u]) {
-                if (anchor == selected_anchor) continue;
-                if (mapped_q[anchor] == -1 || excluded_edges[u][anchor]) continue;
-                if (data_graph->hasEdge(v, (ui)mapped_q[anchor])) {
-                    anchor_counts[i]++;
-                }
-            }
-        }
-
-        return anchor_num;
-    }
-
-    // heuristic to decide whether to use mark-based counting or has-edge checking.
-    bool useMarkForAnchorCount(ui u, ui selected_anchor, size_t vertex_count) const
-    {
-        auto binary_search_cost = [](ui degree) -> size_t {
-            size_t cost = 1;
-            for (; degree > 1; degree >>= 1) ++cost;
-            return cost;
-        };
-
-        size_t mark_cost = vertex_count * 2;
-        size_t has_edge_cost = 0;
-
-        for (ui anchor : q_neighbors[u]) {
-            if (anchor == selected_anchor) continue;
-            if (mapped_q[anchor] == -1 || excluded_edges[u][anchor]) continue;
-
-            ui mapped_anchor = (ui)mapped_q[anchor];
-            ui degree = data_graph->getVertexDegree(mapped_anchor);
-
-            mark_cost += degree;
-            has_edge_cost += vertex_count * binary_search_cost(degree);
-        }
-
-        return mark_cost <= has_edge_cost;
-    }
-
-    // count u's candidate vertices that are adjacent to each anchor's mapped data vertex
-    // and store the counts in anchor_counts
-    // return the number of anchors in query graph excluding selected_anchor and excluded ones.
-    ui countAnchors(ui u, ui ua, const vector<ui> &candidate_vertices, vector<ui> &anchor_counts)
-    {
-        if (candidate_vertices.empty()) return 0;
-        if (useMarkForAnchorCount(u, ua, candidate_vertices.size())) {
-            return countAnchorsByMark(u, ua, candidate_vertices, anchor_counts);
-        }
-        return countAnchorsByHasEdge(u, ua, candidate_vertices, anchor_counts);
-    }
-
-    // ========================================================================
-    // Maintain Frontier and Anchor Support
-    // ========================================================================
-    // calculate support[u][anchor] or calculate all candidates of u by (u, anchor)
-    template <typename Visitor>
-    ui calEdgeSupport(ui u, ui anchor, Visitor visit) const
-    {
-        if (u >= qn || anchor >= qn || mapped_q[anchor] == -1 || excluded_edges[u][anchor]) {
-            return 0;
-        }
-
-        ui count = 0;
-        ui deg = 0;
-        const ui *nbrs = data_graph->getVertexNeighbors((ui)mapped_q[anchor], deg);
-        for (ui i = 0; i < deg; ++i) {
-            ui v = nbrs[i];
-            if (!candidates[u].contains(v)) continue;
-            if (mapped_g[v] != -1) continue;
-            if (excluded_cands[u].contains(v)) continue;
-            count++;
-            visit(v);
-        }
-        return count;
-    }
-
-    inline void recordSupportSnapshot(ui u, ui anchor)
-    {
-        if (active_support_snapshots == nullptr) {
-            return;
-        }
-        SupportSnapshot snapshot;
-        snapshot.u = u;
-        snapshot.anchor = anchor;
-        snapshot.value = support[u][anchor];
-        snapshot.dirty = support_dirty[u][anchor];
-        active_support_snapshots->push_back(snapshot);
-    }
-
-    inline void markSupportDirty(ui u, ui anchor)
-    {
-        if (u >= qn || anchor >= qn || support_dirty[u][anchor]) {
-            return;
-        }
-        recordSupportSnapshot(u, anchor);
-        support_dirty[u][anchor] = 1;
-    }
-
-    inline void markLiveAnchorSupportDirty(ui u)
-    {
-        if (u >= qn || mapped_q[u] != -1 || frontier_pos[u] == -1) {
-            return;
-        }
-        for (ui anchor : q_neighbors[u]) {
-            if (mapped_q[anchor] != -1 && !excluded_edges[u][anchor]) {
-                markSupportDirty(u, anchor);
-            }
-        }
-    }
-
-    // update active_frontier, frontier_pos, anchor_support
-    inline void updateFrontierStatus(ui u)
-    {
-        bool should_be = (mapped_q[u] == -1 && anchor_count[u] > 0);
-        bool is_in = (frontier_pos[u] != -1);
-
-        if (should_be && !is_in) {
-            // add u to frontier
-            frontier_pos[u] = active_frontier.size();
-            active_frontier.push_back(u);
-        }
-        else if (!should_be && is_in) {
-            // remove u from frontier
-            ui idx = frontier_pos[u];
-            ui last_u = active_frontier.back();
-            active_frontier[idx] = last_u;
-            frontier_pos[last_u] = idx;
-            active_frontier.pop_back();
-            frontier_pos[u] = -1;
-        }
-    }
-
-    // when u becomes matched/unmatched, update anchor_count, active_frontier and anchor_support
-    void updateFrontier(ui u, bool matched)
-    {
-        if (matched) updateFrontierStatus(u);
-
-        // update u's neighbors in frontier
-        for (ui u1 : q_neighbors[u]) {
-            if(excluded_edges[u][u1]) continue;
-
-            if (matched) {
-                anchor_count[u1]++;
-                updateFrontierStatus(u1);
-
-                if (mapped_q[u1] == -1 && frontier_pos[u1] != -1) {
-                    markSupportDirty(u1, u);
-                }
-            }
-            else {
-                anchor_count[u1]--;
-                updateFrontierStatus(u1);
-            }
-        }
-
-        if (!matched) updateFrontierStatus(u);
-    }
-
-    // mark (u, anchor) as excluded, update anchor_count[u], active_frontier and anchor_support
-    void excludeFrontierEdge(ui u, ui anchor)
-    {
-        excluded_edges[u][anchor] = 1;
-        excluded_edges[anchor][u] = 1;
-        assert(anchor_count[u] > 0);
-        anchor_count[u]--;
-        if(anchor_count[u] == 0) updateFrontierStatus(u);
-        markLiveAnchorSupportDirty(u);
-    }
-
-    // restore (u, anchor), update anchor_count[u], active_frontier and anchor_support
-    void restoreFrontierEdge(ui u, ui anchor)
-    {
-        excluded_edges[u][anchor] = 0;
-        excluded_edges[anchor][u] = 0;
-        anchor_count[u]++;
-        if(anchor_count[u] == 1) updateFrontierStatus(u);
-    }
-
-    struct SupportUndoScope {
-        CDEBlackWhiteSolver &solver;
-        vector<SupportSnapshot> *previous_snapshots;
-        vector<SupportSnapshot> &snapshots;
-
-        SupportUndoScope(CDEBlackWhiteSolver &solver, vector<SupportSnapshot> &snapshots)
-            : solver(solver),
-            previous_snapshots(solver.active_support_snapshots),
-            snapshots(snapshots)
-        {
-            solver.active_support_snapshots = &snapshots;
-        }
-
-        ~SupportUndoScope()
-        {
-            for (auto it = snapshots.rbegin(); it != snapshots.rend(); ++it) {
-                solver.support[it->u][it->anchor] = it->value;
-                solver.support_dirty[it->u][it->anchor] = it->dirty;
-            }
-            snapshots.clear();
-            solver.active_support_snapshots = previous_snapshots;
-        }
-    };
-    // ========================================================================
-
-    // ========================================================================
-    // DFS Buffer
-    // ========================================================================
-    struct DfsBuffer {
-        vector<ActiveEdge> top_edges;
-        vector<ui> candidate_vertices;
-        vector<ui> candidate_anchor_counts;
-        vector<int> component_id;
-        vector<vector<ui>> component_frontiers;
-        vector<ui> component_edge_counts;
-        vector<ui> component_seen_counts;
-        vector<double> component_support_sums;
-        vector<char> terminal_skip;
-        vector<ui> terminal_vertices;
-        vector<ui> active_terminal_vertices;
-        vector<TerminalTailVertex> terminal_tail_vertices;
-        EdgeScoreCache edge_score_cache;
-        BranchSelector branch_selector;
-        vector<SupportSnapshot> local_support_snapshots;
-        explicit DfsBuffer(CDEBlackWhiteSolver &solver)
-            : branch_selector(solver)
-        {}
-
-        // reserve space for dfs buffers
-        void reserve(ui threshold, ui max_g_deg, ui qn, ui gn)
-        {
-            top_edges.reserve((size_t)threshold + 1);
-            candidate_vertices.reserve(max_g_deg);
-            candidate_anchor_counts.reserve(max_g_deg);
-            component_id.reserve(qn);
-            component_frontiers.reserve(qn);
-            component_edge_counts.reserve(qn);
-            component_seen_counts.reserve(qn);
-            component_support_sums.reserve(qn);
-            terminal_skip.reserve(qn);
-            terminal_vertices.reserve(qn);
-            active_terminal_vertices.reserve(qn);
-            terminal_tail_vertices.reserve(qn);
-            local_excluded_edges.reserve((size_t)threshold + 1);
-            size_t cand_size = std::min((size_t)gn, ((size_t)threshold + 1) * (size_t)max_g_deg);
-            local_excluded_cands.reserve(cand_size);
-        }
-
-        void clearLocal()
-        {
-            for (vector<ActiveEdge> &edges : edge_score_cache.active_edges_by_vertex) {
-                edges.clear();
-            }
-            std::fill(edge_score_cache.active_edges_cached.begin(),
-                edge_score_cache.active_edges_cached.end(), 0);
-            component_id.clear();
-            component_edge_counts.clear();
-            component_seen_counts.clear();
-            component_support_sums.clear();
-            terminal_vertices.clear();
-            active_terminal_vertices.clear();
-            terminal_tail_vertices.clear();
-            local_excluded_edges.clear();
-            local_excluded_cands.clear();
-            local_support_snapshots.clear();
-        }
-
-        void recordExcludedEdge(ui u, ui anchor)
-        {
-            local_excluded_edges.push_back({ u, anchor });
-        }
-
-        void recordExcludedCands(ui u, ui v)
-        {
-            local_excluded_cands.push_back({ u, v });
-        }
-
-        void restoreLocalChanges(CDEBlackWhiteSolver &solver)
-        {
-            for (auto &p : local_excluded_cands) {
-                solver.excluded_cands[p.first].remove(p.second);
-            }
-
-            for (auto it = local_excluded_edges.rbegin(); it != local_excluded_edges.rend(); ++it) {
-                const auto &e = *it;
-                ui u = e.first;
-                ui ua = e.second;
-                assert(solver.mapped_q[u] == -1);
-                assert(solver.mapped_q[ua] != -1);
-
-                solver.restoreFrontierEdge(u, ua);
-            }
-        }
-
-    private:
-        vector<pair<ui, ui>> local_excluded_edges;
-        vector<pair<ui, ui>> local_excluded_cands;
-    };
-
-    vector<DfsBuffer> dfs_buffers;
-
-    void reserveDfsBuffer(DfsBuffer &buf) const
-    {
-        buf.reserve(threshold, max_g_deg, qn, gn);
-    }
-
-    void initDfsBuffer()
-    {
-        dfs_buffers.clear();
-        dfs_buffers.reserve((size_t)qn + 1);
-    }
-
-    DfsBuffer &dfsBufferForDepth(size_t depth)
-    {
-        assert(depth <= qn);
-        assert(dfs_buffers.capacity() >= (size_t)qn + 1);
-        while (dfs_buffers.size() <= depth) {
-            dfs_buffers.emplace_back(*this);
-            reserveDfsBuffer(dfs_buffers.back());
-        }
-        return dfs_buffers[depth];
-    }
-    // ========================================================================
 
     // ========================================================================
     // Dynamic black/white search
@@ -2014,6 +1050,8 @@ private:
         state.edge_state.assign((size_t)qn * qn, EDGE_UNDECIDED);
         state.white.clear();
         state.white.resize(qn);
+        state.white_candidate_pool.clear();
+        state.white_candidate_pool.reserve(stats.filter_candidate_count);
         state.part_M.clear();
         state.part_M.reserve(qn);
         state.selected_count = 0;
@@ -2062,147 +1100,114 @@ private:
         return buffer;
     }
 
-    unsigned long long countBlackWhiteStaticEdgeSupport(ui u, ui neighbor) const
-    {
-        unsigned long long count = 0;
-        for (int candidate : candidates[u]) {
-            ui v = (ui)candidate;
-            ui degree = 0;
-            const ui *neighbors = data_graph->getVertexNeighbors(v, degree);
-            for (ui i = 0; i < degree; ++i) {
-                if (candidates[neighbor].contains(neighbors[i])) {
-                    count++;
-                }
-            }
-        }
-        return count;
-    }
+#if CDE_BLACK_WHITE_FIXED_ORDER
+    struct BlackWhiteFixedEdgePriorityEntry {
+        ui u = 0;
+        ui anchor = 0;
+        unsigned long long pair_support = 0;
+        ui u_candidate_count = 0;
+        ui anchor_candidate_count = 0;
+    };
 
-    void initBlackWhiteStaticEdgeSupport()
+    void initBlackWhiteFixedEdgePriorities()
     {
-        bw_static_candidate_count.assign(qn, 0);
-        for (ui u = 0; u < qn; ++u) {
-            bw_static_candidate_count[u] = (ui)candidates[u].size();
-        }
+        const ui invalid_priority = std::numeric_limits<ui>::max();
+        bw_static_edge_priority.assign(qn, vector<ui>(qn, invalid_priority));
 
-        bw_static_edge_support.assign(qn,
-            vector<unsigned long long>(qn, 0));
+        vector<BlackWhiteFixedEdgePriorityEntry> entries;
+        size_t directed_edge_count = 0;
         for (ui u = 0; u < qn; ++u) {
-            for (ui neighbor : q_neighbors[u]) {
-                if (u > neighbor) {
+            directed_edge_count += q_neighbors[u].size();
+        }
+        entries.reserve(directed_edge_count);
+
+        for (ui u = 0; u < qn; ++u) {
+            for (ui anchor : q_neighbors[u]) {
+                if (u >= anchor) {
                     continue;
                 }
-                ui scan_u = bw_static_candidate_count[u] <=
-                    bw_static_candidate_count[neighbor] ? u : neighbor;
-                ui target_u = scan_u == u ? neighbor : u;
-                unsigned long long support =
-                    countBlackWhiteStaticEdgeSupport(scan_u, target_u);
-                bw_static_edge_support[u][neighbor] = support;
-                bw_static_edge_support[neighbor][u] = support;
+
+                unsigned long long pair_support =
+                    bw_static_edge_support[u][anchor];
+                ui u_candidate_count = (ui)candidates[u].size();
+                ui anchor_candidate_count = (ui)candidates[anchor].size();
+
+                BlackWhiteFixedEdgePriorityEntry forward;
+                forward.u = u;
+                forward.anchor = anchor;
+                forward.pair_support = pair_support;
+                forward.u_candidate_count = u_candidate_count;
+                forward.anchor_candidate_count = anchor_candidate_count;
+                entries.push_back(forward);
+
+                BlackWhiteFixedEdgePriorityEntry reverse;
+                reverse.u = anchor;
+                reverse.anchor = u;
+                reverse.pair_support = pair_support;
+                reverse.u_candidate_count = anchor_candidate_count;
+                reverse.anchor_candidate_count = u_candidate_count;
+                entries.push_back(reverse);
             }
+        }
+
+        std::sort(entries.begin(), entries.end(),
+            [&](const BlackWhiteFixedEdgePriorityEntry &lhs,
+                const BlackWhiteFixedEdgePriorityEntry &rhs) {
+                __uint128_t lhs_scaled =
+                    (__uint128_t)lhs.pair_support *
+                    std::max((ui)1, rhs.anchor_candidate_count);
+                __uint128_t rhs_scaled =
+                    (__uint128_t)rhs.pair_support *
+                    std::max((ui)1, lhs.anchor_candidate_count);
+                if (lhs_scaled != rhs_scaled) {
+                    return lhs_scaled < rhs_scaled;
+                }
+                if (lhs.u_candidate_count != rhs.u_candidate_count) {
+                    return lhs.u_candidate_count < rhs.u_candidate_count;
+                }
+                if (lhs.pair_support != rhs.pair_support) {
+                    return lhs.pair_support < rhs.pair_support;
+                }
+                if (q_degree[lhs.u] != q_degree[rhs.u]) {
+                    return q_degree[lhs.u] > q_degree[rhs.u];
+                }
+                if (q_degree[lhs.anchor] != q_degree[rhs.anchor]) {
+                    return q_degree[lhs.anchor] > q_degree[rhs.anchor];
+                }
+                if (lhs.u != rhs.u) {
+                    return lhs.u < rhs.u;
+                }
+                return lhs.anchor < rhs.anchor;
+            });
+
+        assert(entries.size() <= (size_t)std::numeric_limits<ui>::max());
+        for (size_t rank = 0; rank < entries.size(); ++rank) {
+            const BlackWhiteFixedEdgePriorityEntry &entry = entries[rank];
+            bw_static_edge_priority[entry.u][entry.anchor] = (ui)rank;
         }
     }
+#endif
 
-    double blackWhiteStaticDirectedBranchCost(ui anchor, ui u) const
-    {
-        if (anchor >= qn || u >= qn ||
-            bw_static_candidate_count[anchor] == 0) {
-            return std::numeric_limits<double>::infinity();
-        }
-        return (double)bw_static_edge_support[anchor][u] /
-            (double)bw_static_candidate_count[anchor];
-    }
-
-    double blackWhiteStaticIntroduceCost(ui u) const
-    {
-        if (u >= qn || bw_static_candidate_count[u] == 0) {
-            return std::numeric_limits<double>::infinity();
-        }
-
-        double best = (double)bw_static_candidate_count[u];
-        for (ui anchor : q_neighbors[u]) {
-            double cost = blackWhiteStaticDirectedBranchCost(anchor, u);
-            if (cost > 0.0 && cost < best) {
-                best = cost;
-            }
-        }
-        return best;
-    }
-
-    double blackWhiteStaticAlternativeCost(ui u, ui excluded_anchor) const
-    {
-        if (u >= qn || bw_static_candidate_count[u] == 0) {
-            return std::numeric_limits<double>::infinity();
-        }
-
-        double best = (double)bw_static_candidate_count[u];
-        for (ui anchor : q_neighbors[u]) {
-            if (anchor == excluded_anchor) {
-                continue;
-            }
-            double cost = blackWhiteStaticDirectedBranchCost(anchor, u);
-            if (cost < best) {
-                best = cost;
-            }
-        }
-        return best;
-    }
-
-    bool shouldUseStaticBlack(ui u) const
-    {
-        if (u == bw_static_root) {
-            return true;
-        }
-
-        double introduce_cost = blackWhiteStaticIntroduceCost(u);
-        if (!std::isfinite(introduce_cost)) {
-            return false;
-        }
-        if (introduce_cost <= 0.0) {
-            return true;
-        }
-
-        double saved_log = 0.0;
-        for (ui neighbor : q_neighbors[u]) {
-            double via_u = blackWhiteStaticDirectedBranchCost(u, neighbor);
-            double alternative =
-                blackWhiteStaticAlternativeCost(neighbor, u);
-            if (!std::isfinite(alternative) || alternative <= 0.0 ||
-                via_u >= alternative) {
-                continue;
-            }
-            if (via_u <= 0.0) {
-                return true;
-            }
-            saved_log += std::log(alternative) - std::log(via_u);
-        }
-
-        return std::log(introduce_cost) <= saved_log;
-    }
-
-    ui selectInitialRootBlackWhite()
+    ui selectBWRoot()
     {
         ui root = 0;
         for (ui u = 1; u < qn; ++u) {
-            if (candidates[u].size() < candidates[root].size() ||
-                (candidates[u].size() == candidates[root].size() &&
-                    q_degree[u] > q_degree[root])) {
-                root = u;
-            }
+            size_t cand_u = candidates[u].size();
+            size_t cand_root = candidates[root].size();
+
+            ui deg_u = q_degree[u];
+            ui deg_root = q_degree[root];
+
+            if (cand_u * deg_root > cand_root * deg_u) root = u;
         }
         return root;
     }
 
-    void initBlackWhiteStaticColors()
+    void initBWColor()
     {
-        initBlackWhiteStaticEdgeSupport();
-        bw_static_root = selectInitialRootBlackWhite();
+        bw_static_root = selectBWRoot();
         bw_static_color.assign(qn, COLOR_WHITE);
-        for (ui u = 0; u < qn; ++u) {
-            if (shouldUseStaticBlack(u)) {
-                bw_static_color[u] = COLOR_BLACK;
-            }
-        }
+        bw_static_color[bw_static_root] = COLOR_BLACK;
     }
 
     bool shouldPreferStaticWhite(ui u) const
@@ -2285,7 +1290,8 @@ private:
                 state.white_count = undo.old_count;
                 break;
             case BW_UNDO_WHITE_BUCKET:
-                state.white[undo.u] = std::move(undo.old_white);
+                state.white_candidate_pool.resize(undo.old_size);
+                state.white[undo.u] = undo.old_white;
                 break;
             }
         }
@@ -2363,18 +1369,28 @@ private:
     }
 
     void replaceBlackWhiteBucket(BlackWhiteState &state, ui u,
-        WhiteCandidateBuckets &&bucket)
+        const vector<ui> &candidates_to_store)
     {
         BlackWhiteUndo undo;
         undo.kind = BW_UNDO_WHITE_BUCKET;
         undo.u = u;
-        undo.old_white = std::move(state.white[u]);
+        undo.old_size = state.white_candidate_pool.size();
+        undo.old_white = state.white[u];
         black_white_undo.push_back(std::move(undo));
-        state.white[u] = std::move(bucket);
+
+        WhiteCandidateBuckets bucket;
+        bucket.begin = state.white_candidate_pool.size();
+        assert(candidates_to_store.size() <=
+            (size_t)std::numeric_limits<ui>::max());
+        bucket.count = (ui)candidates_to_store.size();
+        bucket.feasible_count = bucket.count;
+        state.white_candidate_pool.insert(state.white_candidate_pool.end(),
+            candidates_to_store.begin(), candidates_to_store.end());
+        state.white[u] = bucket;
     }
 
     bool computeBlackNeighborDelta(const BlackWhiteState &state, ui u, ui v,
-        ui cost, ui &delta) const
+        ui cost, ui &delta)
     {
         delta = 0;
         for (ui neighbor : q_neighbors[u]) {
@@ -2383,7 +1399,7 @@ private:
             }
 
             ui mapped_neighbor = (ui)state.mapped_q[neighbor];
-            bool adjacent = data_graph->hasEdge(v, mapped_neighbor);
+            bool adjacent = blackWhiteGraphHasEdge(v, mapped_neighbor);
             EdgeState state_uv = getBlackWhiteEdgeState(state, u, neighbor);
             if (state_uv == EDGE_PRESENT) {
                 if (!adjacent) return false;
@@ -2401,51 +1417,196 @@ private:
         return true;
     }
 
-    bool rebuildWhiteCandidatesForCurrentState(BlackWhiteState &state,
-        ui white_u, ui cost)
+    bool collectBlackWhitePositiveRanges(const BlackWhiteState &state, ui u,
+        vector<CandidateAdjRange> &ranges)
     {
-        const WhiteCandidateBuckets &white = state.white[white_u];
-        WhiteCandidateBuckets next_white;
-        next_white.reserve(white.candidates.size());
-
-        for (ui candidate : white.candidates) {
-            if (isDataVertexUsed(state, candidate)) {
+        ranges.clear();
+        for (ui neighbor : q_neighbors[u]) {
+            if (!isBlack(state, neighbor) ||
+                getBlackWhiteEdgeState(state, u, neighbor) != EDGE_PRESENT) {
                 continue;
             }
 
-            ui delta = 0;
-            if (computeBlackNeighborDelta(state, white_u, candidate, cost, delta)) {
-                next_white.addCandidate(candidate);
+            const CandidateAdjRange *range = findBlackWhiteCandidateAdjRange(
+                neighbor, (ui)state.mapped_q[neighbor], u);
+            if (range == nullptr) {
+                stats.candidate_range_misses++;
+                return false;
             }
+            stats.candidate_range_hits++;
+            ranges.push_back(*range);
         }
-
-        bool has_candidate = !next_white.empty();
-        replaceBlackWhiteBucket(state, white_u, std::move(next_white));
-        return has_candidate;
+        return true;
     }
 
-    bool buildWhiteCandidateBuckets(const BlackWhiteState &state, ui u, ui cost,
-        WhiteCandidateBuckets &white_candidate_buckets) const
+    void buildBlackWhiteCandidateSourceFromRanges(
+        vector<CandidateAdjRange> &ranges, vector<ui> &source)
     {
-        white_candidate_buckets.clear();
-        if (cost > threshold || !isSelectedByBlackNeighbor(state, u)) {
+        source.clear();
+        if (ranges.empty()) {
+            return;
+        }
+
+        std::sort(ranges.begin(), ranges.end(),
+            [](const CandidateAdjRange &lhs, const CandidateAdjRange &rhs) {
+                return lhs.len < rhs.len;
+            });
+
+        if (ranges.size() == 1) {
+            const CandidateAdjRange &range = ranges.front();
+            source.assign(blackWhiteRangeBegin(range), blackWhiteRangeEnd(range));
+            return;
+        }
+
+        size_t total_len = 0;
+        for (const CandidateAdjRange &range : ranges) {
+            total_len += range.len;
+        }
+
+        size_t edge_check_threshold = (size_t)ranges.front().len *
+            ranges.size() * 8;
+        if (total_len <= edge_check_threshold) {
+            stats.candidate_intersection_calls++;
+            const CandidateAdjRange &first = ranges.front();
+            source.assign(blackWhiteRangeBegin(first), blackWhiteRangeEnd(first));
+
+            for (size_t i = 1; i < ranges.size() && !source.empty(); ++i) {
+                bw_candidate_intersection_buffer.clear();
+                const CandidateAdjRange &range = ranges[i];
+                std::set_intersection(source.begin(), source.end(),
+                    blackWhiteRangeBegin(range), blackWhiteRangeEnd(range),
+                    std::back_inserter(bw_candidate_intersection_buffer));
+                source.swap(bw_candidate_intersection_buffer);
+            }
+            return;
+        }
+
+        const CandidateAdjRange &shortest = ranges.front();
+        for (const ui *it = blackWhiteRangeBegin(shortest);
+            it != blackWhiteRangeEnd(shortest); ++it) {
+            ui candidate = *it;
+            bool supported = true;
+            for (size_t i = 1; i < ranges.size(); ++i) {
+                stats.candidate_edge_check_calls++;
+                if (!blackWhiteRangeContains(ranges[i], candidate)) {
+                    supported = false;
+                    break;
+                }
+            }
+            if (supported) {
+                source.push_back(candidate);
+            }
+        }
+    }
+
+    void appendFeasibleWhiteCandidate(const BlackWhiteState &state, ui u,
+        ui candidate, ui cost, vector<ui> &result)
+    {
+        if (isDataVertexUsed(state, candidate)) {
+            return;
+        }
+
+        ui delta = 0;
+        if (computeBlackNeighborDelta(state, u, candidate, cost, delta)) {
+            result.push_back(candidate);
+        }
+    }
+
+    bool whiteBucketContains(const BlackWhiteState &state,
+        const WhiteCandidateBuckets &bucket, ui candidate) const
+    {
+        assert(bucket.begin + bucket.count <= state.white_candidate_pool.size());
+        const ui *begin = state.white_candidate_pool.data() + bucket.begin;
+        const ui *end = begin + bucket.count;
+        return std::binary_search(begin, end, candidate);
+    }
+
+    void appendFeasibleCandidatesFromWhiteBucket(const BlackWhiteState &state,
+        ui u, ui cost, const WhiteCandidateBuckets &bucket, vector<ui> &result)
+    {
+        assert(bucket.begin + bucket.count <= state.white_candidate_pool.size());
+        for (ui i = 0; i < bucket.count; ++i) {
+            ui candidate = state.white_candidate_pool[bucket.begin + i];
+            appendFeasibleWhiteCandidate(state, u, candidate, cost, result);
+        }
+    }
+
+    bool buildWhiteCandidateBuffer(BlackWhiteState &state, ui u, ui cost,
+        const WhiteCandidateBuckets *existing_bucket)
+    {
+        bw_candidate_result_buffer.clear();
+        if (cost > threshold) {
+            return false;
+        }
+        stats.white_bucket_rebuilds++;
+
+#if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE
+        if (!collectBlackWhitePositiveRanges(state, u,
+            bw_candidate_range_buffer)) {
             return false;
         }
 
-        for (int candidate : candidates[u]) {
-            ui v = (ui)candidate;
-            if (isDataVertexUsed(state, v)) {
-                continue;
-            }
+        if (!bw_candidate_range_buffer.empty()) {
+            buildBlackWhiteCandidateSourceFromRanges(bw_candidate_range_buffer,
+                bw_candidate_source_buffer);
 
-            ui delta = 0;
-            if (!computeBlackNeighborDelta(state, u, v, cost, delta)) {
-                continue;
+            if (existing_bucket != nullptr &&
+                existing_bucket->count <= bw_candidate_source_buffer.size()) {
+                appendFeasibleCandidatesFromWhiteBucket(state, u, cost,
+                    *existing_bucket, bw_candidate_result_buffer);
             }
-
-            white_candidate_buckets.addCandidate(v);
+            else {
+                for (ui candidate : bw_candidate_source_buffer) {
+                    if (existing_bucket != nullptr &&
+                        !whiteBucketContains(state, *existing_bucket, candidate)) {
+                        continue;
+                    }
+                    appendFeasibleWhiteCandidate(state, u, candidate, cost,
+                        bw_candidate_result_buffer);
+                }
+            }
         }
-        return !white_candidate_buckets.empty();
+        else if (existing_bucket != nullptr) {
+            appendFeasibleCandidatesFromWhiteBucket(state, u, cost,
+                *existing_bucket, bw_candidate_result_buffer);
+        }
+        else {
+#endif
+        if (existing_bucket != nullptr) {
+            appendFeasibleCandidatesFromWhiteBucket(state, u, cost,
+                *existing_bucket, bw_candidate_result_buffer);
+        }
+        else {
+            for (int candidate : candidates[u]) {
+                appendFeasibleWhiteCandidate(state, u, (ui)candidate, cost,
+                    bw_candidate_result_buffer);
+            }
+        }
+#if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE
+        }
+#endif
+
+        return !bw_candidate_result_buffer.empty();
+    }
+
+    bool rebuildWhiteCandidatesForCurrentState(BlackWhiteState &state,
+        ui white_u, ui cost)
+    {
+        WhiteCandidateBuckets old_bucket = state.white[white_u];
+        if (!buildWhiteCandidateBuffer(state, white_u, cost, &old_bucket)) {
+            return false;
+        }
+
+        replaceBlackWhiteBucket(state, white_u, bw_candidate_result_buffer);
+        return true;
+    }
+
+    bool buildWhiteCandidateBuckets(BlackWhiteState &state, ui u, ui cost)
+    {
+        if (cost > threshold || !isSelectedByBlackNeighbor(state, u)) {
+            return false;
+        }
+        return buildWhiteCandidateBuffer(state, u, cost, nullptr);
     }
 
     bool isSelectedByBlackNeighbor(const BlackWhiteState &state, ui u) const
@@ -2471,9 +1632,9 @@ private:
     }
 
     bool chooseBlackWhite(const BlackWhiteState &state, ui u,
-        const WhiteCandidateBuckets &white_candidate_buckets) const
+        ui white_candidate_count) const
     {
-        if (!shouldPreferStaticWhite(u) || white_candidate_buckets.empty()) {
+        if (!shouldPreferStaticWhite(u) || white_candidate_count == 0) {
             return false;
         }
 
@@ -2532,7 +1693,8 @@ private:
             if (state_uv != EDGE_UNDECIDED) {
                 continue;
             }
-            bool adjacent = data_graph->hasEdge(v, (ui)state.mapped_q[neighbor]);
+            bool adjacent = blackWhiteGraphHasEdge(v,
+                (ui)state.mapped_q[neighbor]);
             setBlackWhiteEdgeState(state, u, neighbor,
                 adjacent ? EDGE_PRESENT : EDGE_MISSING);
         }
@@ -2578,7 +1740,7 @@ private:
             }
 
             ui mapped_neighbor = (ui)state.mapped_q[neighbor];
-            bool adjacent = data_graph->hasEdge(candidate, mapped_neighbor);
+            bool adjacent = blackWhiteGraphHasEdge(candidate, mapped_neighbor);
             EdgeState state_uv = getBlackWhiteEdgeState(state, white_u, neighbor);
             if (state_uv == EDGE_PRESENT) {
                 if (!adjacent) return false;
@@ -2606,17 +1768,17 @@ private:
             }
         }
 
-        WhiteCandidateBuckets white_candidate_buckets;
-        if (!buildWhiteCandidateBuckets(state, u, cost, white_candidate_buckets)) {
+        if (!buildWhiteCandidateBuckets(state, u, cost)) {
             return false;
         }
-        if (!chooseBlackWhite(state, u, white_candidate_buckets)) {
+        if (!chooseBlackWhite(state, u,
+            (ui)bw_candidate_result_buffer.size())) {
             return false;
         }
 
         size_t mark = markBlackWhiteState();
         setBlackWhiteColor(state, u, COLOR_WHITE);
-        replaceBlackWhiteBucket(state, u, std::move(white_candidate_buckets));
+        replaceBlackWhiteBucket(state, u, bw_candidate_result_buffer);
         setBlackWhiteSelectedCount(state, state.selected_count + 1);
         setBlackWhiteWhiteCount(state, state.white_count + 1);
         bwSearch(state, cost);
@@ -2644,22 +1806,26 @@ private:
             return false;
         };
 
+#if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_ANCHOR_BRANCH
         if (required_anchor < qn && isBlack(state, required_anchor) &&
             getBlackWhiteEdgeState(state, u, required_anchor) == EDGE_PRESENT) {
             ui mapped_anchor = (ui)state.mapped_q[required_anchor];
-            ui degree = 0;
-            const ui *neighbors = data_graph->getVertexNeighbors(mapped_anchor, degree);
-            for (ui i = 0; i < degree; ++i) {
-                ui candidate = neighbors[i];
-                if (!candidates[u].contains(candidate)) {
-                    continue;
-                }
+            const CandidateAdjRange *range = findBlackWhiteCandidateAdjRange(
+                required_anchor, mapped_anchor, u);
+            if (range == nullptr) {
+                return false;
+            }
+
+            for (const ui *it = blackWhiteRangeBegin(*range);
+                it != blackWhiteRangeEnd(*range); ++it) {
+                ui candidate = *it;
                 if (try_candidate(candidate)) {
                     return true;
                 }
             }
             return emitted_branch;
         }
+#endif
 
         for (int candidate : candidates[u]) {
             if (try_candidate((ui)candidate)) {
@@ -2678,8 +1844,13 @@ private:
         }
 
         bool emitted_branch = false;
-        const vector<ui> &white_candidates = state.white[white_u].candidates;
-        for (ui candidate : white_candidates) {
+        WhiteCandidateBuckets white_bucket = state.white[white_u];
+        assert(white_bucket.begin + white_bucket.count <=
+            state.white_candidate_pool.size());
+        for (ui candidate_idx = 0; candidate_idx < white_bucket.count;
+            ++candidate_idx) {
+            ui candidate =
+                state.white_candidate_pool[white_bucket.begin + candidate_idx];
             if (isDataVertexUsed(state, candidate)) {
                 continue;
             }
@@ -2796,18 +1967,32 @@ private:
 
         double support_count = 0.0;
         ui mapped_anchor = (ui)state.mapped_q[anchor];
-        ui degree = 0;
-        const ui *neighbors = data_graph->getVertexNeighbors(mapped_anchor, degree);
-        for (ui i = 0; i < degree; ++i) {
-            ui v = neighbors[i];
-            if (!candidates[u].contains(v)) {
-                continue;
-            }
+#if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SUPPORT
+        const CandidateAdjRange *range =
+            findBlackWhiteCandidateAdjRange(anchor, mapped_anchor, u);
+        if (range == nullptr) {
+            return 0.0;
+        }
+
+        for (const ui *it = blackWhiteRangeBegin(*range);
+            it != blackWhiteRangeEnd(*range); ++it) {
+            ui v = *it;
             if (isDataVertexUsed(state, v)) {
                 continue;
             }
             support_count += 1.0;
         }
+#else
+        for (int candidate : candidates[u]) {
+            ui v = (ui)candidate;
+            if (isDataVertexUsed(state, v)) {
+                continue;
+            }
+            if (data_graph->hasEdge(mapped_anchor, v)) {
+                support_count += 1.0;
+            }
+        }
+#endif
         return support_count;
     }
 
@@ -2822,6 +2007,17 @@ private:
     bool isBetterBlackWhiteActiveEdge(const BlackWhiteActiveEdge &lhs,
         const BlackWhiteActiveEdge &rhs) const
     {
+#if CDE_BLACK_WHITE_FIXED_ORDER
+        ui lhs_priority = bw_static_edge_priority[lhs.u][lhs.anchor];
+        ui rhs_priority = bw_static_edge_priority[rhs.u][rhs.anchor];
+        if (lhs_priority != rhs_priority) {
+            return lhs_priority < rhs_priority;
+        }
+        if (lhs.u != rhs.u) {
+            return lhs.u < rhs.u;
+        }
+        return lhs.anchor < rhs.anchor;
+#else
         double lhs_scaled = lhs.rank_support *
             (double)std::max((ui)1, rhs.live_anchor_count);
         double rhs_scaled = rhs.rank_support *
@@ -2841,6 +2037,7 @@ private:
             return lhs.u < rhs.u;
         }
         return lhs.anchor < rhs.anchor;
+#endif
     }
 
     void selectTopBlackWhiteActiveEdges(ui max_count,
@@ -2851,7 +2048,19 @@ private:
             selected_limit = (size_t)max_count;
         }
 
-#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
+#if CDE_BLACK_WHITE_FIXED_ORDER
+        auto better_edge = [&](const BlackWhiteActiveEdge &lhs,
+            const BlackWhiteActiveEdge &rhs) {
+            return isBetterBlackWhiteActiveEdge(lhs, rhs);
+            };
+        if (top_edges.size() > selected_limit) {
+            partial_sort(top_edges.begin(), top_edges.begin() + selected_limit,
+                top_edges.end(), better_edge);
+        }
+        else {
+            sort(top_edges.begin(), top_edges.end(), better_edge);
+        }
+#elif CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
         const double gamma = (double)CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY_GAMMA;
         for (size_t selected_idx = 0; selected_idx < selected_limit; ++selected_idx) {
             size_t best_idx = selected_idx;
@@ -2940,12 +2149,14 @@ private:
                 edge.anchor = anchor;
                 edge.live_anchor_count = live_anchor_count;
                 edge.query_degree = q_degree[u];
+#if !CDE_BLACK_WHITE_FIXED_ORDER
                 if (isBlack(state, anchor)) {
                     edge.rank_support = estimateBlackAnchorSupport(state, u, anchor);
                 }
                 else {
                     edge.rank_support = estimateWhiteAnchorSupport(state, anchor);
                 }
+#endif
                 top_edges.push_back(edge);
             }
         }
@@ -2976,7 +2187,7 @@ private:
 
     bool buildBlackWhiteTerminalWhiteCandidateBuckets(
         const BlackWhiteState &state, ui white_u, ui cost,
-        vector<vector<ui>> &buckets, ui &feasible_count, ui &min_delta) const
+        vector<vector<ui>> &buckets, ui &feasible_count, ui &min_delta)
     {
         assert(cost <= threshold);
         if (!isWhite(state, white_u) || state.mapped_q[white_u] != -1) {
@@ -2994,8 +2205,12 @@ private:
         feasible_count = 0;
         min_delta = std::numeric_limits<ui>::max();
 
-        const WhiteCandidateBuckets &white = state.white[white_u];
-        for (ui candidate : white.candidates) {
+        WhiteCandidateBuckets white = state.white[white_u];
+        assert(white.begin + white.count <= state.white_candidate_pool.size());
+        for (ui candidate_idx = 0; candidate_idx < white.count;
+            ++candidate_idx) {
+            ui candidate =
+                state.white_candidate_pool[white.begin + candidate_idx];
             if (isDataVertexUsed(state, candidate)) {
                 continue;
             }
@@ -3019,7 +2234,7 @@ private:
     }
 
     bool buildBlackWhiteTerminalWhiteTailVertices(const BlackWhiteState &state,
-        ui cost, vector<TerminalTailVertex> &tail_vertices) const
+        ui cost, vector<TerminalTailVertex> &tail_vertices)
     {
         tail_vertices.clear();
         tail_vertices.reserve(state.white_count);
@@ -3188,587 +2403,6 @@ private:
     }
     // ========================================================================
 
-    // ========================================================================
-    // Terminal-tail enumeration
-    // ========================================================================
-    bool isTerminalQueryVertex(ui u) const
-    {
-        if (u >= qn || mapped_q[u] != -1 || anchor_count[u] == 0) {
-            return false;
-        }
-
-        for (ui nbr : q_neighbors[u]) {
-            if (excluded_edges[u][nbr]) {
-                continue;
-            }
-            if (mapped_q[nbr] == -1) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    ui terminalLiveAnchorCount(ui u) const
-    {
-        ui count = 0;
-        for (ui anchor : q_neighbors[u]) {
-            if (!excluded_edges[u][anchor] && mapped_q[anchor] != -1) {
-                count++;
-            }
-        }
-        return count;
-    }
-
-    TerminalScan markTerminalVertices(DfsBuffer &buf)
-    {
-        TerminalScan scan;
-        if (buf.terminal_skip.size() != qn) {
-            buf.terminal_skip.assign(qn, 0);
-        }
-        else {
-            std::fill(buf.terminal_skip.begin(), buf.terminal_skip.end(), 0);
-        }
-        buf.terminal_vertices.clear();
-        buf.active_terminal_vertices.clear();
-
-        for (ui u = 0; u < qn; ++u) {
-            if (mapped_q[u] != -1) {
-                continue;
-            }
-
-            scan.unmatched_count++;
-            if (isTerminalQueryVertex(u)) {
-                scan.terminal_count++;
-                buf.terminal_vertices.push_back(u);
-                if (frontier_pos[u] != -1) {
-                    buf.terminal_skip[u] = 1;
-                    buf.active_terminal_vertices.push_back(u);
-                    scan.terminal_frontier_count++;
-                }
-            }
-            else if (frontier_pos[u] != -1) {
-                scan.nonterminal_frontier_count++;
-            }
-        }
-        return scan;
-    }
-
-    ui terminalMissingDelta(ui u, ui v, ui limit = std::numeric_limits<ui>::max()) const
-    {
-        ui delta = 0;
-        for (ui anchor : q_neighbors[u]) {
-            if (excluded_edges[u][anchor] || mapped_q[anchor] == -1) {
-                continue;
-            }
-            if (!data_graph->hasEdge(v, (ui)mapped_q[anchor])) {
-                delta++;
-                if (delta > limit) {
-                    return delta;
-                }
-            }
-        }
-        return delta;
-    }
-
-    template <typename Visitor>
-    bool visitTerminalSupportedCandidates(ui u, Visitor visit)
-    {
-        if (++data_vertex_mark_token == 0) {
-            std::fill(data_vertex_mark.begin(), data_vertex_mark.end(), 0);
-            data_vertex_mark_token = 1;
-        }
-        ui token = data_vertex_mark_token;
-
-        for (ui anchor : q_neighbors[u]) {
-            if (excluded_edges[u][anchor] || mapped_q[anchor] == -1) {
-                continue;
-            }
-
-            ui deg = 0;
-            const ui *nbrs = data_graph->getVertexNeighbors((ui)mapped_q[anchor], deg);
-            for (ui i = 0; i < deg; ++i) {
-                ui v = nbrs[i];
-                if (data_vertex_mark[v] == token) {
-                    continue;
-                }
-                data_vertex_mark[v] = token;
-#ifndef NDEBUG
-                stats.terminal_bucket_candidate_checks++;
-#endif
-
-                if (!candidates[u].contains(v)) {
-                    continue;
-                }
-                if (mapped_g[v] != -1) {
-                    continue;
-                }
-                if (excluded_cands[u].contains(v)) {
-                    continue;
-                }
-                if (!visit(v)) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    }
-
-    bool buildTerminalCandidateBuckets(ui u, ui cost, vector<vector<ui>> &buckets,
-        ui &feasible_count, ui &min_delta)
-    {
-        assert(cost <= threshold);
-        ui remaining_budget = threshold - cost;
-        buckets.assign((size_t)remaining_budget + 1, vector<ui>());
-        feasible_count = 0;
-        min_delta = std::numeric_limits<ui>::max();
-        ui live_anchor_count = terminalLiveAnchorCount(u);
-        if (live_anchor_count == 0) {
-            return false;
-        }
-
-        visitTerminalSupportedCandidates(u, [&](ui v) -> bool {
-            ui missing_delta = terminalMissingDelta(u, v, remaining_budget);
-            if (missing_delta > remaining_budget) {
-                return true;
-            }
-            if (missing_delta >= live_anchor_count) {
-                return true;
-            }
-
-            buckets[missing_delta].push_back(v);
-            feasible_count++;
-            if (missing_delta < min_delta) {
-                min_delta = missing_delta;
-            }
-            return true;
-        });
-
-        return feasible_count > 0;
-    }
-
-    bool terminalVertexHasFeasibleCandidate(ui u, ui cost)
-    {
-        assert(cost <= threshold);
-        ui remaining_budget = threshold - cost;
-        ui live_anchor_count = terminalLiveAnchorCount(u);
-        if (live_anchor_count == 0) {
-            return false;
-        }
-
-        bool found = false;
-        visitTerminalSupportedCandidates(u, [&](ui v) -> bool {
-            ui missing_delta = terminalMissingDelta(u, v, remaining_budget);
-            if (missing_delta <= remaining_budget &&
-                missing_delta < live_anchor_count) {
-                found = true;
-                return false;
-            }
-            return true;
-        });
-        return found;
-    }
-
-    bool activeTerminalVerticesHaveCandidate(const vector<ui> &terminal_vertices,
-        ui cost)
-    {
-        for (ui u : terminal_vertices) {
-            if (!terminalVertexHasFeasibleCandidate(u, cost)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    bool buildTerminalTailVertices(const vector<ui> &terminal_vertices, ui cost,
-        vector<TerminalTailVertex> &tail_vertices)
-    {
-        tail_vertices.clear();
-        tail_vertices.reserve(terminal_vertices.size());
-
-        for (ui u : terminal_vertices) {
-            TerminalTailVertex tail_vertex;
-            tail_vertex.u = u;
-            if (!buildTerminalCandidateBuckets(u, cost, tail_vertex.buckets,
-                tail_vertex.feasible_count, tail_vertex.min_delta)) {
-                return false;
-            }
-            tail_vertices.push_back(std::move(tail_vertex));
-        }
-
-        std::sort(tail_vertices.begin(), tail_vertices.end(),
-            [this](const TerminalTailVertex &lhs, const TerminalTailVertex &rhs) {
-                if (lhs.feasible_count != rhs.feasible_count) {
-                    return lhs.feasible_count < rhs.feasible_count;
-                }
-                if (lhs.min_delta != rhs.min_delta) {
-                    return lhs.min_delta < rhs.min_delta;
-                }
-                if (q_degree[lhs.u] != q_degree[rhs.u]) {
-                    return q_degree[lhs.u] > q_degree[rhs.u];
-                }
-                return lhs.u < rhs.u;
-            });
-        return true;
-    }
-
-    void recordTerminalPrune()
-    {
-        stats.prun_calls++;
-#ifndef NDEBUG
-        stats.terminal_prune_calls++;
-#endif
-    }
-
-    void enumerateTerminalTail(size_t pos, ui cost,
-        vector<TerminalTailVertex> &tail_vertices)
-    {
-        if (outputLimitReached()) {
-            stats.output_limit_reached = true;
-            return;
-        }
-
-#ifndef NDEBUG
-        stats.terminal_tail_calls++;
-#endif
-        assert(cost <= threshold);
-
-        if (pos == tail_vertices.size()) {
-            assert(part_M.size() == qn);
-            stats.result_count++;
-            noteOutputLimitIfReached();
-#ifndef NDEBUG
-            results_ptr->push_back(part_M);
-#endif
-            return;
-        }
-
-        TerminalTailVertex &tail_vertex = tail_vertices[pos];
-        ui u = tail_vertex.u;
-        assert(mapped_q[u] == -1);
-
-        ui remaining_budget = threshold - cost;
-        ui max_delta = std::min((ui)tail_vertex.buckets.size() - 1, remaining_budget);
-        for (ui missing_delta = 0; missing_delta <= max_delta; ++missing_delta) {
-            const vector<ui> &bucket = tail_vertex.buckets[missing_delta];
-            for (ui v : bucket) {
-                if (mapped_g[v] != -1) {
-                    continue;
-                }
-
-                mapped_q[u] = (int)v;
-                mapped_g[v] = (int)u;
-                part_M.push_back({ u, v });
-
-                enumerateTerminalTail(pos + 1, cost + missing_delta, tail_vertices);
-
-                part_M.pop_back();
-                mapped_g[v] = -1;
-                mapped_q[u] = -1;
-
-                if (outputLimitReached()) {
-                    return;
-                }
-            }
-        }
-    }
-    // ========================================================================
-
-    // =====================================================
-    // Procedure DFS(M_part, cost, X)
-    //
-    // cost:  current cost of partial match M_part
-    // X:     the set of excluded edges (u, ua)
-    // =====================================================
-    void dfs(ui cost)
-    {
-        // printf("part_M.size() = %zu, cost = %u\n", part_M.size(), cost);
-        if (outputLimitReached()) {
-            stats.output_limit_reached = true;
-            return;
-        }
-
-        assert(part_M.size() <= qn);
-        assert(cost <= threshold);
-
-        if (part_M.size() == qn) {
-            stats.recursion_calls++;
-            stats.result_count++;
-            noteOutputLimitIfReached();
-#ifndef NDEBUG
-            results_ptr->push_back(part_M);
-#endif
-            return;
-        }
-
-        stats.recursion_calls++;
-
-        DfsBuffer &buf = dfsBufferForDepth(part_M.size());
-        buf.clearLocal();
-        SupportUndoScope support_undo_scope(*this, buf.local_support_snapshots);
-        vector<ui> &candidate_vertices = buf.candidate_vertices;
-        vector<ui> &candidate_anchor_counts = buf.candidate_anchor_counts;
-        vector<ActiveEdge> &top_edges = buf.top_edges;
-        ui current_cost = cost;
-        double selected_component_support_sum = std::numeric_limits<double>::max();
-#if !CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY && !CDE_BLACK_WHITE_FIXED_ORDER
-        bool selected_covered_component = false;
-#endif
-        bool has_zero_support_component = false;
-        const vector<char> *terminal_skip_vertices = nullptr;
-
-        if (terminal_buckets_enabled) {
-            TerminalScan terminal_scan = markTerminalVertices(buf);
-
-            if (terminal_scan.allRemainingTerminal()) {
-                if (!buildTerminalTailVertices(buf.terminal_vertices, current_cost,
-                    buf.terminal_tail_vertices)) {
-                    recordTerminalPrune();
-                    return;
-                }
-
-                enumerateTerminalTail(0, current_cost, buf.terminal_tail_vertices);
-                return;
-            }
-
-            if (terminal_scan.terminal_frontier_count > 0) {
-                if (!activeTerminalVerticesHaveCandidate(buf.active_terminal_vertices,
-                    current_cost)) {
-                    recordTerminalPrune();
-                    return;
-                }
-
-                if (terminal_scan.hasNonterminalFrontier()) {
-                    terminal_skip_vertices = &buf.terminal_skip;
-#ifndef NDEBUG
-                    stats.terminal_delayed_vertices += terminal_scan.terminal_frontier_count;
-#endif
-                }
-            }
-        }
-
-        Timer t_frontier;
-        ui max_branch_edges = threshold - current_cost + 1;
-        {
-#ifndef NDEBUG
-            Timer t_select;
-#endif
-            if (!buf.branch_selector.collectTopActiveEdges(active_frontier,
-                max_branch_edges, top_edges, &buf.edge_score_cache,
-                terminal_skip_vertices)) {
-                stats.frontier_time += t_frontier.elapsed();
-                return;
-            }
-#ifndef NDEBUG
-            stats.frontier_select_time += t_select.elapsed();
-#endif
-        }
-
-#if !CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY && !CDE_BLACK_WHITE_FIXED_ORDER
-        bool all_selected_edges_have_zero_support = std::all_of(
-            top_edges.begin(), top_edges.end(),
-            [](const ActiveEdge &edge) {
-                return edge.anchor_support == 0;
-            });
-        if (all_selected_edges_have_zero_support) {
-            stats.frontier_time += t_frontier.elapsed();
-            stats.prun_calls++;
-            return;
-        }
-#endif
-
-        {
-#ifndef NDEBUG
-            Timer t_component;
-#endif
-#if CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY || CDE_BLACK_WHITE_FIXED_ORDER
-            (void)buf.branch_selector.restrictTopEdgesToCoveredComponent(top_edges,
-                buf.edge_score_cache, buf.component_id, buf.component_frontiers,
-                buf.component_edge_counts, buf.component_seen_counts,
-                buf.component_support_sums, selected_component_support_sum,
-                has_zero_support_component, terminal_skip_vertices);
-#else
-            selected_covered_component = buf.branch_selector.restrictTopEdgesToCoveredComponent(top_edges,
-                buf.edge_score_cache, buf.component_id, buf.component_frontiers,
-                buf.component_edge_counts, buf.component_seen_counts,
-                buf.component_support_sums, selected_component_support_sum,
-                has_zero_support_component, terminal_skip_vertices);
-#endif
-#ifndef NDEBUG
-            stats.frontier_component_time += t_component.elapsed();
-#endif
-        }
-        stats.frontier_time += t_frontier.elapsed();
-
-#if !CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY && !CDE_BLACK_WHITE_FIXED_ORDER
-        if (has_zero_support_component ||
-            (selected_covered_component && selected_component_support_sum == 0)) {
-            stats.prun_calls++;
-            return;
-        }
-#endif
-
-        Timer t_branch;
-        long long child_dfs_time = 0;
-
-        ui first_branch_edge = 0;
-        bool pruned_by_forced_zero = false;
-#if !CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY && !CDE_BLACK_WHITE_FIXED_ORDER
-        for (; first_branch_edge < top_edges.size(); ++first_branch_edge) {
-            const ActiveEdge &edge = top_edges[first_branch_edge];
-            if (edge.anchor_support != 0) break;
-
-            ui u = edge.u;
-            ui ua = edge.anchor;
-            assert(u < qn && ua < qn);
-            assert(mapped_q[ua] != -1 && mapped_q[u] == -1);
-            assert(!excluded_edges[u][ua] && frontier_pos[u] != -1);
-            assert(q_matrix[u][ua]);
-
-#ifndef NDEBUG
-            Timer t_exclude_update;
-#endif
-            current_cost++;
-            excludeFrontierEdge(u, ua);
-            buf.recordExcludedEdge(u, ua);
-#ifndef NDEBUG
-            stats.exclude_update_time += t_exclude_update.elapsed();
-#endif
-
-            if (current_cost > threshold) {
-                stats.prun_calls++;
-                pruned_by_forced_zero = true;
-                break;
-            }
-        }
-#endif
-
-        for (ui edge_idx = first_branch_edge; !pruned_by_forced_zero && edge_idx < top_edges.size(); ++edge_idx) {
-            const ActiveEdge &edge = top_edges[edge_idx];
-            if (current_cost > threshold) break;
-
-            ui u = edge.u;
-            ui ua = edge.anchor;
-            assert(u < qn && ua < qn);
-            assert(mapped_q[ua] != -1 && mapped_q[u] == -1);
-            assert(!excluded_edges[u][ua] && frontier_pos[u] != -1);
-            assert(q_matrix[u][ua]);
-
-            // calculate the candidate vertices of u supported by anchor ua
-            candidate_vertices.clear();
-#ifndef NDEBUG
-            {
-                Timer t_cal_edge_support;
-                calEdgeSupport(u, ua, [&](ui v) {candidate_vertices.push_back(v);});
-                stats.branch_cal_edge_support_time += t_cal_edge_support.elapsed();
-            }
-#else
-            calEdgeSupport(u, ua, [&](ui v) {candidate_vertices.push_back(v);});
-#endif
-            // number of live anchors of u excluding anchor ua
-            ui anchor_num = 0;
-#ifndef NDEBUG
-            {
-                Timer t_count_anchors;
-                anchor_num = countAnchors(u, ua, candidate_vertices, candidate_anchor_counts);
-                stats.branch_count_anchors_time += t_count_anchors.elapsed();
-            }
-#else
-            anchor_num = countAnchors(u, ua, candidate_vertices, candidate_anchor_counts);
-#endif
-
-            // Include branch: use this frontier-anchor edge to add exactly one new query vertex.
-#ifndef NDEBUG
-            Timer t_candidate_loop;
-            long long candidate_child_time_before = child_dfs_time;
-            long long candidate_support_update_time = 0;
-#endif
-            for (ui i = 0; i < candidate_vertices.size(); ++i) {
-                ui v = candidate_vertices[i];
-                ui delta = anchor_num - candidate_anchor_counts[i];
-                ui next_cost = current_cost + delta;
-                if (next_cost > threshold) {
-                    continue;
-                }
-
-                mapped_q[u] = (int)v;
-                mapped_g[v] = (int)u;
-                part_M.push_back({ u, v });
-
-#ifndef NDEBUG
-                long long support_update_before = stats.support_update_time;
-#endif
-                updateFrontier(u, true);
-#ifndef NDEBUG
-                candidate_support_update_time += stats.support_update_time - support_update_before;
-#endif
-
-                Timer t_child;
-                dfs(next_cost);
-                child_dfs_time += t_child.elapsed();
-
-                part_M.pop_back();
-                mapped_g[v] = -1;
-                mapped_q[u] = -1;
-
-#ifndef NDEBUG
-                support_update_before = stats.support_update_time;
-#endif
-                updateFrontier(u, false);
-#ifndef NDEBUG
-                candidate_support_update_time += stats.support_update_time - support_update_before;
-#endif
-
-                if (outputLimitReached()) break;
-            }
-#ifndef NDEBUG
-            {
-                long long candidate_elapsed = t_candidate_loop.elapsed();
-                long long candidate_excluded_time =
-                    (child_dfs_time - candidate_child_time_before) +
-                    candidate_support_update_time;
-                stats.candidate_loop_time += candidate_elapsed > candidate_excluded_time
-                    ? candidate_elapsed - candidate_excluded_time : 0;
-            }
-#endif
-
-            if (outputLimitReached()) break;
-
-            // Exclude branch: skip this edge, no recursion, just update cost and state.
-#ifndef NDEBUG
-            Timer t_exclude_update;
-#endif
-            current_cost++;
-            excludeFrontierEdge(u, ua);
-            buf.recordExcludedEdge(u, ua);
-
-            if (current_cost > threshold) {
-#ifndef NDEBUG
-                stats.exclude_update_time += t_exclude_update.elapsed();
-#endif
-                break;
-            }
-
-            for (ui v : candidate_vertices) {
-                if (!excluded_cands[u].contains(v)) {
-                    excluded_cands[u].insert(v);
-                    buf.recordExcludedCands(u, v);
-                }
-            }
-#ifndef NDEBUG
-            stats.exclude_update_time += t_exclude_update.elapsed();
-#endif
-        }
-
-        {
-            long long branch_elapsed = t_branch.elapsed();
-            long long excluded_time = child_dfs_time;
-            stats.branch_time += branch_elapsed > excluded_time
-                ? branch_elapsed - excluded_time : 0;
-        }
-
-        buf.restoreLocalChanges(*this);
-    }
-    // ========================================================================
 };
 
 // ============================================================
