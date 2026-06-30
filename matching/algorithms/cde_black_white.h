@@ -361,6 +361,8 @@ private:
     vector<MyBitset> candidates;
     ui bw_static_root = 0;
     vector<VertexColor> bw_static_color;
+    vector<ui> bw_static_candidate_count;
+    vector<vector<unsigned long long>> bw_static_edge_support;
 
     vector<int> mapped_q;
     vector<int> mapped_g;
@@ -462,6 +464,8 @@ private:
         terminal_buckets_enabled = CDE_BLACK_WHITE_TERMINAL_BUCKETS_DEFAULT != 0;
         bw_static_root = 0;
         bw_static_color.clear();
+        bw_static_candidate_count.clear();
+        bw_static_edge_support.clear();
     }
 
     // ========================================================================
@@ -2058,6 +2062,124 @@ private:
         return buffer;
     }
 
+    unsigned long long countBlackWhiteStaticEdgeSupport(ui u, ui neighbor) const
+    {
+        unsigned long long count = 0;
+        for (int candidate : candidates[u]) {
+            ui v = (ui)candidate;
+            ui degree = 0;
+            const ui *neighbors = data_graph->getVertexNeighbors(v, degree);
+            for (ui i = 0; i < degree; ++i) {
+                if (candidates[neighbor].contains(neighbors[i])) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    void initBlackWhiteStaticEdgeSupport()
+    {
+        bw_static_candidate_count.assign(qn, 0);
+        for (ui u = 0; u < qn; ++u) {
+            bw_static_candidate_count[u] = (ui)candidates[u].size();
+        }
+
+        bw_static_edge_support.assign(qn,
+            vector<unsigned long long>(qn, 0));
+        for (ui u = 0; u < qn; ++u) {
+            for (ui neighbor : q_neighbors[u]) {
+                if (u > neighbor) {
+                    continue;
+                }
+                ui scan_u = bw_static_candidate_count[u] <=
+                    bw_static_candidate_count[neighbor] ? u : neighbor;
+                ui target_u = scan_u == u ? neighbor : u;
+                unsigned long long support =
+                    countBlackWhiteStaticEdgeSupport(scan_u, target_u);
+                bw_static_edge_support[u][neighbor] = support;
+                bw_static_edge_support[neighbor][u] = support;
+            }
+        }
+    }
+
+    double blackWhiteStaticDirectedBranchCost(ui anchor, ui u) const
+    {
+        if (anchor >= qn || u >= qn ||
+            bw_static_candidate_count[anchor] == 0) {
+            return std::numeric_limits<double>::infinity();
+        }
+        return (double)bw_static_edge_support[anchor][u] /
+            (double)bw_static_candidate_count[anchor];
+    }
+
+    double blackWhiteStaticIntroduceCost(ui u) const
+    {
+        if (u >= qn || bw_static_candidate_count[u] == 0) {
+            return std::numeric_limits<double>::infinity();
+        }
+
+        double best = (double)bw_static_candidate_count[u];
+        for (ui anchor : q_neighbors[u]) {
+            double cost = blackWhiteStaticDirectedBranchCost(anchor, u);
+            if (cost > 0.0 && cost < best) {
+                best = cost;
+            }
+        }
+        return best;
+    }
+
+    double blackWhiteStaticAlternativeCost(ui u, ui excluded_anchor) const
+    {
+        if (u >= qn || bw_static_candidate_count[u] == 0) {
+            return std::numeric_limits<double>::infinity();
+        }
+
+        double best = (double)bw_static_candidate_count[u];
+        for (ui anchor : q_neighbors[u]) {
+            if (anchor == excluded_anchor) {
+                continue;
+            }
+            double cost = blackWhiteStaticDirectedBranchCost(anchor, u);
+            if (cost < best) {
+                best = cost;
+            }
+        }
+        return best;
+    }
+
+    bool shouldUseStaticBlack(ui u) const
+    {
+        if (u == bw_static_root) {
+            return true;
+        }
+
+        double introduce_cost = blackWhiteStaticIntroduceCost(u);
+        if (!std::isfinite(introduce_cost)) {
+            return false;
+        }
+        if (introduce_cost <= 0.0) {
+            return true;
+        }
+
+        double saved_log = 0.0;
+        for (ui neighbor : q_neighbors[u]) {
+            double via_u = blackWhiteStaticDirectedBranchCost(u, neighbor);
+            double alternative =
+                blackWhiteStaticAlternativeCost(neighbor, u);
+            if (!std::isfinite(alternative) || alternative <= 0.0 ||
+                via_u >= alternative) {
+                continue;
+            }
+            if (via_u <= 0.0) {
+                return true;
+            }
+            saved_log += std::log(alternative) - std::log(via_u);
+        }
+
+        return std::log(introduce_cost) <= saved_log;
+    }
+
     ui selectInitialRootBlackWhite()
     {
         ui root = 0;
@@ -2073,10 +2195,13 @@ private:
 
     void initBlackWhiteStaticColors()
     {
+        initBlackWhiteStaticEdgeSupport();
         bw_static_root = selectInitialRootBlackWhite();
         bw_static_color.assign(qn, COLOR_WHITE);
-        if (bw_static_root < qn) {
-            bw_static_color[bw_static_root] = COLOR_BLACK;
+        for (ui u = 0; u < qn; ++u) {
+            if (shouldUseStaticBlack(u)) {
+                bw_static_color[u] = COLOR_BLACK;
+            }
         }
     }
 
