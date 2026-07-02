@@ -285,6 +285,12 @@ private:
     vector<ui> bw_candidate_source_buffer;
     vector<ui> bw_candidate_result_buffer;
     vector<ui> bw_candidate_intersection_buffer;
+    vector<ui> bw_candidate_batch_mark;
+    vector<ui> bw_candidate_batch_pos;
+    vector<ui> bw_candidate_batch_present_hits;
+    vector<ui> bw_candidate_batch_undecided_hits;
+    vector<unsigned char> bw_candidate_batch_valid;
+    ui bw_candidate_batch_token = 0;
 
     vector<vector<BlackWhiteActiveEdge>> bw_top_edges_buffer_by_depth;
     vector<vector<ui>> bw_white_neighbors_buffer_by_depth;
@@ -329,6 +335,12 @@ private:
         bw_candidate_source_buffer.clear();
         bw_candidate_result_buffer.clear();
         bw_candidate_intersection_buffer.clear();
+        bw_candidate_batch_mark.assign(gn, 0);
+        bw_candidate_batch_pos.assign(gn, 0);
+        bw_candidate_batch_present_hits.clear();
+        bw_candidate_batch_undecided_hits.clear();
+        bw_candidate_batch_valid.clear();
+        bw_candidate_batch_token = 0;
         stats = TimeStats();
         bw_static_root = 0;
         bw_static_color.clear();
@@ -1037,6 +1049,21 @@ private:
         return data_graph->hasEdge(u, v);
     }
 
+    bool blackWhiteCandidateAdjacentFromAnchor(ui anchor_query, ui anchor_data,
+        ui target_query, ui target_data)
+    {
+        stats.candidate_edge_check_calls++;
+        const CandidateAdjRange *range =
+            findBlackWhiteCandidateAdjRange(anchor_query, anchor_data, target_query);
+        if (range == nullptr) {
+            stats.candidate_range_misses++;
+            return false;
+        }
+
+        stats.candidate_range_hits++;
+        return blackWhiteRangeContains(*range, target_data);
+    }
+
     // ========================================================================
     // Dynamic black/white search
     // ========================================================================
@@ -1399,7 +1426,8 @@ private:
             }
 
             ui mapped_neighbor = (ui)state.mapped_q[neighbor];
-            bool adjacent = blackWhiteGraphHasEdge(v, mapped_neighbor);
+            bool adjacent = blackWhiteCandidateAdjacentFromAnchor(
+                neighbor, mapped_neighbor, u, v);
             EdgeState state_uv = getBlackWhiteEdgeState(state, u, neighbor);
             if (state_uv == EDGE_PRESENT) {
                 if (!adjacent) return false;
@@ -1521,6 +1549,170 @@ private:
         return std::binary_search(begin, end, candidate);
     }
 
+    ui nextBlackWhiteCandidateBatchToken()
+    {
+        if (bw_candidate_batch_mark.size() < gn) {
+            bw_candidate_batch_mark.assign(gn, 0);
+            bw_candidate_batch_pos.assign(gn, 0);
+            bw_candidate_batch_token = 0;
+        }
+
+        bw_candidate_batch_token++;
+        if (bw_candidate_batch_token == 0) {
+            std::fill(bw_candidate_batch_mark.begin(),
+                bw_candidate_batch_mark.end(), 0);
+            bw_candidate_batch_token = 1;
+        }
+        return bw_candidate_batch_token;
+    }
+
+    void addBlackWhiteBatchRangeHits(const CandidateAdjRange *range, ui token,
+        vector<ui> &hits)
+    {
+        if (range == nullptr) {
+            return;
+        }
+
+        for (const ui *it = blackWhiteRangeBegin(*range);
+            it != blackWhiteRangeEnd(*range); ++it) {
+            ui candidate = *it;
+            if (candidate >= bw_candidate_batch_mark.size() ||
+                bw_candidate_batch_mark[candidate] != token) {
+                continue;
+            }
+
+            ui pos = bw_candidate_batch_pos[candidate];
+            if (pos < hits.size()) {
+                hits[pos]++;
+            }
+        }
+    }
+
+    void invalidateBlackWhiteBatchRange(const CandidateAdjRange *range, ui token)
+    {
+        if (range == nullptr) {
+            return;
+        }
+
+        for (const ui *it = blackWhiteRangeBegin(*range);
+            it != blackWhiteRangeEnd(*range); ++it) {
+            ui candidate = *it;
+            if (candidate >= bw_candidate_batch_mark.size() ||
+                bw_candidate_batch_mark[candidate] != token) {
+                continue;
+            }
+
+            ui pos = bw_candidate_batch_pos[candidate];
+            if (pos < bw_candidate_batch_valid.size()) {
+                bw_candidate_batch_valid[pos] = 0;
+            }
+        }
+    }
+
+    void appendFeasibleCandidatesBatch(const BlackWhiteState &state, ui u,
+        ui cost, const vector<ui> &source, vector<ui> &result)
+    {
+        if (source.empty()) {
+            return;
+        }
+
+        ui token = nextBlackWhiteCandidateBatchToken();
+        size_t source_count = source.size();
+        bw_candidate_batch_present_hits.assign(source_count, 0);
+        bw_candidate_batch_undecided_hits.assign(source_count, 0);
+        bw_candidate_batch_valid.assign(source_count, 0);
+
+        for (size_t i = 0; i < source_count; ++i) {
+            ui candidate = source[i];
+            if (candidate >= gn) {
+                continue;
+            }
+            bw_candidate_batch_mark[candidate] = token;
+            bw_candidate_batch_pos[candidate] = (ui)i;
+            bw_candidate_batch_valid[i] =
+                isDataVertexUsed(state, candidate) ? 0 : 1;
+        }
+
+        ui present_count = 0;
+        ui undecided_count = 0;
+        for (ui neighbor : q_neighbors[u]) {
+            if (!isBlack(state, neighbor)) {
+                continue;
+            }
+
+            ui mapped_neighbor = (ui)state.mapped_q[neighbor];
+            EdgeState state_uv = getBlackWhiteEdgeState(state, u, neighbor);
+            const CandidateAdjRange *range =
+                findBlackWhiteCandidateAdjRange(neighbor, mapped_neighbor, u);
+
+            stats.candidate_edge_check_calls += (long long)source_count;
+            if (range == nullptr) {
+                stats.candidate_range_misses++;
+            }
+            else {
+                stats.candidate_range_hits++;
+            }
+
+            if (state_uv == EDGE_PRESENT) {
+                present_count++;
+                addBlackWhiteBatchRangeHits(range, token,
+                    bw_candidate_batch_present_hits);
+            }
+            else if (state_uv == EDGE_MISSING) {
+                invalidateBlackWhiteBatchRange(range, token);
+            }
+            else {
+                undecided_count++;
+                addBlackWhiteBatchRangeHits(range, token,
+                    bw_candidate_batch_undecided_hits);
+            }
+        }
+
+        for (size_t i = 0; i < source_count; ++i) {
+            if (!bw_candidate_batch_valid[i]) {
+                continue;
+            }
+            if (bw_candidate_batch_present_hits[i] != present_count) {
+                continue;
+            }
+
+            ui adjacent_undecided = bw_candidate_batch_undecided_hits[i];
+            ui delta = undecided_count > adjacent_undecided
+                ? undecided_count - adjacent_undecided : 0;
+            if (cost + delta <= threshold) {
+                result.push_back(source[i]);
+            }
+        }
+    }
+
+    void copyWhiteBucketCandidates(const BlackWhiteState &state,
+        const WhiteCandidateBuckets &bucket, vector<ui> &target) const
+    {
+        assert(bucket.begin + bucket.count <= state.white_candidate_pool.size());
+        target.assign(state.white_candidate_pool.begin() + bucket.begin,
+            state.white_candidate_pool.begin() + bucket.begin + bucket.count);
+    }
+
+    void filterSourceByWhiteBucket(const BlackWhiteState &state,
+        const WhiteCandidateBuckets &bucket, const vector<ui> &source,
+        vector<ui> &target) const
+    {
+        target.clear();
+        for (ui candidate : source) {
+            if (whiteBucketContains(state, bucket, candidate)) {
+                target.push_back(candidate);
+            }
+        }
+    }
+
+    void collectAllBlackWhiteCandidates(ui u, vector<ui> &target)
+    {
+        target.clear();
+        for (int candidate : candidates[u]) {
+            target.push_back((ui)candidate);
+        }
+    }
+
     void appendFeasibleCandidatesFromWhiteBucket(const BlackWhiteState &state,
         ui u, ui cost, const WhiteCandidateBuckets &bucket, vector<ui> &result)
     {
@@ -1552,35 +1744,41 @@ private:
 
             if (existing_bucket != nullptr &&
                 existing_bucket->count <= bw_candidate_source_buffer.size()) {
-                appendFeasibleCandidatesFromWhiteBucket(state, u, cost,
-                    *existing_bucket, bw_candidate_result_buffer);
+                copyWhiteBucketCandidates(state, *existing_bucket,
+                    bw_candidate_intersection_buffer);
+                appendFeasibleCandidatesBatch(state, u, cost,
+                    bw_candidate_intersection_buffer, bw_candidate_result_buffer);
             }
             else {
-                for (ui candidate : bw_candidate_source_buffer) {
-                    if (existing_bucket != nullptr &&
-                        !whiteBucketContains(state, *existing_bucket, candidate)) {
-                        continue;
-                    }
-                    appendFeasibleWhiteCandidate(state, u, candidate, cost,
-                        bw_candidate_result_buffer);
+                const vector<ui> *source = &bw_candidate_source_buffer;
+                if (existing_bucket != nullptr) {
+                    filterSourceByWhiteBucket(state, *existing_bucket,
+                        bw_candidate_source_buffer,
+                        bw_candidate_intersection_buffer);
+                    source = &bw_candidate_intersection_buffer;
                 }
+                appendFeasibleCandidatesBatch(state, u, cost, *source,
+                    bw_candidate_result_buffer);
             }
         }
         else if (existing_bucket != nullptr) {
-            appendFeasibleCandidatesFromWhiteBucket(state, u, cost,
-                *existing_bucket, bw_candidate_result_buffer);
+            copyWhiteBucketCandidates(state, *existing_bucket,
+                bw_candidate_intersection_buffer);
+            appendFeasibleCandidatesBatch(state, u, cost,
+                bw_candidate_intersection_buffer, bw_candidate_result_buffer);
         }
         else {
 #endif
         if (existing_bucket != nullptr) {
-            appendFeasibleCandidatesFromWhiteBucket(state, u, cost,
-                *existing_bucket, bw_candidate_result_buffer);
+            copyWhiteBucketCandidates(state, *existing_bucket,
+                bw_candidate_intersection_buffer);
+            appendFeasibleCandidatesBatch(state, u, cost,
+                bw_candidate_intersection_buffer, bw_candidate_result_buffer);
         }
         else {
-            for (int candidate : candidates[u]) {
-                appendFeasibleWhiteCandidate(state, u, (ui)candidate, cost,
-                    bw_candidate_result_buffer);
-            }
+            collectAllBlackWhiteCandidates(u, bw_candidate_source_buffer);
+            appendFeasibleCandidatesBatch(state, u, cost,
+                bw_candidate_source_buffer, bw_candidate_result_buffer);
         }
 #if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE
         }
@@ -1693,8 +1891,8 @@ private:
             if (state_uv != EDGE_UNDECIDED) {
                 continue;
             }
-            bool adjacent = blackWhiteGraphHasEdge(v,
-                (ui)state.mapped_q[neighbor]);
+            bool adjacent = blackWhiteCandidateAdjacentFromAnchor(
+                neighbor, (ui)state.mapped_q[neighbor], u, v);
             setBlackWhiteEdgeState(state, u, neighbor,
                 adjacent ? EDGE_PRESENT : EDGE_MISSING);
         }
@@ -1740,7 +1938,8 @@ private:
             }
 
             ui mapped_neighbor = (ui)state.mapped_q[neighbor];
-            bool adjacent = blackWhiteGraphHasEdge(candidate, mapped_neighbor);
+            bool adjacent = blackWhiteCandidateAdjacentFromAnchor(
+                neighbor, mapped_neighbor, white_u, candidate);
             EdgeState state_uv = getBlackWhiteEdgeState(state, white_u, neighbor);
             if (state_uv == EDGE_PRESENT) {
                 if (!adjacent) return false;
