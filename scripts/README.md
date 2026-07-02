@@ -117,3 +117,30 @@ axis is `t`, and the y-axis is the average runtime on a logarithmic scale.
 By default, dataset names ending in `_15`, `_30`, `_45`, and `_60` are combined
 by prefix to match the chart grouping in `make_result_tables.py`. Pass
 `--exact-dataset-names` to keep those dataset names separate.
+
+## Phase Runtime Charts
+
+`make_phase_runtime_tables.py` creates two groups of dataset-level line charts:
+one for preprocessing time and one for search time. It writes
+`phase_runtime_by_t.html` by default.
+
+```bash
+python3 -B scripts/make_phase_runtime_tables.py result/20260423_174256
+```
+
+The default preprocessing metric is `init_ms`, parsed from `Init Time:` in each
+algorithm output file. The default search metric is `search_ms`, parsed from
+`Search Time:`. These are the algorithm-internal phase timings, not graph
+loading time.
+
+To use different stage metrics:
+
+```bash
+python3 -B scripts/make_phase_runtime_tables.py \
+  --preprocess-metric init_ms \
+  --search-metric search_ms \
+  result/20260423_174256
+```
+
+You can still request `load_ms` and `run_ms` explicitly to plot the broader
+load-graphs and total-run timings from `SSM_GED_SUMMARY`.
