@@ -144,3 +144,21 @@ python3 -B scripts/make_phase_runtime_tables.py \
 
 You can still request `load_ms` and `run_ms` explicitly to plot the broader
 load-graphs and total-run timings from `SSM_GED_SUMMARY`.
+
+## Filter Candidate Charts
+
+`make_filter_candidate_tables.py` creates dataset-level line charts comparing
+the total number of candidates left after filtering. It writes
+`filter_candidates_by_t.html` by default.
+
+```bash
+python3 -B scripts/make_filter_candidate_tables.py result/20260423_174256
+```
+
+The script reads `*_filter_candidates`-style columns when present. For current
+summary files, it usually parses `Filter Candidates:` from each algorithm's
+`*_output` file instead. Algorithms that do not print this line are shown as
+missing for those points.
+
+The y-axis is logarithmic by default. Pass `--linear-scale` to use a linear
+y-axis.
