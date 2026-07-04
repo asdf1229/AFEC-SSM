@@ -204,6 +204,7 @@ public:
         // counters
         long long recursion_calls = 0;
         long long prun_calls = 0;
+        long long terminal_tail_calls = 0;
         long long white_bucket_rebuilds = 0;
         long long graph_has_edge_checks = 0;
         long long candidate_range_hits = 0;
@@ -241,6 +242,7 @@ public:
 #endif
         printf("Recursion Calls:     %lld\n", stats.recursion_calls);
         printf("Pruning Calls:       %lld\n", stats.prun_calls);
+        printf("Terminal Tail Calls: %lld\n", stats.terminal_tail_calls);
         printf("White Rebuilds:      %lld\n", stats.white_bucket_rebuilds);
         printf("Graph hasEdge Calls: %lld\n", stats.graph_has_edge_checks);
         printf("Range Hits/Misses:   %lld / %lld\n",
@@ -1225,7 +1227,7 @@ private:
             ui deg_u = q_degree[u];
             ui deg_root = q_degree[root];
 
-            if (cand_u * deg_root > cand_root * deg_u) root = u;
+            if (cand_u * deg_root < cand_root * deg_u) root = u;
         }
         return root;
     }
@@ -2480,6 +2482,8 @@ private:
             stats.output_limit_reached = true;
             return;
         }
+        stats.recursion_calls++;
+        stats.terminal_tail_calls++;
         assert(cost <= threshold);
 
         if (pos == tail_vertices.size()) {

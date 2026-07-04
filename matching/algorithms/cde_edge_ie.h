@@ -224,7 +224,6 @@ private:
         ui u = 0;       // unmatched endpoint
         ui anchor = 0;  // matched endpoint
         ui anchor_support = std::numeric_limits<ui>::max();
-        double rank_support = std::numeric_limits<double>::max();
         ui live_anchor_count = 0;
         ui query_degree = 0;
     };
@@ -273,7 +272,6 @@ private:
     vector<ui> active_frontier;
     vector<ui> data_vertex_mark;
     vector<ui> data_vertex_mark_pos;
-    bool terminal_buckets_enabled = true;
     ui data_vertex_mark_token = 0;
 
     struct TerminalScan {
@@ -346,7 +344,6 @@ private:
         data_vertex_mark_pos.assign(gn, 0);
         data_vertex_mark_token = 0;
         stats = TimeStats();
-        terminal_buckets_enabled = CDE_EDGE_IE_TERMINAL_BUCKETS_DEFAULT != 0;
     }
 
     // ========================================================================
@@ -1159,9 +1156,6 @@ private:
                 return false;
             }
 
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
-            selectTopActiveEdgesWithDecay(max_count, top_edges);
-#else
             auto better_edge = [&](const ActiveEdge &lhs, const ActiveEdge &rhs) {
                 return isBetterActiveEdge(lhs, rhs);
                 };
@@ -1173,7 +1167,6 @@ private:
             else {
                 sort(top_edges.begin(), top_edges.end(), better_edge);
             }
-#endif
             return true;
         }
 
@@ -1202,11 +1195,7 @@ private:
                     const vector<ActiveEdge> &edges =
                         cachedActiveEdgesForVertex(component_u, edge_score_cache);
                     component_edge_counts[id] += (ui)edges.size();
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
-                    for (const ActiveEdge &edge : edges) {
-                        component_support_sums[id] += edge.rank_support;
-                    }
-#elif !CDE_EDGE_IE_FIXED_ORDER
+#if !CDE_EDGE_IE_FIXED_ORDER
                     for (const ActiveEdge &edge : edges) {
                         component_support_sums[id] += edge.anchor_support;
                     }
@@ -1231,7 +1220,7 @@ private:
                     continue;
                 }
 
-#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY && !CDE_EDGE_IE_FIXED_ORDER
+#if !CDE_EDGE_IE_FIXED_ORDER
                 if (component_support_sums[id] == 0.0) {
                     has_zero_support_component = true;
                     return false;
@@ -1280,26 +1269,6 @@ private:
                 return lhs.u < rhs.u;
             }
             return lhs.anchor < rhs.anchor;
-#elif CDE_EDGE_IE_TOPK_SUPPORT_DECAY
-            double lhs_scaled =
-                lhs.rank_support * (double)std::max((ui)1, rhs.live_anchor_count);
-            double rhs_scaled =
-                rhs.rank_support * (double)std::max((ui)1, lhs.live_anchor_count);
-            double scale = std::max(1.0,
-                std::max(std::fabs(lhs_scaled), std::fabs(rhs_scaled)));
-            if (std::fabs(lhs_scaled - rhs_scaled) > 1e-12 * scale) {
-                return lhs_scaled < rhs_scaled;
-            }
-            if (lhs.live_anchor_count != rhs.live_anchor_count) {
-                return lhs.live_anchor_count > rhs.live_anchor_count;
-            }
-            if (lhs.query_degree != rhs.query_degree) {
-                return lhs.query_degree > rhs.query_degree;
-            }
-            if (lhs.u != rhs.u) {
-                return lhs.u < rhs.u;
-            }
-            return lhs.anchor < rhs.anchor;
 #else
             if (lhs.anchor_support != rhs.anchor_support) {
                 return lhs.anchor_support < rhs.anchor_support;
@@ -1316,56 +1285,6 @@ private:
             return lhs.anchor < rhs.anchor;
 #endif
         }
-
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
-        void selectTopActiveEdgesWithDecay(ui max_count, vector<ActiveEdge> &top_edges) const
-        {
-            size_t selected_limit = top_edges.size();
-            if ((size_t)max_count < selected_limit) {
-                selected_limit = (size_t)max_count;
-            }
-
-            const double gamma = (double)CDE_EDGE_IE_TOPK_SUPPORT_DECAY_GAMMA;
-            for (size_t selected_idx = 0; selected_idx < selected_limit; ++selected_idx) {
-                size_t best_idx = selected_idx;
-                for (size_t i = selected_idx + 1; i < top_edges.size(); ++i) {
-                    if (isBetterActiveEdge(top_edges[i], top_edges[best_idx])) {
-                        best_idx = i;
-                    }
-                }
-
-                if (best_idx != selected_idx) {
-                    std::swap(top_edges[selected_idx], top_edges[best_idx]);
-                }
-
-                const ActiveEdge &selected = top_edges[selected_idx];
-                double candidate_count = (double)solver.candidates[selected.u].size();
-                if (candidate_count <= 0.0) {
-                    continue;
-                }
-
-                double factor = 1.0 - gamma * selected.rank_support / candidate_count;
-                if (factor < 0.0) {
-                    factor = 0.0;
-                }
-                else if (factor > 1.0) {
-                    factor = 1.0;
-                }
-
-                if (factor == 1.0) {
-                    continue;
-                }
-
-                for (size_t i = selected_idx + 1; i < top_edges.size(); ++i) {
-                    if (top_edges[i].u == selected.u) {
-                        top_edges[i].rank_support *= factor;
-                    }
-                }
-            }
-
-            top_edges.resize(selected_limit);
-        }
-#endif
 
         void collectActiveEdgesForVertex(ui u, vector<ActiveEdge> &edges) const
         {
@@ -1387,9 +1306,7 @@ private:
                 ActiveEdge edge;
                 edge.u = u;
                 edge.anchor = anchor;
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY
-                edge.rank_support = (double)estimateEdgeSupport(u, anchor);
-#elif !CDE_EDGE_IE_FIXED_ORDER
+#if !CDE_EDGE_IE_FIXED_ORDER
                 edge.anchor_support = estimateEdgeSupport(u, anchor);
 #endif
                 edge.live_anchor_count = live_anchor_count;
@@ -2151,68 +2068,66 @@ private:
         vector<ActiveEdge> &top_edges = buf.top_edges;
         ui current_cost = cost;
         double selected_component_support_sum = std::numeric_limits<double>::max();
-#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY && !CDE_EDGE_IE_FIXED_ORDER
+#if !CDE_EDGE_IE_FIXED_ORDER
         bool selected_covered_component = false;
 #endif
         bool has_zero_support_component = false;
         const vector<char> *terminal_skip_vertices = nullptr;
 
-        if (terminal_buckets_enabled) {
-            Timer t_terminal;
-            Timer t_terminal_scan;
-            TerminalScan terminal_scan = markTerminalVertices(buf);
-            stats.terminal_scan_time += t_terminal_scan.elapsed();
-            stats.terminal_scan_calls++;
+        Timer t_terminal;
+        Timer t_terminal_scan;
+        TerminalScan terminal_scan = markTerminalVertices(buf);
+        stats.terminal_scan_time += t_terminal_scan.elapsed();
+        stats.terminal_scan_calls++;
 
-            if (terminal_scan.allRemainingTerminal()) {
-                Timer t_terminal_build;
-                stats.terminal_tail_build_calls++;
-                if (!buildTerminalTailVertices(buf.terminal_vertices,
-                    current_cost, buf)) {
-                    stats.terminal_tail_build_time += t_terminal_build.elapsed();
-                    stats.terminal_time += t_terminal.elapsed();
-                    recordTerminalPrune();
-                    return;
-                }
+        if (terminal_scan.allRemainingTerminal()) {
+            Timer t_terminal_build;
+            stats.terminal_tail_build_calls++;
+            if (!buildTerminalTailVertices(buf.terminal_vertices,
+                current_cost, buf)) {
                 stats.terminal_tail_build_time += t_terminal_build.elapsed();
-
-                Timer t_terminal_enum;
-                enumerateTerminalTail(0, current_cost, buf.terminal_tail_vertices);
-                stats.terminal_tail_enum_time += t_terminal_enum.elapsed();
                 stats.terminal_time += t_terminal.elapsed();
+                recordTerminalPrune();
                 return;
             }
+            stats.terminal_tail_build_time += t_terminal_build.elapsed();
 
-            if (terminal_scan.terminal_frontier_count > 0) {
-                Timer t_terminal_build;
-                stats.terminal_tail_build_calls++;
-                if (!buildTerminalTailVertices(buf.active_terminal_vertices,
-                    current_cost, buf)) {
-                    stats.terminal_tail_build_time += t_terminal_build.elapsed();
-                    stats.terminal_time += t_terminal.elapsed();
-                    recordTerminalPrune();
-                    return;
-                }
-                stats.terminal_tail_build_time += t_terminal_build.elapsed();
-
-                ui remaining_budget = threshold - current_cost;
-                Timer t_min_delta;
-                if (terminalMinDeltaSum(buf.terminal_tail_vertices,
-                    remaining_budget) > remaining_budget) {
-                    stats.terminal_min_delta_time += t_min_delta.elapsed();
-                    stats.terminal_time += t_terminal.elapsed();
-                    recordTerminalPrune();
-                    return;
-                }
-                stats.terminal_min_delta_time += t_min_delta.elapsed();
-
-                if (terminal_scan.hasNonterminalFrontier()) {
-                    terminal_skip_vertices = &buf.terminal_skip;
-                    stats.terminal_delayed_vertices += terminal_scan.terminal_frontier_count;
-                }
-            }
+            Timer t_terminal_enum;
+            enumerateTerminalTail(0, current_cost, buf.terminal_tail_vertices);
+            stats.terminal_tail_enum_time += t_terminal_enum.elapsed();
             stats.terminal_time += t_terminal.elapsed();
+            return;
         }
+
+        if (terminal_scan.terminal_frontier_count > 0) {
+            Timer t_terminal_build;
+            stats.terminal_tail_build_calls++;
+            if (!buildTerminalTailVertices(buf.active_terminal_vertices,
+                current_cost, buf)) {
+                stats.terminal_tail_build_time += t_terminal_build.elapsed();
+                stats.terminal_time += t_terminal.elapsed();
+                recordTerminalPrune();
+                return;
+            }
+            stats.terminal_tail_build_time += t_terminal_build.elapsed();
+
+            ui remaining_budget = threshold - current_cost;
+            Timer t_min_delta;
+            if (terminalMinDeltaSum(buf.terminal_tail_vertices,
+                remaining_budget) > remaining_budget) {
+                stats.terminal_min_delta_time += t_min_delta.elapsed();
+                stats.terminal_time += t_terminal.elapsed();
+                recordTerminalPrune();
+                return;
+            }
+            stats.terminal_min_delta_time += t_min_delta.elapsed();
+
+            if (terminal_scan.hasNonterminalFrontier()) {
+                terminal_skip_vertices = &buf.terminal_skip;
+                stats.terminal_delayed_vertices += terminal_scan.terminal_frontier_count;
+            }
+        }
+        stats.terminal_time += t_terminal.elapsed();
 
         Timer t_frontier;
         ui max_branch_edges = threshold - current_cost + 1;
@@ -2227,7 +2142,7 @@ private:
             stats.frontier_select_time += t_select.elapsed();
         }
 
-#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY && !CDE_EDGE_IE_FIXED_ORDER
+#if !CDE_EDGE_IE_FIXED_ORDER
         bool all_selected_edges_have_zero_support = std::all_of(
             top_edges.begin(), top_edges.end(),
             [](const ActiveEdge &edge) {
@@ -2242,7 +2157,7 @@ private:
 
         {
             Timer t_component;
-#if CDE_EDGE_IE_TOPK_SUPPORT_DECAY || CDE_EDGE_IE_FIXED_ORDER
+#if CDE_EDGE_IE_FIXED_ORDER
             (void)buf.branch_selector.restrictTopEdgesToCoveredComponent(top_edges,
                 buf.edge_score_cache, buf.component_id, buf.component_frontiers,
                 buf.component_edge_counts, buf.component_seen_counts,
@@ -2259,7 +2174,7 @@ private:
         }
         stats.frontier_time += t_frontier.elapsed();
 
-#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY && !CDE_EDGE_IE_FIXED_ORDER
+#if !CDE_EDGE_IE_FIXED_ORDER
         if (has_zero_support_component ||
             (selected_covered_component && selected_component_support_sum == 0)) {
             stats.prun_calls++;
@@ -2272,7 +2187,7 @@ private:
 
         ui first_branch_edge = 0;
         bool pruned_by_forced_zero = false;
-#if !CDE_EDGE_IE_TOPK_SUPPORT_DECAY && !CDE_EDGE_IE_FIXED_ORDER
+#if !CDE_EDGE_IE_FIXED_ORDER
         for (; first_branch_edge < top_edges.size(); ++first_branch_edge) {
             const ActiveEdge &edge = top_edges[first_branch_edge];
             if (edge.anchor_support != 0) break;
