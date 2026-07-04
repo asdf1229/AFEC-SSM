@@ -3,7 +3,7 @@
 
 // Shared settings used by both default and ablation configurations.
 #define NDEBUG
-#define MATCH_OUTPUT_LIMIT 1000000
+#define MATCH_OUTPUT_LIMIT 100000000
 
 #ifdef SSM_GED_CONFIG_HEADER
 

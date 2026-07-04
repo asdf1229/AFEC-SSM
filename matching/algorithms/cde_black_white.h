@@ -52,6 +52,7 @@ class CDEBlackWhiteSolver {
 
         void clear()
         {
+            // 清空 white 候选桶的范围和可行计数。
             begin = 0;
             count = 0;
             feasible_count = 0;
@@ -59,6 +60,7 @@ class CDEBlackWhiteSolver {
 
         bool empty() const
         {
+            // 判断当前 white 候选桶是否没有可行候选。
             return feasible_count == 0;
         }
     };
@@ -114,10 +116,14 @@ class CDEBlackWhiteSolver {
     };
 
 public:
-    CDEBlackWhiteSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr) {}
+    CDEBlackWhiteSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr)
+    {
+        // 初始化为空指针，具体图和结果容器在 init/match 阶段绑定。
+    }
 
     bool init(const Graph *q, const Graph *g, ui match_threshold)
     {
+        // 初始化图信息、候选过滤、候选邻接索引以及静态颜色/边优先级。
         Timer t_init;
         t_init.restart();
 
@@ -132,7 +138,7 @@ public:
 
         resetState();
 
-        // init q_neighbors
+        // 初始化查询图邻接表缓存。
         q_neighbors.assign(qn, vector<ui>());
         q_degree.assign(qn, 0);
         for (ui u = 0; u < qn; ++u) {
@@ -153,14 +159,14 @@ public:
             return false;
         }
 
-        initBlackWhiteCandidateAdjIndex();
+        buildAdjIndex();
 
 #if CDE_BLACK_WHITE_STATIC_COLOR
-        initBWColor();
+        initColors();
 #endif
 
 #if CDE_BLACK_WHITE_FIXED_ORDER
-        initBlackWhiteFixedEdgePriorities();
+        initFixedEdgePriorities();
 #endif
 
         stats.init_time = t_init.elapsed();
@@ -169,20 +175,21 @@ public:
 
     void match(vector<vector<pair<ui, ui>>> &results)
     {
+        // 从静态或启发式根点开始枚举所有满足阈值的 black/white 匹配。
         Timer t_search;
         t_search.restart();
 
         results_ptr = &results;
         results_ptr->clear();
 
-        ui root = bw_static_root < qn ? bw_static_root : selectBWRoot();
+        ui root = bw_static_root < qn ? bw_static_root : chooseRoot();
         for (ui v0 : candidates[root]) {
             BlackWhiteState state;
-            initBlackWhiteState(state);
-            if (!commitRootBlack(state, root, v0)) {
+            initState(state);
+            if (!tryBindRoot(state, root, v0)) {
                 continue;
             }
-            bwSearch(state, 0);
+            search(state, 0);
             if (outputLimitReached()) break;
         }
 
@@ -217,6 +224,7 @@ public:
 
     void printStats() const
     {
+        // 打印初始化、过滤、搜索和候选索引相关统计。
         auto pct = [](long long part, long long whole) -> double {
             return whole > 0 ? (double)part / whole * 100.0 : 0.0;
             };
@@ -306,12 +314,14 @@ private:
 
     bool outputLimitReached() const
     {
+        // 检查结果数量是否已经达到编译期输出上限。
         return (size_t)MATCH_OUTPUT_LIMIT > 0 &&
             stats.result_count >= (size_t)MATCH_OUTPUT_LIMIT;
     }
 
     void noteOutputLimitIfReached()
     {
+        // 当输出上限被触达时记录统计标记。
         if (outputLimitReached()) {
             stats.output_limit_reached = true;
         }
@@ -319,6 +329,7 @@ private:
 
     void resetState()
     {
+        // 重置候选集、搜索缓冲、候选索引和静态启发式状态。
         candidates.clear();
         candidates.assign(qn, MyBitset(gn));
 
@@ -418,29 +429,32 @@ private:
 #if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
             , queued_spoke(solver.qn, 0)
 #endif
-        {}
+        {
+            // 绑定外层求解器，并初始化过滤阶段需要的临时匹配结构。
+        }
 
         bool run()
         {
+            // 依次执行桥边索引、NLF、桥边闭包和可选 spoke 过滤。
             if (!timed(&CDEBlackWhiteSolver::TimeStats::filter_bridge_time, [&] {
                 buildBridgeIndex();
                 return true;
             })) return false;
 
             if (!timed(&CDEBlackWhiteSolver::TimeStats::filter_nlf_time, [&] {
-                return filterNLF();
+                return filterByNLF();
             })) return false;
 
 #if CDE_BLACK_WHITE_ENABLE_BRIDGE_FILTERING
             if (!timed(&CDEBlackWhiteSolver::TimeStats::filter_bridge_time, [&] {
-                return initBridgeSupports() && propagateFilterClosure();
+                return initBridgeSupport() && propFilter();
             })) return false;
 #endif
 
 #if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
             if (!timed(&CDEBlackWhiteSolver::TimeStats::filter_spoke_time, [&] {
-                enqueueAllSpokeVertices();
-                return propagateFilterClosure();
+                pushAllSpokes();
+                return propFilter();
             })) return false;
 #endif
 
@@ -452,6 +466,7 @@ private:
         template <typename Fn>
         bool timed(long long CDEBlackWhiteSolver::TimeStats::*field, Fn &&fn)
         {
+            // 执行一个过滤步骤，并在调试构建中累计该步骤耗时。
 #ifndef NDEBUG
             Timer t;
 #endif
@@ -464,6 +479,7 @@ private:
 
         void updateCandidateCount()
         {
+            // 统计过滤后所有查询点的候选总数。
             solver.stats.filter_candidate_count = 0;
             for (ui u = 0; u < solver.qn; ++u) {
                 solver.stats.filter_candidate_count += (ui)solver.candidates[u].size();
@@ -472,12 +488,14 @@ private:
 
         ui addBridgeArc(ui from, ui to)
         {
+            // 添加一条有向桥边弧，返回其编号。
             bridge_arcs.push_back({ from, to });
             return (ui)bridge_arcs.size() - 1;
         }
 
         void markBridgeNeighbor(ui from, ui to)
         {
+            // 在查询邻接缓存中标记 from 到 to 这条边为桥边。
             bool marked = false;
             const vector<ui> &neighbors = solver.q_neighbors[from];
             for (ui i = 0; i < solver.q_degree[from]; ++i) {
@@ -493,6 +511,7 @@ private:
 
         void addBridge(ui a, ui b)
         {
+            // 记录一条无向桥边，并建立两个方向的支持依赖。
             ui ab = addBridgeArc(a, b);
             ui ba = addBridgeArc(b, a);
             bridge_nbrs[a].push_back({ b, ba });
@@ -503,6 +522,7 @@ private:
 
         void tarjan(ui u, ui parent, vector<int> &dfn, vector<int> &low, int &time)
         {
+            // 使用 Tarjan DFS 发现查询图中的桥边。
             dfn[u] = low[u] = ++time;
             for (ui v : solver.q_neighbors[u]) {
                 if (dfn[v] == 0) {
@@ -520,6 +540,7 @@ private:
 
         void buildBridgeIndex()
         {
+            // 构建桥边邻接索引，并初始化每个查询邻接位置的桥边标记。
             bridge_arcs.clear();
             bridge_nbrs.assign(solver.qn, vector<BridgeNbr>());
             solver.q_neighbor_is_bridge.assign(solver.qn, vector<char>());
@@ -541,8 +562,9 @@ private:
 #endif
         }
 
-        void buildVertexCache()
+        void buildLabelCache()
         {
+            // 缓存查询点标签、数据点标签和数据点度数。
             query_label.assign(solver.qn, 0);
             for (ui u = 0; u < solver.qn; ++u) {
                 query_label[u] = solver.query_graph->getVertexLabel(u);
@@ -556,8 +578,9 @@ private:
             }
         }
 
-        void buildQueryLabelReqs()
+        void buildQReqs()
         {
+            // 按标签汇总每个查询点的桥边和非桥边邻居需求。
             query_label_reqs.assign(solver.qn, vector<QueryLabelReq>());
             query_bridge_degree.assign(solver.qn, 0);
             vector<ui> bridge_counts(solver.label_count, 0);
@@ -599,8 +622,9 @@ private:
             }
         }
 
-        void buildDataLabelFreqs()
+        void buildGFreqs()
         {
+            // 按标签汇总每个数据点的邻居频次，并建立数据点标签分桶。
             data_label_freqs.assign(solver.gn, vector<LabelFreq>());
             data_by_label.assign(solver.label_count, vector<ui>());
             vector<ui> label_counts(solver.label_count, 0);
@@ -638,6 +662,7 @@ private:
 
         ui nlfDiff(ui u, ui v) const
         {
+            // 计算查询点 u 映射到数据点 v 时的邻域标签频次缺口。
             ui diff = 0;
             const vector<QueryLabelReq> &query_reqs = query_label_reqs[u];
             const vector<LabelFreq> &data_freqs = data_label_freqs[v];
@@ -670,11 +695,12 @@ private:
             return diff;
         }
 
-        bool filterNLF()
+        bool filterByNLF()
         {
-            buildVertexCache();
-            buildQueryLabelReqs();
-            buildDataLabelFreqs();
+            // 使用标签和邻域标签频次过滤初始候选集。
+            buildLabelCache();
+            buildQReqs();
+            buildGFreqs();
 
             for (ui u = 0; u < solver.qn; ++u) {
                 LabelID lu = query_label[u];
@@ -694,11 +720,13 @@ private:
 
         ui &support(ui arc_id, ui v)
         {
+            // 返回桥边弧 arc_id 在数据点 v 上的支持计数引用。
             return bridge_support[(size_t)arc_id * solver.gn + v];
         }
 
         bool pruneCandidate(ui u, ui v)
         {
+            // 删除候选 (u, v)，并把相关传播任务加入队列。
             if (!solver.candidates[u].contains(v)) {
                 return true;
             }
@@ -710,14 +738,15 @@ private:
             removed.push({ u, v });
 #if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
             for (ui nbr_u : solver.q_neighbors[u]) {
-                enqueueSpokeVertex(nbr_u);
+                pushSpoke(nbr_u);
             }
 #endif
             return true;
         }
 
-        bool initBridgeSupports()
+        bool initBridgeSupport()
         {
+            // 初始化桥边候选支持，并删除零支持候选。
             bridge_support.assign((size_t)bridge_arcs.size() * solver.gn, 0);
             vector<pair<ui, ui>> zero_support_candidates;
 
@@ -747,8 +776,9 @@ private:
             return true;
         }
 
-        bool propagateBridgeRemovals()
+        bool propBridge()
         {
+            // 沿桥边支持关系传播候选删除，直到删除队列清空。
             while (!removed.empty()) {
                 ui removed_u = removed.front().first;
                 ui removed_v = removed.front().second;
@@ -780,10 +810,11 @@ private:
             return true;
         }
 
-        bool propagateFilterClosure()
+        bool propFilter()
         {
+            // 交替执行桥边传播和 spoke 传播，直到达到过滤闭包。
             while (true) {
-                if (!propagateBridgeRemovals()) {
+                if (!propBridge()) {
                     return false;
                 }
 #if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
@@ -794,7 +825,7 @@ private:
                 ui u = pending_spokes.front();
                 pending_spokes.pop();
                 queued_spoke[u] = 0;
-                if (!processSpokeVertex(u)) {
+                if (!filterSpoke(u)) {
                     return false;
                 }
 #else
@@ -806,6 +837,7 @@ private:
 
         bool augmentSpoke(ui left_idx)
         {
+            // 在 spoke 二分图中为指定左点寻找增广路径。
             for (ui right_idx : spoke_adj[left_idx]) {
                 if (seen_right[right_idx] == seen_token) continue;
                 seen_right[right_idx] = seen_token;
@@ -820,6 +852,7 @@ private:
 
         bool tryAugmentSpoke(ui left_idx)
         {
+            // 刷新访问 token 后尝试为一个 spoke 左点增广。
             seen_token++;
             if (seen_token == 0) {
                 std::fill(seen_right.begin(), seen_right.end(), 0);
@@ -830,6 +863,7 @@ private:
 
         void buildSpokeAdj(ui u, ui v, ui &deg_u, ui &deg_v)
         {
+            // 为候选 (u, v) 建立查询邻居到数据邻居的 spoke 二分图。
             const vector<ui> &u_neighbors = solver.q_neighbors[u];
             deg_u = solver.q_degree[u];
             const ui *v_neighbors = solver.data_graph->getVertexNeighbors(v, deg_v);
@@ -847,8 +881,9 @@ private:
             }
         }
 
-        bool spokeFeasible(ui u, ui v, ui budget)
+        bool checkSpoke(ui u, ui v, ui budget)
         {
+            // 检查候选 (u, v) 的 spoke 匹配是否满足缺边预算。
             ui deg_u = 0;
             ui deg_v = 0;
             buildSpokeAdj(u, v, deg_u, deg_v);
@@ -897,15 +932,17 @@ private:
             return matched >= required;
         }
 
-        ui maxMissingIncidentEdges(ui u) const
+        ui edgeBudget(ui u) const
         {
+            // 返回查询点 u 的关联边最多可缺失数量。
             if (solver.q_degree[u] == 0) return 0;
             return std::min(solver.threshold, solver.q_degree[u] - 1);
         }
 
 #if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
-        void enqueueSpokeVertex(ui u)
+        void pushSpoke(ui u)
         {
+            // 将查询点加入 spoke 待处理队列，避免重复入队。
             if (queued_spoke[u]) {
                 return;
             }
@@ -913,20 +950,22 @@ private:
             queued_spoke[u] = 1;
         }
 
-        void enqueueAllSpokeVertices()
+        void pushAllSpokes()
         {
+            // 将所有查询点加入 spoke 队列，作为初始传播入口。
             for (ui u = 0; u < solver.qn; ++u) {
-                enqueueSpokeVertex(u);
+                pushSpoke(u);
             }
         }
 
-        bool processSpokeVertex(ui u)
+        bool filterSpoke(ui u)
         {
-            ui budget = maxMissingIncidentEdges(u);
+            // 删除查询点 u 下所有不满足 spoke 约束的候选。
+            ui budget = edgeBudget(u);
 
             vector<ui> to_remove;
             for (ui v : solver.candidates[u]) {
-                if (!spokeFeasible(u, v, budget)) {
+                if (!checkSpoke(u, v, budget)) {
                     to_remove.push_back(v);
                 }
             }
@@ -944,17 +983,20 @@ private:
 
     bool runCandidateFiltering()
     {
+        // 创建候选过滤器并执行完整过滤流程。
         return CandidateFilter(*this).run();
     }
 
-    unsigned long long blackWhiteCandidateAdjKey(ui data_vertex, ui query_neighbor) const
+    unsigned long long adjKey(ui data_vertex, ui query_neighbor) const
     {
+        // 将数据点和目标查询点编码成候选邻接索引的键。
         return ((unsigned long long)data_vertex << 32) |
             (unsigned long long)query_neighbor;
     }
 
-    void initBlackWhiteCandidateAdjIndex()
+    void buildAdjIndex()
     {
+        // 为每个候选 (u, v) 建立其可连接查询邻居的候选范围索引。
         bw_candidate_adj_index.clear();
         bw_candidate_adj_index.resize(qn);
         bw_candidate_adj_pool.clear();
@@ -993,84 +1035,92 @@ private:
                     range.begin = begin;
                     range.len = len;
                     bw_candidate_adj_index[u].emplace(
-                        blackWhiteCandidateAdjKey(v, query_neighbor), range);
+                        adjKey(v, query_neighbor), range);
                 }
             }
         }
     }
 
-    const CandidateAdjRange *findBlackWhiteCandidateAdjRange(ui from_query,
+    const CandidateAdjRange *findAdjRange(ui from_query,
         ui from_data, ui to_query) const
     {
+        // 查找从候选 (from_query, from_data) 到 to_query 的候选邻接范围。
         if (from_query >= bw_candidate_adj_index.size()) {
             return nullptr;
         }
 
         const auto &index = bw_candidate_adj_index[from_query];
-        auto it = index.find(blackWhiteCandidateAdjKey(from_data, to_query));
+        auto it = index.find(adjKey(from_data, to_query));
         if (it == index.end()) {
             return nullptr;
         }
         return &it->second;
     }
 
-    const ui *blackWhiteRangeBegin(const CandidateAdjRange &range) const
+    const ui *rangeBegin(const CandidateAdjRange &range) const
     {
+        // 返回候选邻接范围在连续池中的起始指针。
         return bw_candidate_adj_pool.data() + range.begin;
     }
 
-    const ui *blackWhiteRangeEnd(const CandidateAdjRange &range) const
+    const ui *rangeEnd(const CandidateAdjRange &range) const
     {
-        return blackWhiteRangeBegin(range) + range.len;
+        // 返回候选邻接范围在连续池中的结束指针。
+        return rangeBegin(range) + range.len;
     }
 
-    bool blackWhiteRangeContains(const CandidateAdjRange &range, ui value) const
+    bool rangeHas(const CandidateAdjRange &range, ui value) const
     {
-        return std::binary_search(blackWhiteRangeBegin(range),
-            blackWhiteRangeEnd(range), value);
+        // 判断已排序候选邻接范围中是否包含指定数据点。
+        return std::binary_search(rangeBegin(range),
+            rangeEnd(range), value);
     }
 
-    bool blackWhiteCandidateAdjacent(ui from_query, ui from_data,
+    bool candAdjacent(ui from_query, ui from_data,
         ui to_query, ui to_data)
     {
+        // 判断两个候选映射之间是否存在数据边，并更新范围命中统计。
         stats.candidate_edge_check_calls++;
         const CandidateAdjRange *range =
-            findBlackWhiteCandidateAdjRange(from_query, from_data, to_query);
+            findAdjRange(from_query, from_data, to_query);
         if (range == nullptr) {
             stats.candidate_range_misses++;
             return false;
         }
 
         stats.candidate_range_hits++;
-        return blackWhiteRangeContains(*range, to_data);
+        return rangeHas(*range, to_data);
     }
 
-    bool blackWhiteGraphHasEdge(ui u, ui v)
+    bool hasDataEdge(ui u, ui v)
     {
+        // 包装数据图 hasEdge 查询，并记录调用次数。
         stats.graph_has_edge_checks++;
         return data_graph->hasEdge(u, v);
     }
 
-    bool blackWhiteCandidateAdjacentFromAnchor(ui anchor_query, ui anchor_data,
+    bool anchorAdjacent(ui anchor_query, ui anchor_data,
         ui target_query, ui target_data)
     {
+        // 从已匹配锚点出发检查目标候选是否与其相邻。
         stats.candidate_edge_check_calls++;
         const CandidateAdjRange *range =
-            findBlackWhiteCandidateAdjRange(anchor_query, anchor_data, target_query);
+            findAdjRange(anchor_query, anchor_data, target_query);
         if (range == nullptr) {
             stats.candidate_range_misses++;
             return false;
         }
 
         stats.candidate_range_hits++;
-        return blackWhiteRangeContains(*range, target_data);
+        return rangeHas(*range, target_data);
     }
 
     // ========================================================================
     // Dynamic black/white search
     // ========================================================================
-    void initBlackWhiteState(BlackWhiteState &state) const
+    void initState(BlackWhiteState &state) const
     {
+        // 初始化一次 black/white DFS 所需的可回滚搜索状态。
         state.mapped_q.assign(qn, -1);
         state.used_data_vertices.clear();
         state.used_data_vertices.reserve(qn);
@@ -1087,24 +1137,28 @@ private:
         state.white_count = 0;
     }
 
-    size_t blackWhiteEdgeIndex(ui u, ui v) const
+    size_t edgeIdx(ui u, ui v) const
     {
+        // 将有向查询边 (u, v) 映射到一维边状态数组下标。
         return (size_t)u * qn + v;
     }
 
-    EdgeState getBlackWhiteEdgeState(const BlackWhiteState &state, ui u, ui v) const
+    EdgeState getEdge(const BlackWhiteState &state, ui u, ui v) const
     {
-        return state.edge_state[blackWhiteEdgeIndex(u, v)];
+        // 读取搜索状态中查询边 (u, v) 的存在/缺失/未决状态。
+        return state.edge_state[edgeIdx(u, v)];
     }
 
-    void setBlackWhiteEdgeStateRaw(BlackWhiteState &state, ui u, ui v,
+    void setEdgeRaw(BlackWhiteState &state, ui u, ui v,
         EdgeState edge_state_value) const
     {
-        state.edge_state[blackWhiteEdgeIndex(u, v)] = edge_state_value;
+        // 不记录 undo，直接写入有向查询边 (u, v) 的状态。
+        state.edge_state[edgeIdx(u, v)] = edge_state_value;
     }
 
-    vector<BlackWhiteActiveEdge> &blackWhiteTopEdgesBuffer(ui depth)
+    vector<BlackWhiteActiveEdge> &topEdgesBuffer(ui depth)
     {
+        // 获取指定搜索深度复用的 top edge 缓冲区。
         if (bw_top_edges_buffer_by_depth.size() <= depth) {
             bw_top_edges_buffer_by_depth.resize((size_t)depth + 1);
         }
@@ -1116,8 +1170,9 @@ private:
         return buffer;
     }
 
-    vector<ui> &blackWhiteWhiteNeighborsBuffer(ui depth)
+    vector<ui> &whiteNbrsBuffer(ui depth)
     {
+        // 获取指定搜索深度复用的 white 邻居缓冲区。
         if (bw_white_neighbors_buffer_by_depth.size() <= depth) {
             bw_white_neighbors_buffer_by_depth.resize((size_t)depth + 1);
         }
@@ -1138,8 +1193,9 @@ private:
         ui anchor_candidate_count = 0;
     };
 
-    void initBlackWhiteFixedEdgePriorities()
+    void initFixedEdgePriorities()
     {
+        // 根据静态候选边支持为查询边建立固定分支优先级。
         const ui invalid_priority = std::numeric_limits<ui>::max();
         bw_static_edge_priority.assign(qn, vector<ui>(qn, invalid_priority));
 
@@ -1217,8 +1273,9 @@ private:
     }
 #endif
 
-    ui selectBWRoot()
+    ui chooseRoot()
     {
+        // 选择候选数相对度数最小的查询点作为根。
         ui root = 0;
         for (ui u = 1; u < qn; ++u) {
             size_t cand_u = candidates[u].size();
@@ -1232,20 +1289,23 @@ private:
         return root;
     }
 
-    void initBWColor()
+    void initColors()
     {
-        bw_static_root = selectBWRoot();
+        // 初始化静态 black/white 偏好颜色，根点为 black，其余为 white。
+        bw_static_root = chooseRoot();
         bw_static_color.assign(qn, COLOR_WHITE);
         bw_static_color[bw_static_root] = COLOR_BLACK;
     }
 
-    bool shouldPreferStaticWhite(ui u) const
+    bool preferWhite(ui u) const
     {
+        // 判断静态颜色启发式是否倾向于把 u 作为 white。
         return u < bw_static_color.size() && bw_static_color[u] == COLOR_WHITE;
     }
 
-    bool commitRootBlack(BlackWhiteState &state, ui root, ui v) const
+    bool tryBindRoot(BlackWhiteState &state, ui root, ui v) const
     {
+        // 尝试把根查询点绑定到数据点 v，作为搜索初始 black 映射。
         if (root >= qn || v >= gn || !candidates[root].contains(v)) {
             return false;
         }
@@ -1260,31 +1320,37 @@ private:
 
     bool isDataVertexUsed(const BlackWhiteState &state, ui v) const
     {
+        // 判断数据点 v 是否已经被当前部分匹配占用。
         return v < state.used_data_flag.size() && state.used_data_flag[v] != 0;
     }
 
     bool isSelected(const BlackWhiteState &state, ui u) const
     {
+        // 判断查询点 u 是否已经被选入 black/white 搜索状态。
         return u < state.color.size() && state.color[u] != COLOR_UNSELECTED;
     }
 
     bool isBlack(const BlackWhiteState &state, ui u) const
     {
+        // 判断查询点 u 当前是否为 black。
         return u < state.color.size() && state.color[u] == COLOR_BLACK;
     }
 
     bool isWhite(const BlackWhiteState &state, ui u) const
     {
+        // 判断查询点 u 当前是否为 white。
         return u < state.color.size() && state.color[u] == COLOR_WHITE;
     }
 
-    size_t markBlackWhiteState() const
+    size_t mark() const
     {
+        // 返回当前 undo 栈大小，作为后续回滚标记。
         return black_white_undo.size();
     }
 
-    void rollbackBlackWhiteState(BlackWhiteState &state, size_t mark)
+    void rollback(BlackWhiteState &state, size_t mark)
     {
+        // 将搜索状态回滚到指定 undo 标记。
         while (black_white_undo.size() > mark) {
             BlackWhiteUndo undo = std::move(black_white_undo.back());
             black_white_undo.pop_back();
@@ -1297,8 +1363,8 @@ private:
                 state.color[undo.u] = undo.old_color;
                 break;
             case BW_UNDO_EDGE_STATE:
-                setBlackWhiteEdgeStateRaw(state, undo.u, undo.v, undo.old_edge_uv);
-                setBlackWhiteEdgeStateRaw(state, undo.v, undo.u, undo.old_edge_vu);
+                setEdgeRaw(state, undo.u, undo.v, undo.old_edge_uv);
+                setEdgeRaw(state, undo.v, undo.u, undo.old_edge_vu);
                 break;
             case BW_UNDO_USED_DATA_SIZE:
                 for (size_t i = undo.old_size; i < state.used_data_vertices.size(); ++i) {
@@ -1326,8 +1392,9 @@ private:
         }
     }
 
-    void setBlackWhiteMappedQ(BlackWhiteState &state, ui u, int value)
+    void setMap(BlackWhiteState &state, ui u, int value)
     {
+        // 设置查询点 u 的映射值，并记录 undo。
         BlackWhiteUndo undo;
         undo.kind = BW_UNDO_MAPPED_Q;
         undo.u = u;
@@ -1336,8 +1403,9 @@ private:
         state.mapped_q[u] = value;
     }
 
-    void setBlackWhiteColor(BlackWhiteState &state, ui u, VertexColor value)
+    void setColor(BlackWhiteState &state, ui u, VertexColor value)
     {
+        // 设置查询点 u 的颜色，并记录 undo。
         BlackWhiteUndo undo;
         undo.kind = BW_UNDO_COLOR;
         undo.u = u;
@@ -1346,22 +1414,24 @@ private:
         state.color[u] = value;
     }
 
-    void setBlackWhiteEdgeState(BlackWhiteState &state, ui u, ui v,
+    void setEdge(BlackWhiteState &state, ui u, ui v,
         EdgeState edge_state_value)
     {
+        // 对称设置查询边 (u, v) 的状态，并记录 undo。
         BlackWhiteUndo undo;
         undo.kind = BW_UNDO_EDGE_STATE;
         undo.u = u;
         undo.v = v;
-        undo.old_edge_uv = getBlackWhiteEdgeState(state, u, v);
-        undo.old_edge_vu = getBlackWhiteEdgeState(state, v, u);
+        undo.old_edge_uv = getEdge(state, u, v);
+        undo.old_edge_vu = getEdge(state, v, u);
         black_white_undo.push_back(std::move(undo));
-        setBlackWhiteEdgeStateRaw(state, u, v, edge_state_value);
-        setBlackWhiteEdgeStateRaw(state, v, u, edge_state_value);
+        setEdgeRaw(state, u, v, edge_state_value);
+        setEdgeRaw(state, v, u, edge_state_value);
     }
 
-    void pushBlackWhiteUsedDataVertex(BlackWhiteState &state, ui v)
+    void pushUsed(BlackWhiteState &state, ui v)
     {
+        // 将数据点 v 标记为已使用，并记录 used 列表大小以便回滚。
         BlackWhiteUndo undo;
         undo.kind = BW_UNDO_USED_DATA_SIZE;
         undo.old_size = state.used_data_vertices.size();
@@ -1370,8 +1440,9 @@ private:
         state.used_data_flag[v] = 1;
     }
 
-    void pushBlackWhitePartM(BlackWhiteState &state, ui u, ui v)
+    void pushMatch(BlackWhiteState &state, ui u, ui v)
     {
+        // 将匹配对 (u, v) 加入部分匹配，并记录大小以便回滚。
         BlackWhiteUndo undo;
         undo.kind = BW_UNDO_PART_M_SIZE;
         undo.old_size = state.part_M.size();
@@ -1379,8 +1450,9 @@ private:
         state.part_M.push_back({ u, v });
     }
 
-    void setBlackWhiteSelectedCount(BlackWhiteState &state, ui value)
+    void setSelectedCnt(BlackWhiteState &state, ui value)
     {
+        // 更新已选查询点数量，并记录 undo。
         BlackWhiteUndo undo;
         undo.kind = BW_UNDO_SELECTED_COUNT;
         undo.old_count = state.selected_count;
@@ -1388,8 +1460,9 @@ private:
         state.selected_count = value;
     }
 
-    void setBlackWhiteWhiteCount(BlackWhiteState &state, ui value)
+    void setWhiteCnt(BlackWhiteState &state, ui value)
     {
+        // 更新 white 查询点数量，并记录 undo。
         BlackWhiteUndo undo;
         undo.kind = BW_UNDO_WHITE_COUNT;
         undo.old_count = state.white_count;
@@ -1397,9 +1470,10 @@ private:
         state.white_count = value;
     }
 
-    void replaceBlackWhiteBucket(BlackWhiteState &state, ui u,
+    void replaceBucket(BlackWhiteState &state, ui u,
         const vector<ui> &candidates_to_store)
     {
+        // 用新的候选列表替换 u 的 white bucket，并记录旧 bucket。
         BlackWhiteUndo undo;
         undo.kind = BW_UNDO_WHITE_BUCKET;
         undo.u = u;
@@ -1418,9 +1492,10 @@ private:
         state.white[u] = bucket;
     }
 
-    bool computeBlackNeighborDelta(const BlackWhiteState &state, ui u, ui v,
+    bool calcBlackDelta(const BlackWhiteState &state, ui u, ui v,
         ui cost, ui &delta)
     {
+        // 计算把 u 映射到 v 时相对已选 black 邻居新增的缺边代价。
         delta = 0;
         for (ui neighbor : q_neighbors[u]) {
             if (!isBlack(state, neighbor)) {
@@ -1428,9 +1503,9 @@ private:
             }
 
             ui mapped_neighbor = (ui)state.mapped_q[neighbor];
-            bool adjacent = blackWhiteCandidateAdjacentFromAnchor(
+            bool adjacent = anchorAdjacent(
                 neighbor, mapped_neighbor, u, v);
-            EdgeState state_uv = getBlackWhiteEdgeState(state, u, neighbor);
+            EdgeState state_uv = getEdge(state, u, neighbor);
             if (state_uv == EDGE_PRESENT) {
                 if (!adjacent) return false;
             }
@@ -1447,17 +1522,18 @@ private:
         return true;
     }
 
-    bool collectBlackWhitePositiveRanges(const BlackWhiteState &state, ui u,
+    bool collectPosRanges(const BlackWhiteState &state, ui u,
         vector<CandidateAdjRange> &ranges)
     {
+        // 收集 u 相对所有已确定存在 black 边的正向候选范围。
         ranges.clear();
         for (ui neighbor : q_neighbors[u]) {
             if (!isBlack(state, neighbor) ||
-                getBlackWhiteEdgeState(state, u, neighbor) != EDGE_PRESENT) {
+                getEdge(state, u, neighbor) != EDGE_PRESENT) {
                 continue;
             }
 
-            const CandidateAdjRange *range = findBlackWhiteCandidateAdjRange(
+            const CandidateAdjRange *range = findAdjRange(
                 neighbor, (ui)state.mapped_q[neighbor], u);
             if (range == nullptr) {
                 stats.candidate_range_misses++;
@@ -1469,9 +1545,10 @@ private:
         return true;
     }
 
-    void buildBlackWhiteCandidateSourceFromRanges(
+    void buildRangeSource(
         vector<CandidateAdjRange> &ranges, vector<ui> &source)
     {
+        // 将多个正向候选范围合并成后续过滤使用的候选源。
         source.clear();
         if (ranges.empty()) {
             return;
@@ -1484,7 +1561,7 @@ private:
 
         if (ranges.size() == 1) {
             const CandidateAdjRange &range = ranges.front();
-            source.assign(blackWhiteRangeBegin(range), blackWhiteRangeEnd(range));
+            source.assign(rangeBegin(range), rangeEnd(range));
             return;
         }
 
@@ -1498,13 +1575,13 @@ private:
         if (total_len <= edge_check_threshold) {
             stats.candidate_intersection_calls++;
             const CandidateAdjRange &first = ranges.front();
-            source.assign(blackWhiteRangeBegin(first), blackWhiteRangeEnd(first));
+            source.assign(rangeBegin(first), rangeEnd(first));
 
             for (size_t i = 1; i < ranges.size() && !source.empty(); ++i) {
                 bw_candidate_intersection_buffer.clear();
                 const CandidateAdjRange &range = ranges[i];
                 std::set_intersection(source.begin(), source.end(),
-                    blackWhiteRangeBegin(range), blackWhiteRangeEnd(range),
+                    rangeBegin(range), rangeEnd(range),
                     std::back_inserter(bw_candidate_intersection_buffer));
                 source.swap(bw_candidate_intersection_buffer);
             }
@@ -1512,13 +1589,13 @@ private:
         }
 
         const CandidateAdjRange &shortest = ranges.front();
-        for (const ui *it = blackWhiteRangeBegin(shortest);
-            it != blackWhiteRangeEnd(shortest); ++it) {
+        for (const ui *it = rangeBegin(shortest);
+            it != rangeEnd(shortest); ++it) {
             ui candidate = *it;
             bool supported = true;
             for (size_t i = 1; i < ranges.size(); ++i) {
                 stats.candidate_edge_check_calls++;
-                if (!blackWhiteRangeContains(ranges[i], candidate)) {
+                if (!rangeHas(ranges[i], candidate)) {
                     supported = false;
                     break;
                 }
@@ -1529,30 +1606,33 @@ private:
         }
     }
 
-    void appendFeasibleWhiteCandidate(const BlackWhiteState &state, ui u,
+    void addFeasibleCand(const BlackWhiteState &state, ui u,
         ui candidate, ui cost, vector<ui> &result)
     {
+        // 检查单个候选是否可行，可行则追加到结果。
         if (isDataVertexUsed(state, candidate)) {
             return;
         }
 
         ui delta = 0;
-        if (computeBlackNeighborDelta(state, u, candidate, cost, delta)) {
+        if (calcBlackDelta(state, u, candidate, cost, delta)) {
             result.push_back(candidate);
         }
     }
 
-    bool whiteBucketContains(const BlackWhiteState &state,
+    bool bucketHas(const BlackWhiteState &state,
         const WhiteCandidateBuckets &bucket, ui candidate) const
     {
+        // 判断 white bucket 中是否包含指定候选。
         assert(bucket.begin + bucket.count <= state.white_candidate_pool.size());
         const ui *begin = state.white_candidate_pool.data() + bucket.begin;
         const ui *end = begin + bucket.count;
         return std::binary_search(begin, end, candidate);
     }
 
-    ui nextBlackWhiteCandidateBatchToken()
+    ui nextBatchToken()
     {
+        // 生成候选批处理标记 token，溢出时重置标记数组。
         if (bw_candidate_batch_mark.size() < gn) {
             bw_candidate_batch_mark.assign(gn, 0);
             bw_candidate_batch_pos.assign(gn, 0);
@@ -1568,15 +1648,16 @@ private:
         return bw_candidate_batch_token;
     }
 
-    void addBlackWhiteBatchRangeHits(const CandidateAdjRange *range, ui token,
+    void addRangeHits(const CandidateAdjRange *range, ui token,
         vector<ui> &hits)
     {
+        // 对批处理候选统计一个候选范围内的命中次数。
         if (range == nullptr) {
             return;
         }
 
-        for (const ui *it = blackWhiteRangeBegin(*range);
-            it != blackWhiteRangeEnd(*range); ++it) {
+        for (const ui *it = rangeBegin(*range);
+            it != rangeEnd(*range); ++it) {
             ui candidate = *it;
             if (candidate >= bw_candidate_batch_mark.size() ||
                 bw_candidate_batch_mark[candidate] != token) {
@@ -1590,14 +1671,15 @@ private:
         }
     }
 
-    void invalidateBlackWhiteBatchRange(const CandidateAdjRange *range, ui token)
+    void invalidateRange(const CandidateAdjRange *range, ui token)
     {
+        // 将批处理候选中落入缺失边范围的候选标记为无效。
         if (range == nullptr) {
             return;
         }
 
-        for (const ui *it = blackWhiteRangeBegin(*range);
-            it != blackWhiteRangeEnd(*range); ++it) {
+        for (const ui *it = rangeBegin(*range);
+            it != rangeEnd(*range); ++it) {
             ui candidate = *it;
             if (candidate >= bw_candidate_batch_mark.size() ||
                 bw_candidate_batch_mark[candidate] != token) {
@@ -1611,14 +1693,15 @@ private:
         }
     }
 
-    void appendFeasibleCandidatesBatch(const BlackWhiteState &state, ui u,
+    void addFeasibleBatch(const BlackWhiteState &state, ui u,
         ui cost, const vector<ui> &source, vector<ui> &result)
     {
+        // 批量检查候选源中哪些候选满足当前 black 邻居约束。
         if (source.empty()) {
             return;
         }
 
-        ui token = nextBlackWhiteCandidateBatchToken();
+        ui token = nextBatchToken();
         size_t source_count = source.size();
         bw_candidate_batch_present_hits.assign(source_count, 0);
         bw_candidate_batch_undecided_hits.assign(source_count, 0);
@@ -1643,9 +1726,9 @@ private:
             }
 
             ui mapped_neighbor = (ui)state.mapped_q[neighbor];
-            EdgeState state_uv = getBlackWhiteEdgeState(state, u, neighbor);
+            EdgeState state_uv = getEdge(state, u, neighbor);
             const CandidateAdjRange *range =
-                findBlackWhiteCandidateAdjRange(neighbor, mapped_neighbor, u);
+                findAdjRange(neighbor, mapped_neighbor, u);
 
             stats.candidate_edge_check_calls += (long long)source_count;
             if (range == nullptr) {
@@ -1657,15 +1740,15 @@ private:
 
             if (state_uv == EDGE_PRESENT) {
                 present_count++;
-                addBlackWhiteBatchRangeHits(range, token,
+                addRangeHits(range, token,
                     bw_candidate_batch_present_hits);
             }
             else if (state_uv == EDGE_MISSING) {
-                invalidateBlackWhiteBatchRange(range, token);
+                invalidateRange(range, token);
             }
             else {
                 undecided_count++;
-                addBlackWhiteBatchRangeHits(range, token,
+                addRangeHits(range, token,
                     bw_candidate_batch_undecided_hits);
             }
         }
@@ -1687,47 +1770,52 @@ private:
         }
     }
 
-    void copyWhiteBucketCandidates(const BlackWhiteState &state,
+    void copyBucketCands(const BlackWhiteState &state,
         const WhiteCandidateBuckets &bucket, vector<ui> &target) const
     {
+        // 将 white bucket 中保存的候选复制到目标缓冲区。
         assert(bucket.begin + bucket.count <= state.white_candidate_pool.size());
         target.assign(state.white_candidate_pool.begin() + bucket.begin,
             state.white_candidate_pool.begin() + bucket.begin + bucket.count);
     }
 
-    void filterSourceByWhiteBucket(const BlackWhiteState &state,
+    void filterByBucket(const BlackWhiteState &state,
         const WhiteCandidateBuckets &bucket, const vector<ui> &source,
         vector<ui> &target) const
     {
+        // 用已有 white bucket 过滤候选源，保留仍在 bucket 中的候选。
         target.clear();
         for (ui candidate : source) {
-            if (whiteBucketContains(state, bucket, candidate)) {
+            if (bucketHas(state, bucket, candidate)) {
                 target.push_back(candidate);
             }
         }
     }
 
-    void collectAllBlackWhiteCandidates(ui u, vector<ui> &target)
+    void collectAllCands(ui u, vector<ui> &target)
     {
+        // 收集查询点 u 的全部静态候选。
         target.clear();
         for (int candidate : candidates[u]) {
             target.push_back((ui)candidate);
         }
     }
 
-    void appendFeasibleCandidatesFromWhiteBucket(const BlackWhiteState &state,
+    void addBucketCands(const BlackWhiteState &state,
         ui u, ui cost, const WhiteCandidateBuckets &bucket, vector<ui> &result)
     {
+        // 从 white bucket 中逐个追加当前状态下仍可行的候选。
         assert(bucket.begin + bucket.count <= state.white_candidate_pool.size());
         for (ui i = 0; i < bucket.count; ++i) {
             ui candidate = state.white_candidate_pool[bucket.begin + i];
-            appendFeasibleWhiteCandidate(state, u, candidate, cost, result);
+            addFeasibleCand(state, u, candidate, cost, result);
         }
     }
 
-    bool buildWhiteCandidateBuffer(BlackWhiteState &state, ui u, ui cost,
+    bool buildWhiteCands(BlackWhiteState &state, ui u, ui cost,
         const WhiteCandidateBuckets *existing_bucket)
     {
+        // 构建或重建查询点 u 在当前状态下的 white 可行候选缓冲。
         bw_candidate_result_buffer.clear();
         if (cost > threshold) {
             return false;
@@ -1735,51 +1823,51 @@ private:
         stats.white_bucket_rebuilds++;
 
 #if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE
-        if (!collectBlackWhitePositiveRanges(state, u,
+        if (!collectPosRanges(state, u,
             bw_candidate_range_buffer)) {
             return false;
         }
 
         if (!bw_candidate_range_buffer.empty()) {
-            buildBlackWhiteCandidateSourceFromRanges(bw_candidate_range_buffer,
+            buildRangeSource(bw_candidate_range_buffer,
                 bw_candidate_source_buffer);
 
             if (existing_bucket != nullptr &&
                 existing_bucket->count <= bw_candidate_source_buffer.size()) {
-                copyWhiteBucketCandidates(state, *existing_bucket,
+                copyBucketCands(state, *existing_bucket,
                     bw_candidate_intersection_buffer);
-                appendFeasibleCandidatesBatch(state, u, cost,
+                addFeasibleBatch(state, u, cost,
                     bw_candidate_intersection_buffer, bw_candidate_result_buffer);
             }
             else {
                 const vector<ui> *source = &bw_candidate_source_buffer;
                 if (existing_bucket != nullptr) {
-                    filterSourceByWhiteBucket(state, *existing_bucket,
+                    filterByBucket(state, *existing_bucket,
                         bw_candidate_source_buffer,
                         bw_candidate_intersection_buffer);
                     source = &bw_candidate_intersection_buffer;
                 }
-                appendFeasibleCandidatesBatch(state, u, cost, *source,
+                addFeasibleBatch(state, u, cost, *source,
                     bw_candidate_result_buffer);
             }
         }
         else if (existing_bucket != nullptr) {
-            copyWhiteBucketCandidates(state, *existing_bucket,
+            copyBucketCands(state, *existing_bucket,
                 bw_candidate_intersection_buffer);
-            appendFeasibleCandidatesBatch(state, u, cost,
+            addFeasibleBatch(state, u, cost,
                 bw_candidate_intersection_buffer, bw_candidate_result_buffer);
         }
         else {
 #endif
         if (existing_bucket != nullptr) {
-            copyWhiteBucketCandidates(state, *existing_bucket,
+            copyBucketCands(state, *existing_bucket,
                 bw_candidate_intersection_buffer);
-            appendFeasibleCandidatesBatch(state, u, cost,
+            addFeasibleBatch(state, u, cost,
                 bw_candidate_intersection_buffer, bw_candidate_result_buffer);
         }
         else {
-            collectAllBlackWhiteCandidates(u, bw_candidate_source_buffer);
-            appendFeasibleCandidatesBatch(state, u, cost,
+            collectAllCands(u, bw_candidate_source_buffer);
+            addFeasibleBatch(state, u, cost,
                 bw_candidate_source_buffer, bw_candidate_result_buffer);
         }
 #if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE
@@ -1789,40 +1877,44 @@ private:
         return !bw_candidate_result_buffer.empty();
     }
 
-    bool rebuildWhiteCandidatesForCurrentState(BlackWhiteState &state,
+    bool refreshWhiteCands(BlackWhiteState &state,
         ui white_u, ui cost)
     {
+        // 基于当前状态重建已有 white 点的候选桶。
         WhiteCandidateBuckets old_bucket = state.white[white_u];
-        if (!buildWhiteCandidateBuffer(state, white_u, cost, &old_bucket)) {
+        if (!buildWhiteCands(state, white_u, cost, &old_bucket)) {
             return false;
         }
 
-        replaceBlackWhiteBucket(state, white_u, bw_candidate_result_buffer);
+        replaceBucket(state, white_u, bw_candidate_result_buffer);
         return true;
     }
 
-    bool buildWhiteCandidateBuckets(BlackWhiteState &state, ui u, ui cost)
+    bool initWhiteCands(BlackWhiteState &state, ui u, ui cost)
     {
+        // 为尚未选择的查询点 u 初始化 white 候选桶。
         if (cost > threshold || !isSelectedByBlackNeighbor(state, u)) {
             return false;
         }
-        return buildWhiteCandidateBuffer(state, u, cost, nullptr);
+        return buildWhiteCands(state, u, cost, nullptr);
     }
 
     bool isSelectedByBlackNeighbor(const BlackWhiteState &state, ui u) const
     {
+        // 判断 u 是否存在非缺失的已选 black 邻居。
         for (ui neighbor : q_neighbors[u]) {
             if (isBlack(state, neighbor) &&
-                getBlackWhiteEdgeState(state, u, neighbor) != EDGE_MISSING) {
+                getEdge(state, u, neighbor) != EDGE_MISSING) {
                 return true;
             }
         }
         return false;
     }
 
-    void collectSelectedWhiteNeighbors(const BlackWhiteState &state, ui u,
+    void collectWhiteNbrs(const BlackWhiteState &state, ui u,
         vector<ui> &white_neighbors) const
     {
+        // 收集 u 当前已经选为 white 的查询邻居。
         white_neighbors.clear();
         for (ui neighbor : q_neighbors[u]) {
             if (isWhite(state, neighbor)) {
@@ -1831,10 +1923,11 @@ private:
         }
     }
 
-    bool chooseBlackWhite(const BlackWhiteState &state, ui u,
+    bool shouldWhite(const BlackWhiteState &state, ui u,
         ui white_candidate_count) const
     {
-        if (!shouldPreferStaticWhite(u) || white_candidate_count == 0) {
+        // 判断启发式是否允许将 u 作为 white 分支。
+        if (!preferWhite(u) || white_candidate_count == 0) {
             return false;
         }
 
@@ -1846,9 +1939,10 @@ private:
         return true;
     }
 
-    bool updateWhiteBucketForBlackNeighbor(BlackWhiteState &state, ui white_u,
+    bool refreshWhiteByBlack(BlackWhiteState &state, ui white_u,
         ui black_u, ui black_v, ui cost)
     {
+        // 新增 black 邻居后刷新 white_u 的候选桶。
         assert(isWhite(state, white_u));
         assert(isBlack(state, black_u));
         (void)black_u;
@@ -1857,12 +1951,13 @@ private:
             return false;
         }
 
-        return rebuildWhiteCandidatesForCurrentState(state, white_u, cost);
+        return refreshWhiteCands(state, white_u, cost);
     }
 
-    bool commitNewBlackVertex(BlackWhiteState &state, ui cost, ui u, ui v,
+    bool tryBindBlack(BlackWhiteState &state, ui cost, ui u, ui v,
         ui &next_cost)
     {
+        // 尝试将未选查询点 u 绑定为 black 映射到 v。
         if (u >= qn || v >= gn || !candidates[u].contains(v)) {
             return false;
         }
@@ -1871,7 +1966,7 @@ private:
         }
 
         ui delta = 0;
-        if (!computeBlackNeighborDelta(state, u, v, cost, delta)) {
+        if (!calcBlackDelta(state, u, v, cost, delta)) {
             return false;
         }
         next_cost = cost + delta;
@@ -1879,23 +1974,23 @@ private:
             return false;
         }
 
-        setBlackWhiteColor(state, u, COLOR_BLACK);
-        setBlackWhiteMappedQ(state, u, (int)v);
-        pushBlackWhiteUsedDataVertex(state, v);
-        pushBlackWhitePartM(state, u, v);
-        setBlackWhiteSelectedCount(state, state.selected_count + 1);
+        setColor(state, u, COLOR_BLACK);
+        setMap(state, u, (int)v);
+        pushUsed(state, v);
+        pushMatch(state, u, v);
+        setSelectedCnt(state, state.selected_count + 1);
 
         for (ui neighbor : q_neighbors[u]) {
             if (!isBlack(state, neighbor)) {
                 continue;
             }
-            EdgeState state_uv = getBlackWhiteEdgeState(state, u, neighbor);
+            EdgeState state_uv = getEdge(state, u, neighbor);
             if (state_uv != EDGE_UNDECIDED) {
                 continue;
             }
-            bool adjacent = blackWhiteCandidateAdjacentFromAnchor(
+            bool adjacent = anchorAdjacent(
                 neighbor, (ui)state.mapped_q[neighbor], u, v);
-            setBlackWhiteEdgeState(state, u, neighbor,
+            setEdge(state, u, neighbor,
                 adjacent ? EDGE_PRESENT : EDGE_MISSING);
         }
 
@@ -1903,16 +1998,17 @@ private:
             if (!isWhite(state, neighbor)) {
                 continue;
             }
-            if (!updateWhiteBucketForBlackNeighbor(state, neighbor, u, v, next_cost)) {
+            if (!refreshWhiteByBlack(state, neighbor, u, v, next_cost)) {
                 return false;
             }
         }
         return true;
     }
 
-    bool commitMaterializedWhiteVertex(BlackWhiteState &state, ui cost, ui white_u,
+    bool tryMaterializeWhite(BlackWhiteState &state, ui cost, ui white_u,
         ui candidate, ui bucket_delta, ui &next_cost)
     {
+        // 尝试把已选 white 点具体化为 black 映射。
         if (!isWhite(state, white_u) || candidate >= gn ||
             isDataVertexUsed(state, candidate) ||
             !candidates[white_u].contains(candidate)) {
@@ -1924,12 +2020,12 @@ private:
             return false;
         }
 
-        setBlackWhiteColor(state, white_u, COLOR_BLACK);
+        setColor(state, white_u, COLOR_BLACK);
         assert(state.white_count > 0);
-        setBlackWhiteWhiteCount(state, state.white_count - 1);
-        setBlackWhiteMappedQ(state, white_u, (int)candidate);
-        pushBlackWhiteUsedDataVertex(state, candidate);
-        pushBlackWhitePartM(state, white_u, candidate);
+        setWhiteCnt(state, state.white_count - 1);
+        setMap(state, white_u, (int)candidate);
+        pushUsed(state, candidate);
+        pushMatch(state, white_u, candidate);
 
         for (ui neighbor : q_neighbors[white_u]) {
             if (!isSelected(state, neighbor)) {
@@ -1940,9 +2036,9 @@ private:
             }
 
             ui mapped_neighbor = (ui)state.mapped_q[neighbor];
-            bool adjacent = blackWhiteCandidateAdjacentFromAnchor(
+            bool adjacent = anchorAdjacent(
                 neighbor, mapped_neighbor, white_u, candidate);
-            EdgeState state_uv = getBlackWhiteEdgeState(state, white_u, neighbor);
+            EdgeState state_uv = getEdge(state, white_u, neighbor);
             if (state_uv == EDGE_PRESENT) {
                 if (!adjacent) return false;
             }
@@ -1950,15 +2046,16 @@ private:
                 if (adjacent) return false;
             }
             else {
-                setBlackWhiteEdgeState(state, white_u, neighbor,
+                setEdge(state, white_u, neighbor,
                     adjacent ? EDGE_PRESENT : EDGE_MISSING);
             }
         }
         return true;
     }
 
-    bool addWhiteVertexBranch(BlackWhiteState &state, ui cost, ui u)
+    bool branchWhite(BlackWhiteState &state, ui cost, ui u)
     {
+        // 分支：将未选查询点 u 设为 white，并递归继续搜索。
         if (state.color[u] != COLOR_UNSELECTED) {
             return false;
         }
@@ -1969,38 +2066,39 @@ private:
             }
         }
 
-        if (!buildWhiteCandidateBuckets(state, u, cost)) {
+        if (!initWhiteCands(state, u, cost)) {
             return false;
         }
-        if (!chooseBlackWhite(state, u,
+        if (!shouldWhite(state, u,
             (ui)bw_candidate_result_buffer.size())) {
             return false;
         }
 
-        size_t mark = markBlackWhiteState();
-        setBlackWhiteColor(state, u, COLOR_WHITE);
-        replaceBlackWhiteBucket(state, u, bw_candidate_result_buffer);
-        setBlackWhiteSelectedCount(state, state.selected_count + 1);
-        setBlackWhiteWhiteCount(state, state.white_count + 1);
-        bwSearch(state, cost);
-        rollbackBlackWhiteState(state, mark);
+        size_t undo_mark = mark();
+        setColor(state, u, COLOR_WHITE);
+        replaceBucket(state, u, bw_candidate_result_buffer);
+        setSelectedCnt(state, state.selected_count + 1);
+        setWhiteCnt(state, state.white_count + 1);
+        search(state, cost);
+        rollback(state, undo_mark);
         return true;
     }
 
-    bool addBlackVertexBranches(BlackWhiteState &state, ui cost, ui u,
+    bool branchBlack(BlackWhiteState &state, ui cost, ui u,
         ui required_anchor = std::numeric_limits<ui>::max())
     {
+        // 分支：枚举未选查询点 u 的 black 映射候选。
         bool emitted_branch = false;
         auto try_candidate = [&](ui candidate) -> bool {
-            size_t mark = markBlackWhiteState();
+            size_t undo_mark = mark();
             ui next_cost = cost;
-            if (!commitNewBlackVertex(state, cost, u, candidate, next_cost)) {
-                rollbackBlackWhiteState(state, mark);
+            if (!tryBindBlack(state, cost, u, candidate, next_cost)) {
+                rollback(state, undo_mark);
                 return false;
             }
             emitted_branch = true;
-            bwSearch(state, next_cost);
-            rollbackBlackWhiteState(state, mark);
+            search(state, next_cost);
+            rollback(state, undo_mark);
             if (outputLimitReached()) {
                 return true;
             }
@@ -2009,16 +2107,16 @@ private:
 
 #if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_ANCHOR_BRANCH
         if (required_anchor < qn && isBlack(state, required_anchor) &&
-            getBlackWhiteEdgeState(state, u, required_anchor) == EDGE_PRESENT) {
+            getEdge(state, u, required_anchor) == EDGE_PRESENT) {
             ui mapped_anchor = (ui)state.mapped_q[required_anchor];
-            const CandidateAdjRange *range = findBlackWhiteCandidateAdjRange(
+            const CandidateAdjRange *range = findAdjRange(
                 required_anchor, mapped_anchor, u);
             if (range == nullptr) {
                 return false;
             }
 
-            for (const ui *it = blackWhiteRangeBegin(*range);
-                it != blackWhiteRangeEnd(*range); ++it) {
+            for (const ui *it = rangeBegin(*range);
+                it != rangeEnd(*range); ++it) {
                 ui candidate = *it;
                 if (try_candidate(candidate)) {
                     return true;
@@ -2037,9 +2135,10 @@ private:
     }
 
     template <typename Continue>
-    bool materializeWhiteVertexBranches(BlackWhiteState &state, ui cost,
+    bool branchMatWhite(BlackWhiteState &state, ui cost,
         ui white_u, Continue continue_branch)
     {
+        // 分支：枚举一个 white 点的具体映射，再交给后续回调继续。
         if (!isWhite(state, white_u)) {
             return false;
         }
@@ -2057,21 +2156,21 @@ private:
             }
 
             ui delta = 0;
-            if (!computeBlackNeighborDelta(state, white_u, candidate, cost, delta)) {
+            if (!calcBlackDelta(state, white_u, candidate, cost, delta)) {
                 continue;
             }
 
-            size_t mark = markBlackWhiteState();
+            size_t undo_mark = mark();
             ui next_cost = cost;
-            if (!commitMaterializedWhiteVertex(state, cost, white_u,
+            if (!tryMaterializeWhite(state, cost, white_u,
                 candidate, delta, next_cost)) {
-                rollbackBlackWhiteState(state, mark);
+                rollback(state, undo_mark);
                 continue;
             }
             if (continue_branch(state, next_cost)) {
                 emitted_branch = true;
             }
-            rollbackBlackWhiteState(state, mark);
+            rollback(state, undo_mark);
             if (outputLimitReached()) {
                 return true;
             }
@@ -2080,46 +2179,48 @@ private:
     }
 
     template <typename Continue>
-    bool materializeWhiteSetBranches(BlackWhiteState &state, ui cost,
+    bool branchMatWhites(BlackWhiteState &state, ui cost,
         const vector<ui> &white_vertices, size_t pos, Continue continue_branch)
     {
+        // 分支：按顺序枚举一组 white 点的具体映射。
         if (pos == white_vertices.size()) {
             return continue_branch(state, cost);
         }
 
         ui white_u = white_vertices[pos];
         if (!isWhite(state, white_u)) {
-            return materializeWhiteSetBranches(state, cost, white_vertices,
+            return branchMatWhites(state, cost, white_vertices,
                 pos + 1, continue_branch);
         }
 
-        return materializeWhiteVertexBranches(state, cost, white_u,
+        return branchMatWhite(state, cost, white_u,
             [&](BlackWhiteState &next_state, ui next_cost) -> bool {
-                return materializeWhiteSetBranches(next_state, next_cost,
+                return branchMatWhites(next_state, next_cost,
                     white_vertices, pos + 1, continue_branch);
             });
     }
 
-    bool forcedIncludeBlackAnchor(BlackWhiteState &state, ui cost, ui u,
+    bool branchBlackAnchor(BlackWhiteState &state, ui cost, ui u,
         ui anchor)
     {
+        // 在 anchor 已是 black 且边存在时，决定 u 走 white 或 black 分支。
         if (!isBlack(state, anchor) || state.color[u] != COLOR_UNSELECTED ||
-            getBlackWhiteEdgeState(state, u, anchor) != EDGE_PRESENT) {
+            getEdge(state, u, anchor) != EDGE_PRESENT) {
             return false;
         }
 
         vector<ui> &white_neighbors =
-            blackWhiteWhiteNeighborsBuffer(state.selected_count);
-        collectSelectedWhiteNeighbors(state, u, white_neighbors);
+            whiteNbrsBuffer(state.selected_count);
+        collectWhiteNbrs(state, u, white_neighbors);
         bool emitted_white_branch = false;
         if (white_neighbors.empty()) {
-            emitted_white_branch = addWhiteVertexBranch(state, cost, u);
+            emitted_white_branch = branchWhite(state, cost, u);
         }
         else {
-            emitted_white_branch = materializeWhiteSetBranches(state, cost,
+            emitted_white_branch = branchMatWhites(state, cost,
                 white_neighbors, 0,
                 [&](BlackWhiteState &materialized_state, ui materialized_cost) -> bool {
-                    return addWhiteVertexBranch(materialized_state,
+                    return branchWhite(materialized_state,
                         materialized_cost, u);
                 });
         }
@@ -2127,41 +2228,43 @@ private:
         if (emitted_white_branch) {
             return true;
         }
-        return addBlackVertexBranches(state, cost, u, anchor);
+        return branchBlack(state, cost, u, anchor);
     }
 
-    bool includeActiveEdgeBranch(BlackWhiteState &state, ui cost,
+    bool branchPresentEdge(BlackWhiteState &state, ui cost,
         const BlackWhiteActiveEdge &edge)
     {
+        // 存在边分支：先标记活跃边存在，再扩展相关顶点。
         ui u = edge.u;
         ui anchor = edge.anchor;
         if (state.color[u] != COLOR_UNSELECTED ||
             !isSelected(state, anchor) ||
-            getBlackWhiteEdgeState(state, u, anchor) != EDGE_UNDECIDED) {
+            getEdge(state, u, anchor) != EDGE_UNDECIDED) {
             return false;
         }
 
-        size_t mark = markBlackWhiteState();
-        setBlackWhiteEdgeState(state, u, anchor, EDGE_PRESENT);
+        size_t undo_mark = mark();
+        setEdge(state, u, anchor, EDGE_PRESENT);
 
         bool emitted_branch = false;
         if (isBlack(state, anchor)) {
-            emitted_branch = forcedIncludeBlackAnchor(state, cost, u, anchor);
+            emitted_branch = branchBlackAnchor(state, cost, u, anchor);
         }
         else {
-            emitted_branch = materializeWhiteVertexBranches(state, cost, anchor,
+            emitted_branch = branchMatWhite(state, cost, anchor,
             [&](BlackWhiteState &materialized_state, ui materialized_cost) -> bool {
-                return forcedIncludeBlackAnchor(materialized_state,
+                return branchBlackAnchor(materialized_state,
                     materialized_cost, u, anchor);
             });
         }
-        rollbackBlackWhiteState(state, mark);
+        rollback(state, undo_mark);
         return emitted_branch;
     }
 
-    double estimateBlackAnchorSupport(const BlackWhiteState &state, ui u,
+    double blackSupport(const BlackWhiteState &state, ui u,
         ui anchor) const
     {
+        // 估计 black anchor 对未选点 u 的剩余候选支持数量。
         if (!isBlack(state, anchor)) {
             return 0.0;
         }
@@ -2170,13 +2273,13 @@ private:
         ui mapped_anchor = (ui)state.mapped_q[anchor];
 #if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SUPPORT
         const CandidateAdjRange *range =
-            findBlackWhiteCandidateAdjRange(anchor, mapped_anchor, u);
+            findAdjRange(anchor, mapped_anchor, u);
         if (range == nullptr) {
             return 0.0;
         }
 
-        for (const ui *it = blackWhiteRangeBegin(*range);
-            it != blackWhiteRangeEnd(*range); ++it) {
+        for (const ui *it = rangeBegin(*range);
+            it != rangeEnd(*range); ++it) {
             ui v = *it;
             if (isDataVertexUsed(state, v)) {
                 continue;
@@ -2197,17 +2300,19 @@ private:
         return support_count;
     }
 
-    double estimateWhiteAnchorSupport(const BlackWhiteState &state, ui anchor) const
+    double whiteSupport(const BlackWhiteState &state, ui anchor) const
     {
+        // 估计 white anchor 的分支支持，使用其候选桶可行数量。
         if (!isWhite(state, anchor)) {
             return 0.0;
         }
         return (double)std::max((ui)1, state.white[anchor].feasible_count);
     }
 
-    bool isBetterBlackWhiteActiveEdge(const BlackWhiteActiveEdge &lhs,
+    bool betterEdge(const BlackWhiteActiveEdge &lhs,
         const BlackWhiteActiveEdge &rhs) const
     {
+        // 比较两条活跃边的分支优先级。
 #if CDE_BLACK_WHITE_FIXED_ORDER
         ui lhs_priority = bw_static_edge_priority[lhs.u][lhs.anchor];
         ui rhs_priority = bw_static_edge_priority[rhs.u][rhs.anchor];
@@ -2241,9 +2346,10 @@ private:
 #endif
     }
 
-    void selectTopBlackWhiteActiveEdges(ui max_count,
+    void selectTopEdges(ui max_count,
         vector<BlackWhiteActiveEdge> &top_edges)
     {
+        // 从活跃边集合中按启发式选择前 max_count 条。
         size_t selected_limit = top_edges.size();
         if ((size_t)max_count < selected_limit) {
             selected_limit = (size_t)max_count;
@@ -2252,7 +2358,7 @@ private:
 #if CDE_BLACK_WHITE_FIXED_ORDER
         auto better_edge = [&](const BlackWhiteActiveEdge &lhs,
             const BlackWhiteActiveEdge &rhs) {
-            return isBetterBlackWhiteActiveEdge(lhs, rhs);
+            return betterEdge(lhs, rhs);
             };
         if (top_edges.size() > selected_limit) {
             partial_sort(top_edges.begin(), top_edges.begin() + selected_limit,
@@ -2266,7 +2372,7 @@ private:
         for (size_t selected_idx = 0; selected_idx < selected_limit; ++selected_idx) {
             size_t best_idx = selected_idx;
             for (size_t i = selected_idx + 1; i < top_edges.size(); ++i) {
-                if (isBetterBlackWhiteActiveEdge(top_edges[i], top_edges[best_idx])) {
+                if (betterEdge(top_edges[i], top_edges[best_idx])) {
                     best_idx = i;
                 }
             }
@@ -2302,7 +2408,7 @@ private:
 #else
         auto better_edge = [&](const BlackWhiteActiveEdge &lhs,
             const BlackWhiteActiveEdge &rhs) {
-            return isBetterBlackWhiteActiveEdge(lhs, rhs);
+            return betterEdge(lhs, rhs);
             };
         if (top_edges.size() > selected_limit) {
             partial_sort(top_edges.begin(), top_edges.begin() + selected_limit,
@@ -2315,9 +2421,10 @@ private:
         top_edges.resize(selected_limit);
     }
 
-    bool collectTopBlackWhiteActiveEdges(const BlackWhiteState &state,
+    bool collectActiveEdges(const BlackWhiteState &state,
         ui max_count, vector<BlackWhiteActiveEdge> &top_edges)
     {
+        // 收集当前状态下可分支的活跃边，并截取 top 边。
         top_edges.clear();
         if (max_count == 0) {
             return false;
@@ -2331,7 +2438,7 @@ private:
             ui live_anchor_count = 0;
             for (ui anchor : q_neighbors[u]) {
                 if (isSelected(state, anchor) &&
-                    getBlackWhiteEdgeState(state, u, anchor) == EDGE_UNDECIDED) {
+                    getEdge(state, u, anchor) == EDGE_UNDECIDED) {
                     live_anchor_count++;
                 }
             }
@@ -2341,7 +2448,7 @@ private:
 
             for (ui anchor : q_neighbors[u]) {
                 if (!isSelected(state, anchor) ||
-                    getBlackWhiteEdgeState(state, u, anchor) != EDGE_UNDECIDED) {
+                    getEdge(state, u, anchor) != EDGE_UNDECIDED) {
                     continue;
                 }
 
@@ -2352,10 +2459,10 @@ private:
                 edge.query_degree = q_degree[u];
 #if !CDE_BLACK_WHITE_FIXED_ORDER
                 if (isBlack(state, anchor)) {
-                    edge.rank_support = estimateBlackAnchorSupport(state, u, anchor);
+                    edge.rank_support = blackSupport(state, u, anchor);
                 }
                 else {
-                    edge.rank_support = estimateWhiteAnchorSupport(state, anchor);
+                    edge.rank_support = whiteSupport(state, anchor);
                 }
 #endif
                 top_edges.push_back(edge);
@@ -2365,12 +2472,13 @@ private:
         if (top_edges.empty()) {
             return false;
         }
-        selectTopBlackWhiteActiveEdges(max_count, top_edges);
+        selectTopEdges(max_count, top_edges);
         return true;
     }
 
-    ui chooseWhiteVertexToMaterialize(const BlackWhiteState &state) const
+    ui chooseMatWhite(const BlackWhiteState &state) const
     {
+        // 选择候选数最少的 white 点作为优先具体化对象。
         ui chosen = qn;
         ui best_count = std::numeric_limits<ui>::max();
         for (ui u = 0; u < qn; ++u) {
@@ -2386,10 +2494,11 @@ private:
         return chosen;
     }
 
-    bool buildBlackWhiteTerminalWhiteCandidateBuckets(
+    bool buildTailBuckets(
         const BlackWhiteState &state, ui white_u, ui cost,
         vector<vector<ui>> &buckets, ui &feasible_count, ui &min_delta)
     {
+        // 为终端阶段的一个 white 点按缺边增量构建候选分桶。
         assert(cost <= threshold);
         if (!isWhite(state, white_u) || state.mapped_q[white_u] != -1) {
             return false;
@@ -2417,7 +2526,7 @@ private:
             }
 
             ui delta = 0;
-            if (!computeBlackNeighborDelta(state, white_u, candidate, cost, delta)) {
+            if (!calcBlackDelta(state, white_u, candidate, cost, delta)) {
                 continue;
             }
             if (delta > remaining_budget) {
@@ -2434,9 +2543,10 @@ private:
         return feasible_count > 0;
     }
 
-    bool buildBlackWhiteTerminalWhiteTailVertices(const BlackWhiteState &state,
+    bool buildTailWhites(const BlackWhiteState &state,
         ui cost, vector<TerminalTailVertex> &tail_vertices)
     {
+        // 为所有剩余 white 点构建终端 tail 枚举结构。
         tail_vertices.clear();
         tail_vertices.reserve(state.white_count);
 
@@ -2447,7 +2557,7 @@ private:
 
             TerminalTailVertex tail_vertex;
             tail_vertex.u = u;
-            if (!buildBlackWhiteTerminalWhiteCandidateBuckets(state, u, cost,
+            if (!buildTailBuckets(state, u, cost,
                 tail_vertex.buckets, tail_vertex.feasible_count,
                 tail_vertex.min_delta)) {
                 return false;
@@ -2475,9 +2585,10 @@ private:
         return true;
     }
 
-    void enumerateBlackWhiteTerminalWhiteTail(BlackWhiteState &state,
+    void enumTailWhites(BlackWhiteState &state,
         size_t pos, ui cost, vector<TerminalTailVertex> &tail_vertices)
     {
+        // 递归枚举终端阶段所有 white 点的具体映射。
         if (outputLimitReached()) {
             stats.output_limit_reached = true;
             return;
@@ -2487,7 +2598,7 @@ private:
         assert(cost <= threshold);
 
         if (pos == tail_vertices.size()) {
-            emitBlackWhiteResult(state);
+            emitResult(state);
             return;
         }
 
@@ -2511,7 +2622,7 @@ private:
                 state.used_data_flag[v] = 1;
                 state.part_M.push_back({ u, v });
 
-                enumerateBlackWhiteTerminalWhiteTail(state, pos + 1,
+                enumTailWhites(state, pos + 1,
                     cost + missing_delta, tail_vertices);
 
                 state.part_M.pop_back();
@@ -2526,8 +2637,9 @@ private:
         }
     }
 
-    void emitBlackWhiteResult(const BlackWhiteState &state)
+    void emitResult(const BlackWhiteState &state)
     {
+        // 输出一个完整匹配，并更新结果计数和输出上限状态。
         assert(state.part_M.size() == qn);
         stats.result_count++;
         noteOutputLimitIfReached();
@@ -2536,16 +2648,17 @@ private:
 #endif
     }
 
-    void executeBlackWhiteTopEdges(BlackWhiteState &state, ui cost,
+    void branchEdges(BlackWhiteState &state, ui cost,
         const vector<BlackWhiteActiveEdge> &top_edges, size_t edge_idx)
     {
+        // 对 top_edges 依次执行存在边/缺失边分支。
         if (outputLimitReached() || cost > threshold ||
             edge_idx >= top_edges.size()) {
             return;
         }
 
         const BlackWhiteActiveEdge &edge = top_edges[edge_idx];
-        includeActiveEdgeBranch(state, cost, edge);
+        branchPresentEdge(state, cost, edge);
         if (outputLimitReached()) {
             return;
         }
@@ -2555,18 +2668,19 @@ private:
             return;
         }
 
-        size_t mark = markBlackWhiteState();
+        size_t undo_mark = mark();
         if (state.color[edge.u] == COLOR_UNSELECTED &&
             isSelected(state, edge.anchor) &&
-            getBlackWhiteEdgeState(state, edge.u, edge.anchor) == EDGE_UNDECIDED) {
-            setBlackWhiteEdgeState(state, edge.u, edge.anchor, EDGE_MISSING);
-            executeBlackWhiteTopEdges(state, cost + 1, top_edges, edge_idx + 1);
+            getEdge(state, edge.u, edge.anchor) == EDGE_UNDECIDED) {
+            setEdge(state, edge.u, edge.anchor, EDGE_MISSING);
+            branchEdges(state, cost + 1, top_edges, edge_idx + 1);
         }
-        rollbackBlackWhiteState(state, mark);
+        rollback(state, undo_mark);
     }
 
-    void bwSearch(BlackWhiteState &state, ui cost)
+    void search(BlackWhiteState &state, ui cost)
     {
+        // 主递归搜索：根据当前 black/white 状态继续扩展匹配。
         if (outputLimitReached()) {
             stats.output_limit_reached = true;
             return;
@@ -2580,29 +2694,29 @@ private:
 
         if (state.selected_count == qn) {
             if (state.white_count == 0) {
-                emitBlackWhiteResult(state);
+                emitResult(state);
                 return;
             }
 
             vector<TerminalTailVertex> tail_vertices;
-            if (!buildBlackWhiteTerminalWhiteTailVertices(state, cost,
+            if (!buildTailWhites(state, cost,
                 tail_vertices)) {
                 stats.prun_calls++;
                 return;
             }
-            enumerateBlackWhiteTerminalWhiteTail(state, 0, cost, tail_vertices);
+            enumTailWhites(state, 0, cost, tail_vertices);
             return;
         }
 
         vector<BlackWhiteActiveEdge> &top_edges =
-            blackWhiteTopEdgesBuffer(state.selected_count);
+            topEdgesBuffer(state.selected_count);
         ui max_branch_edges = threshold - cost + 1;
-        if (!collectTopBlackWhiteActiveEdges(state, max_branch_edges, top_edges)) {
+        if (!collectActiveEdges(state, max_branch_edges, top_edges)) {
             stats.prun_calls++;
             return;
         }
 
-        executeBlackWhiteTopEdges(state, cost, top_edges, 0);
+        branchEdges(state, cost, top_edges, 0);
     }
     // ========================================================================
 
@@ -2613,6 +2727,7 @@ private:
 // ============================================================
 void Approximate_CDE_BlackWhite(const Graph *query_graph, const Graph *data_graph, vector<vector<pair<ui, ui> > > &M_ANS, ui threshold)
 {
+    // CDE-Black-White 算法入口：初始化求解器、执行搜索并上报统计。
     Timer t_total;
     t_total.restart();
 

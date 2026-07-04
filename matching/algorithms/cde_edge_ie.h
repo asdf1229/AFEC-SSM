@@ -12,10 +12,14 @@ using namespace std;
 // ============================================================================
 class MatchingSolver {
 public:
-    MatchingSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr) {}
+    MatchingSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr)
+    {
+        // 初始化为空指针，延后到 init 中绑定具体图和结果容器。
+    }
 
     bool init(const Graph *q, const Graph *g, ui match_threshold)
     {
+        // 初始化求解器状态、候选过滤结果和后续搜索需要的索引。
         Timer t_init;
         t_init.restart();
 
@@ -65,6 +69,7 @@ public:
 
     void match(vector<vector<pair<ui, ui>>> &results)
     {
+        // 从启发式根点开始执行 DFS，并把匹配结果写入调用方容器。
         Timer t_search;
         t_search.restart();
 
@@ -148,6 +153,7 @@ public:
 
     void printStats() const
     {
+        // 打印初始化、过滤、搜索以及剪枝相关的时间和计数统计。
         auto pct = [](long long part, long long whole) -> double {
             return whole > 0 ? (double)part / whole * 100.0 : 0.0;
             };
@@ -282,11 +288,13 @@ private:
 
         bool allRemainingTerminal() const
         {
+            // 判断未匹配点是否全部进入只剩尾部枚举的终端状态。
             return unmatched_count > 0 && unmatched_count == terminal_count;
         }
 
         bool hasNonterminalFrontier() const
         {
+            // 判断当前前沿中是否还存在非终端查询点。
             return nonterminal_frontier_count > 0;
         }
     };
@@ -300,12 +308,14 @@ private:
 
     bool outputLimitReached() const
     {
+        // 检查结果数量是否已经达到编译期配置的输出上限。
         return (size_t)MATCH_OUTPUT_LIMIT > 0 &&
             stats.result_count >= (size_t)MATCH_OUTPUT_LIMIT;
     }
 
     void noteOutputLimitIfReached()
     {
+        // 在触达输出上限时记录状态，供统计输出展示。
         if (outputLimitReached()) {
             stats.output_limit_reached = true;
         }
@@ -313,6 +323,7 @@ private:
 
     void resetState()
     {
+        // 重置所有搜索状态、候选集合和统计项，准备重新初始化。
         mapped_q.assign(qn, -1);
         mapped_g.assign(gn, -1);
         excluded_edges.assign(qn, vector<char>(qn, 0));
@@ -412,10 +423,13 @@ private:
 #if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
             , queued_spoke(solver.qn, 0)
 #endif
-        {}
+        {
+            // 绑定外层求解器，并为 spoke 过滤的临时匹配结构预分配空间。
+        }
 
         bool run()
         {
+            // 按桥边、NLF 和可选 spoke 过滤顺序收缩候选集。
             if (!timed(&MatchingSolver::TimeStats::filter_bridge_time, [&] {
                 buildBridgeIndex();
                 return true;
@@ -446,6 +460,7 @@ private:
         template <typename Fn>
         bool timed(long long MatchingSolver::TimeStats::*field, Fn &&fn)
         {
+            // 执行一个过滤步骤，并把耗时累加到指定统计字段。
             Timer t;
             bool ok = fn();
             solver.stats.*field += t.elapsed();
@@ -454,6 +469,7 @@ private:
 
         void updateCandidateCount()
         {
+            // 统计过滤后所有查询点的候选总数。
             solver.stats.filter_candidate_count = 0;
             for (ui u = 0; u < solver.qn; ++u) {
                 solver.stats.filter_candidate_count += (ui)solver.candidates[u].size();
@@ -462,12 +478,14 @@ private:
 
         ui addBridgeArc(ui from, ui to)
         {
+            // 添加一条有向桥边弧，返回其在桥边数组中的编号。
             bridge_arcs.push_back({ from, to });
             return (ui)bridge_arcs.size() - 1;
         }
 
         void markBridgeNeighbor(ui from, ui to)
         {
+            // 在查询邻接表中标记 from 到 to 这条邻边属于桥边。
             bool marked = false;
             const vector<ui> &neighbors = solver.q_neighbors[from];
             for (ui i = 0; i < solver.q_degree[from]; ++i) {
@@ -483,6 +501,7 @@ private:
 
         void addBridge(ui a, ui b)
         {
+            // 记录一条无向桥边，同时建立两个方向的支持更新关系。
             ui ab = addBridgeArc(a, b);
             ui ba = addBridgeArc(b, a);
             bridge_nbrs[a].push_back({ b, ba });
@@ -493,6 +512,7 @@ private:
 
         void tarjan(ui u, ui parent, vector<int> &dfn, vector<int> &low, int &time)
         {
+            // 使用 Tarjan DFS 识别查询图中的桥边。
             dfn[u] = low[u] = ++time;
             for (ui v : solver.q_neighbors[u]) {
                 if (dfn[v] == 0) {
@@ -510,6 +530,7 @@ private:
 
         void buildBridgeIndex()
         {
+            // 构建查询图桥边索引，并初始化每个邻接位置的桥边标记。
             bridge_arcs.clear();
             bridge_nbrs.assign(solver.qn, vector<BridgeNbr>());
             solver.q_neighbor_is_bridge.assign(solver.qn, vector<char>());
@@ -533,6 +554,7 @@ private:
 
         void buildVertexCache()
         {
+            // 缓存查询点和数据点的标签、数据点度数，避免过滤时重复读取图。
             query_label.assign(solver.qn, 0);
             for (ui u = 0; u < solver.qn; ++u) {
                 query_label[u] = solver.query_graph->getVertexLabel(u);
@@ -548,6 +570,7 @@ private:
 
         void buildQueryLabelReqs()
         {
+            // 按标签汇总每个查询点邻居的桥边和非桥边需求。
             query_label_reqs.assign(solver.qn, vector<QueryLabelReq>());
             query_bridge_degree.assign(solver.qn, 0);
             vector<ui> bridge_counts(solver.label_count, 0);
@@ -591,6 +614,7 @@ private:
 
         void buildDataLabelFreqs()
         {
+            // 按标签汇总每个数据点邻居频次，并建立数据点的标签分桶。
             data_label_freqs.assign(solver.gn, vector<LabelFreq>());
             data_by_label.assign(solver.label_count, vector<ui>());
             vector<ui> label_counts(solver.label_count, 0);
@@ -628,6 +652,7 @@ private:
 
         ui nlfDiff(ui u, ui v) const
         {
+            // 计算查询点 u 映射到数据点 v 时的 NLF 缺口。
             ui diff = 0;
             const vector<QueryLabelReq> &query_reqs = query_label_reqs[u];
             const vector<LabelFreq> &data_freqs = data_label_freqs[v];
@@ -662,6 +687,7 @@ private:
 
         bool filterNLF()
         {
+            // 执行基于标签和邻域标签频次的候选过滤。
             buildVertexCache();
             buildQueryLabelReqs();
             buildDataLabelFreqs();
@@ -684,11 +710,13 @@ private:
 
         ui &support(ui arc_id, ui v)
         {
+            // 返回桥边弧 arc_id 在数据点 v 上的可变支持计数引用。
             return bridge_support[(size_t)arc_id * solver.gn + v];
         }
 
         bool pruneCandidate(ui u, ui v)
         {
+            // 删除候选 (u, v)，并触发依赖该删除的桥边和 spoke 更新。
             if (!solver.candidates[u].contains(v)) {
                 return true;
             }
@@ -708,6 +736,7 @@ private:
 
         bool initBridgeSupports()
         {
+            // 初始化每条桥边弧在所有候选数据点上的支持数量。
             bridge_support.assign((size_t)bridge_arcs.size() * solver.gn, 0);
             vector<pair<ui, ui>> zero_support_candidates;
 
@@ -739,6 +768,7 @@ private:
 
         bool propagateBridgeRemovals()
         {
+            // 将候选删除沿桥边支持关系传播，直到队列清空或候选集为空。
             while (!removed.empty()) {
                 ui removed_u = removed.front().first;
                 ui removed_v = removed.front().second;
@@ -772,6 +802,7 @@ private:
 
         bool propagateFilterClosure()
         {
+            // 交替传播桥边删除和可选 spoke 过滤，直到达到闭包。
             while (true) {
                 if (!propagateBridgeRemovals()) {
                     return false;
@@ -796,6 +827,7 @@ private:
 
         bool augmentSpoke(ui left_idx)
         {
+            // 在 spoke 二分图中为一个左侧邻居寻找增广匹配。
             for (ui right_idx : spoke_adj[left_idx]) {
                 if (seen_right[right_idx] == seen_token) continue;
                 seen_right[right_idx] = seen_token;
@@ -810,6 +842,7 @@ private:
 
         bool tryAugmentSpoke(ui left_idx)
         {
+            // 刷新访问标记后尝试为指定 spoke 左点增广。
             seen_token++;
             if (seen_token == 0) {
                 std::fill(seen_right.begin(), seen_right.end(), 0);
@@ -820,6 +853,7 @@ private:
 
         void buildSpokeAdj(ui u, ui v, ui &deg_u, ui &deg_v)
         {
+            // 为候选 (u, v) 构造查询邻居到数据邻居的可行 spoke 二分图。
             const vector<ui> &u_neighbors = solver.q_neighbors[u];
             deg_u = solver.q_degree[u];
             const ui *v_neighbors = solver.data_graph->getVertexNeighbors(v, deg_v);
@@ -839,6 +873,7 @@ private:
 
         bool spokeFeasible(ui u, ui v, ui budget)
         {
+            // 判断候选 (u, v) 的邻接 spoke 是否能在缺边预算内匹配。
             ui deg_u = 0;
             ui deg_v = 0;
             buildSpokeAdj(u, v, deg_u, deg_v);
@@ -889,6 +924,7 @@ private:
 
         ui maxMissingIncidentEdges(ui u) const
         {
+            // 估计查询点 u 周围最多允许缺失的关联边数量。
             if (solver.q_degree[u] == 0) return 0;
             return std::min(solver.threshold, solver.q_degree[u] - 1);
         }
@@ -896,6 +932,7 @@ private:
 #if CDE_EDGE_IE_ENABLE_SPOKE_FILTERING
         void enqueueSpokeVertex(ui u)
         {
+            // 将查询点加入待处理的 spoke 过滤队列，避免重复入队。
             if (queued_spoke[u]) {
                 return;
             }
@@ -905,6 +942,7 @@ private:
 
         void enqueueAllSpokeVertices()
         {
+            // 将所有查询点加入 spoke 过滤队列，作为初始闭包传播入口。
             for (ui u = 0; u < solver.qn; ++u) {
                 enqueueSpokeVertex(u);
             }
@@ -912,6 +950,7 @@ private:
 
         bool processSpokeVertex(ui u)
         {
+            // 检查查询点 u 的所有候选，并删除不满足 spoke 约束的候选。
             ui budget = maxMissingIncidentEdges(u);
 
             vector<ui> to_remove;
@@ -934,11 +973,13 @@ private:
 
     bool runCandidateFiltering()
     {
+        // 创建候选过滤器并执行完整候选过滤流程。
         return CandidateFilter(*this).run();
     }
 
     void initDataLabelDegreeIndex()
     {
+        // 为每个数据点建立邻居标签频次索引，供边支持估计使用。
         data_label_degrees.assign(gn, vector<DataLabelDegreeCount>());
         vector<ui> label_counts(label_count, 0);
 
@@ -965,6 +1006,7 @@ private:
 
     ui dataLabelDegree(ui v, LabelID label) const
     {
+        // 查询数据点 v 的邻居中指定标签出现的次数。
         if (v >= gn || label < 0 || (ui)label >= label_count) {
             return 0;
         }
@@ -982,6 +1024,7 @@ private:
 
     ui cheapEdgeSupport(ui u, ui anchor)
     {
+        // 用标签频次和候选集大小快速估计 u 与 anchor 的边支持。
         if (u >= qn || anchor >= qn || mapped_q[anchor] == -1 ||
             excluded_edges[u][anchor]) {
             return 0;
@@ -1004,6 +1047,7 @@ private:
 
     unsigned long long countStaticCandidateEdgePairs(ui u, ui u1) const
     {
+        // 统计两个查询点候选集合之间存在的数据边数量。
         unsigned long long count = 0;
         for (ui v : candidates[u]) {
             ui degree = 0;
@@ -1019,6 +1063,7 @@ private:
 
     void initFixedEdgePriorities()
     {
+        // 根据静态候选边支持为查询边建立固定分支优先级。
         const ui invalid_priority = std::numeric_limits<ui>::max();
         fixed_edge_priority.assign(qn, vector<ui>(qn, invalid_priority));
 
@@ -1110,10 +1155,14 @@ private:
         MatchingSolver &solver;
 
     public:
-        explicit BranchSelector(MatchingSolver &solver) : solver(solver) {}
+        explicit BranchSelector(MatchingSolver &solver) : solver(solver)
+        {
+            // 绑定外层求解器，后续选择分支时直接读取当前搜索状态。
+        }
 
         ui selectInitialRoot() const
         {
+            // 选择候选数最少、度数较高的查询点作为搜索根。
             ui root = 0;
             for (ui u = 1; u < solver.qn; ++u) {
                 if (solver.candidates[u].size() < solver.candidates[root].size() ||
@@ -1129,6 +1178,7 @@ private:
             vector<ActiveEdge> &top_edges, EdgeScoreCache *edge_score_cache = nullptr,
             const vector<char> *skip_query_vertices = nullptr) const
         {
+            // 从当前前沿收集可分支活跃边，并按启发式保留前 max_count 条。
             top_edges.clear();
             if (max_count == 0) {
                 return false;
@@ -1178,6 +1228,7 @@ private:
             double &covered_component_support_sum, bool &has_zero_support_component,
             const vector<char> *skip_query_vertices = nullptr) const
         {
+            // 缩短 top_edges，使其至少完整覆盖一个未匹配连通分量。
             covered_component_support_sum = std::numeric_limits<double>::max();
             has_zero_support_component = false;
             if (top_edges.empty()) {
@@ -1238,17 +1289,20 @@ private:
     private:
         bool shouldSkipQueryVertex(ui u, const vector<char> *skip_query_vertices) const
         {
+            // 判断查询点 u 是否在本轮前沿选择中被临时跳过。
             return skip_query_vertices != nullptr &&
                 u < skip_query_vertices->size() && (*skip_query_vertices)[u];
         }
 
         ui countLiveAnchors(ui u) const
         {
+            // 返回查询点 u 当前仍有效的已匹配锚点数量。
             return u < solver.qn ? solver.anchor_count[u] : 0;
         }
 
         ui estimateEdgeSupport(ui u, ui anchor) const
         {
+            // 估计活跃边 (u, anchor) 的候选支持，并记录评分耗时。
             Timer t_score;
             ui estimate = solver.cheapEdgeSupport(u, anchor);
             long long elapsed = t_score.elapsed();
@@ -1259,6 +1313,7 @@ private:
 
         bool isBetterActiveEdge(const ActiveEdge &lhs, const ActiveEdge &rhs) const
         {
+            // 比较两条活跃边的分支优先级，支持固定顺序和动态启发式。
 #if CDE_EDGE_IE_FIXED_ORDER
             ui lhs_priority = solver.fixed_edge_priority[lhs.u][lhs.anchor];
             ui rhs_priority = solver.fixed_edge_priority[rhs.u][rhs.anchor];
@@ -1288,6 +1343,7 @@ private:
 
         void collectActiveEdgesForVertex(ui u, vector<ActiveEdge> &edges) const
         {
+            // 收集未匹配前沿点 u 与所有已匹配锚点形成的活跃边。
             edges.clear();
             if (u >= solver.qn || solver.mapped_q[u] != -1 || solver.frontier_pos[u] == -1) {
                 return;
@@ -1317,6 +1373,7 @@ private:
 
         const vector<ActiveEdge> &cachedActiveEdgesForVertex(ui u, EdgeScoreCache &cache) const
         {
+            // 读取或懒加载查询点 u 的活跃边评分缓存。
             if (cache.active_edges_by_vertex.empty()) {
                 cache.active_edges_by_vertex.resize(solver.qn);
                 cache.active_edges_cached.assign(solver.qn, 0);
@@ -1332,8 +1389,7 @@ private:
             vector<vector<ui>> &component_frontiers,
             const vector<char> *skip_query_vertices) const
         {
-            // Label every unmatched component in one graph sweep, then reuse the
-            // labels for all top edges in this DFS state.
+            // 标记所有未匹配连通分量，并收集每个分量中的前沿点。
             component_id.assign(solver.qn, -1);
             for (vector<ui> &frontier : component_frontiers) {
                 frontier.clear();
@@ -1380,6 +1436,7 @@ private:
 
     ui nextDataVertexMarkToken()
     {
+        // 生成数据点临时标记的 token，溢出时清空标记数组重新开始。
         if (++data_vertex_mark_token == 0) {
             std::fill(data_vertex_mark.begin(), data_vertex_mark.end(), 0);
             data_vertex_mark_token = 1;
@@ -1389,6 +1446,7 @@ private:
 
     ui countAnchorsByMark(ui u, ui selected_anchor, const vector<ui> &candidate_vertices, vector<ui> &anchor_counts)
     {
+        // 使用数据点标记数组统计候选点被多少个活跃锚点邻接。
         anchor_counts.assign(candidate_vertices.size(), 0);
         ui token = nextDataVertexMarkToken();
         for (ui i = 0; i < candidate_vertices.size(); ++i) {
@@ -1419,6 +1477,7 @@ private:
 
     ui countAnchorsByHasEdge(ui u, ui selected_anchor, const vector<ui> &candidate_vertices, vector<ui> &anchor_counts) const
     {
+        // 使用 hasEdge 逐项检查候选点被多少个活跃锚点邻接。
         anchor_counts.assign(candidate_vertices.size(), 0);
         ui anchor_num = 0;
         for (ui anchor : q_neighbors[u]) {
@@ -1441,9 +1500,9 @@ private:
         return anchor_num;
     }
 
-    // heuristic to decide whether to use mark-based counting or has-edge checking.
     bool useMarkForAnchorCount(ui u, ui selected_anchor, size_t vertex_count) const
     {
+        // 根据估计代价选择标记数组统计或 hasEdge 检查。
         auto binary_search_cost = [](ui degree) -> size_t {
             size_t cost = 1;
             for (; degree > 1; degree >>= 1) ++cost;
@@ -1467,11 +1526,9 @@ private:
         return mark_cost <= has_edge_cost;
     }
 
-    // count u's candidate vertices that are adjacent to each anchor's mapped data vertex
-    // and store the counts in anchor_counts
-    // return the number of anchors in query graph excluding selected_anchor and excluded ones.
     ui countAnchors(ui u, ui ua, const vector<ui> &candidate_vertices, vector<ui> &anchor_counts)
     {
+        // 统计候选点连接到多少个活跃锚点，并返回参与统计的锚点数量。
         if (candidate_vertices.empty()) return 0;
         if (useMarkForAnchorCount(u, ua, candidate_vertices.size())) {
             return countAnchorsByMark(u, ua, candidate_vertices, anchor_counts);
@@ -1482,10 +1539,10 @@ private:
     // ========================================================================
     // Maintain Frontier and Anchor Support
     // ========================================================================
-    // calculate support[u][anchor] or calculate all candidates of u by (u, anchor)
     template <typename Visitor>
     ui calEdgeSupport(ui u, ui anchor, Visitor visit) const
     {
+        // 枚举由锚点 anchor 支持的 u 的可用候选，并返回支持数量。
         if (u >= qn || anchor >= qn || mapped_q[anchor] == -1 || excluded_edges[u][anchor]) {
             return 0;
         }
@@ -1506,6 +1563,7 @@ private:
 
     inline void recordSupportSnapshot(ui u, ui anchor)
     {
+        // 在当前回滚作用域中记录 support[u][anchor] 的旧值。
         if (active_support_snapshots == nullptr) {
             return;
         }
@@ -1519,6 +1577,7 @@ private:
 
     inline void markSupportDirty(ui u, ui anchor)
     {
+        // 将指定边支持标记为脏，并在需要回滚时保存旧状态。
         if (u >= qn || anchor >= qn || support_dirty[u][anchor]) {
             return;
         }
@@ -1528,6 +1587,7 @@ private:
 
     inline void markLiveAnchorSupportDirty(ui u)
     {
+        // 将未匹配前沿点 u 的所有活跃锚边支持标记为脏。
         if (u >= qn || mapped_q[u] != -1 || frontier_pos[u] == -1) {
             return;
         }
@@ -1538,19 +1598,19 @@ private:
         }
     }
 
-    // update active_frontier, frontier_pos, anchor_support
     inline void updateFrontierStatus(ui u)
     {
+        // 根据映射状态和锚点数量维护 u 是否属于活跃前沿。
         bool should_be = (mapped_q[u] == -1 && anchor_count[u] > 0);
         bool is_in = (frontier_pos[u] != -1);
 
         if (should_be && !is_in) {
-            // add u to frontier
+            // 将 u 加入活跃前沿。
             frontier_pos[u] = active_frontier.size();
             active_frontier.push_back(u);
         }
         else if (!should_be && is_in) {
-            // remove u from frontier
+            // 从活跃前沿中移除 u，并用末尾元素补位。
             ui idx = frontier_pos[u];
             ui last_u = active_frontier.back();
             active_frontier[idx] = last_u;
@@ -1560,13 +1620,13 @@ private:
         }
     }
 
-    // when u becomes matched/unmatched, update anchor_count, active_frontier and anchor_support
     void updateFrontier(ui u, bool matched)
     {
+        // 当 u 被匹配或撤销匹配时，更新邻居锚点计数和前沿状态。
         Timer t_support_update;
         if (matched) updateFrontierStatus(u);
 
-        // update u's neighbors in frontier
+        // 更新 u 的邻居在前沿中的状态。
         for (ui u1 : q_neighbors[u]) {
             if(excluded_edges[u][u1]) continue;
 
@@ -1588,9 +1648,9 @@ private:
         stats.support_update_time += t_support_update.elapsed();
     }
 
-    // mark (u, anchor) as excluded, update anchor_count[u], active_frontier and anchor_support
     void excludeFrontierEdge(ui u, ui anchor)
     {
+        // 排除前沿边 (u, anchor)，并同步维护锚点数量和脏支持标记。
         excluded_edges[u][anchor] = 1;
         excluded_edges[anchor][u] = 1;
         assert(anchor_count[u] > 0);
@@ -1599,9 +1659,9 @@ private:
         markLiveAnchorSupportDirty(u);
     }
 
-    // restore (u, anchor), update anchor_count[u], active_frontier and anchor_support
     void restoreFrontierEdge(ui u, ui anchor)
     {
+        // 恢复此前排除的前沿边 (u, anchor)，并维护前沿状态。
         excluded_edges[u][anchor] = 0;
         excluded_edges[anchor][u] = 0;
         anchor_count[u]++;
@@ -1618,11 +1678,13 @@ private:
             previous_snapshots(solver.active_support_snapshots),
             snapshots(snapshots)
         {
+            // 进入局部回滚作用域，接管支持值快照记录位置。
             solver.active_support_snapshots = &snapshots;
         }
 
         ~SupportUndoScope()
         {
+            // 离开作用域时按快照反向恢复支持值和脏标记。
             for (auto it = snapshots.rbegin(); it != snapshots.rend(); ++it) {
                 solver.support[it->u][it->anchor] = it->value;
                 solver.support_dirty[it->u][it->anchor] = it->dirty;
@@ -1658,11 +1720,13 @@ private:
         vector<SupportSnapshot> local_support_snapshots;
         explicit DfsBuffer(MatchingSolver &solver)
             : branch_selector(solver)
-        {}
+        {
+            // 初始化每层 DFS 专用的分支选择器和可复用临时缓冲区。
+        }
 
-        // reserve space for dfs buffers
         void reserve(ui threshold, ui max_g_deg, ui qn, ui gn)
         {
+            // 按阈值、图规模和最大度数预留 DFS 临时缓冲空间。
             top_edges.reserve((size_t)threshold + 1);
             candidate_vertices.reserve(max_g_deg);
             candidate_anchor_counts.reserve(max_g_deg);
@@ -1686,6 +1750,7 @@ private:
 
         void clearLocal()
         {
+            // 清空本层 DFS 的局部临时数据，保留容量以复用内存。
             clearCandidateDeltaBuckets();
             for (vector<ActiveEdge> &edges : edge_score_cache.active_edges_by_vertex) {
                 edges.clear();
@@ -1708,6 +1773,7 @@ private:
 
         void clearCandidateDeltaBuckets()
         {
+            // 只清理本轮触碰过的 delta 桶，避免全量清空。
             for (ui delta : candidate_delta_touched) {
                 if (delta < candidate_delta_buckets.size()) {
                     candidate_delta_buckets[delta].clear();
@@ -1718,6 +1784,7 @@ private:
 
         void addCandidateDelta(ui delta, ui candidate)
         {
+            // 将候选点放入对应缺边增量的分桶中。
             assert(delta < candidate_delta_buckets.size());
             vector<ui> &bucket = candidate_delta_buckets[delta];
             if (bucket.empty()) {
@@ -1728,16 +1795,19 @@ private:
 
         void recordExcludedEdge(ui u, ui anchor)
         {
+            // 记录本层 DFS 新排除的边，便于退出时恢复。
             local_excluded_edges.push_back({ u, anchor });
         }
 
         void recordExcludedCands(ui u, ui v)
         {
+            // 记录本层 DFS 新排除的候选，便于退出时恢复。
             local_excluded_cands.push_back({ u, v });
         }
 
         void restoreLocalChanges(MatchingSolver &solver)
         {
+            // 回滚本层 DFS 对候选排除和前沿边排除做出的修改。
             for (auto &p : local_excluded_cands) {
                 solver.excluded_cands[p.first].remove(p.second);
             }
@@ -1762,17 +1832,20 @@ private:
 
     void reserveDfsBuffer(DfsBuffer &buf) const
     {
+        // 为单个 DFS 深度缓冲区预留足够容量。
         buf.reserve(threshold, max_g_deg, qn, gn);
     }
 
     void initDfsBuffer()
     {
+        // 清空 DFS 缓冲池，并按查询点数预留每层缓冲。
         dfs_buffers.clear();
         dfs_buffers.reserve((size_t)qn + 1);
     }
 
     DfsBuffer &dfsBufferForDepth(size_t depth)
     {
+        // 获取指定深度的 DFS 缓冲区，不存在时按需创建。
         assert(depth <= qn);
         assert(dfs_buffers.capacity() >= (size_t)qn + 1);
         while (dfs_buffers.size() <= depth) {
@@ -1788,6 +1861,7 @@ private:
     // ========================================================================
     bool isTerminalQueryVertex(ui u) const
     {
+        // 判断未匹配查询点 u 的所有有效邻居是否都已经匹配。
         if (u >= qn || mapped_q[u] != -1 || anchor_count[u] == 0) {
             return false;
         }
@@ -1805,6 +1879,7 @@ private:
 
     TerminalScan markTerminalVertices(DfsBuffer &buf)
     {
+        // 扫描当前未匹配点，标记可直接进入终端尾部枚举的点。
         TerminalScan scan;
         if (buf.terminal_skip.size() != qn) {
             buf.terminal_skip.assign(qn, 0);
@@ -1840,6 +1915,7 @@ private:
     ui collectTerminalCandidateSupports(ui u, vector<ui> &candidate_vertices,
         vector<ui> &candidate_support_counts)
     {
+        // 收集终端点 u 的可行候选，并统计每个候选连接到的活跃锚点数。
         candidate_vertices.clear();
         candidate_support_counts.clear();
 
@@ -1886,6 +1962,7 @@ private:
         ui &feasible_count, ui &min_delta, vector<ui> &candidate_vertices,
         vector<ui> &candidate_support_counts)
     {
+        // 按缺边增量为终端点 u 构建候选分桶。
         Timer t_terminal_bucket;
         assert(cost <= threshold);
         ui remaining_budget = threshold - cost;
@@ -1926,6 +2003,7 @@ private:
     bool buildTerminalTailVertices(const vector<ui> &terminal_vertices, ui cost,
         DfsBuffer &buf)
     {
+        // 为一组终端点构建尾部枚举结构，并按约束强度排序。
         vector<TerminalTailVertex> &tail_vertices = buf.terminal_tail_vertices;
         tail_vertices.clear();
         tail_vertices.reserve(terminal_vertices.size());
@@ -1961,6 +2039,7 @@ private:
     ui terminalMinDeltaSum(const vector<TerminalTailVertex> &tail_vertices,
         ui limit) const
     {
+        // 计算终端尾部点最小缺边增量之和，超过 limit 时提前截断。
         ui sum = 0;
         for (const TerminalTailVertex &tail_vertex : tail_vertices) {
             if (sum > limit || tail_vertex.min_delta > limit - sum) {
@@ -1973,6 +2052,7 @@ private:
 
     void recordTerminalPrune()
     {
+        // 记录一次由终端尾部检查触发的剪枝。
         stats.prun_calls++;
         stats.terminal_prune_calls++;
     }
@@ -1980,6 +2060,7 @@ private:
     void enumerateTerminalTail(size_t pos, ui cost,
         vector<TerminalTailVertex> &tail_vertices)
     {
+        // 递归枚举终端尾部点的具体映射，并输出完整匹配。
         if (outputLimitReached()) {
             stats.output_limit_reached = true;
             return;
@@ -2029,15 +2110,9 @@ private:
     }
     // ========================================================================
 
-    // =====================================================
-    // Procedure DFS(M_part, cost, X)
-    //
-    // cost:  current cost of partial match M_part
-    // X:     the set of excluded edges (u, ua)
-    // =====================================================
     void dfs(ui cost)
     {
-        // printf("part_M.size() = %zu, cost = %u\n", part_M.size(), cost);
+        // 以当前部分匹配和累计缺边代价为状态，递归扩展 CDE-Edge-IE 搜索树。
         if (outputLimitReached()) {
             stats.output_limit_reached = true;
             return;
@@ -2224,14 +2299,14 @@ private:
             assert(!excluded_edges[u][ua] && frontier_pos[u] != -1);
             assert(q_matrix[u][ua]);
 
-            // calculate the candidate vertices of u supported by anchor ua
+            // 计算由锚点 ua 支持的 u 的候选数据点。
             candidate_vertices.clear();
             {
                 Timer t_cal_edge_support;
                 calEdgeSupport(u, ua, [&](ui v) {candidate_vertices.push_back(v);});
                 stats.branch_cal_edge_support_time += t_cal_edge_support.elapsed();
             }
-            // number of live anchors of u excluding anchor ua
+            // 统计除 ua 外其他活跃锚点对候选点的支持数量。
             ui anchor_num = 0;
             {
                 Timer t_count_anchors;
@@ -2252,7 +2327,7 @@ private:
                 stats.branch_delta_bucket_time += t_delta_bucket.elapsed();
             }
 
-            // Include branch: use this frontier-anchor edge to add exactly one new query vertex.
+            // 存在边分支：使用此前沿-锚点边新增一个查询点映射。
             Timer t_candidate_loop;
             long long candidate_child_time_before = child_dfs_time;
             long long candidate_support_update_time = 0;
@@ -2296,7 +2371,7 @@ private:
 
             if (outputLimitReached()) break;
 
-            // Exclude branch: skip this edge, no recursion, just update cost and state.
+            // 缺失边分支：跳过这条边，只更新代价和排除状态。
             Timer t_exclude_update;
             current_cost++;
             excludeFrontierEdge(u, ua);
@@ -2334,6 +2409,7 @@ private:
 // ============================================================
 void Approximate_CDE_EdgeIE(const Graph *query_graph, const Graph *data_graph, vector<vector<pair<ui, ui> > > &M_ANS, ui threshold)
 {
+    // CDE-Edge-IE 算法的对外入口：初始化求解器、执行匹配并上报统计。
     Timer t_total;
     t_total.restart();
 
