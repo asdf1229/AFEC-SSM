@@ -138,6 +138,11 @@ public:
 
 
 private:
+    struct CandidateFilter;
+#if CDE_BLACK_WHITE_FIXED_ORDER
+    struct FixedEdgePriorityEntry;
+#endif
+
     const Graph *query_graph;
     const Graph *data_graph;
     vector<vector<pair<ui, ui>>> *results_ptr;
@@ -221,8 +226,123 @@ private:
 #endif
     }
 
+    bool runCandidateFiltering();
 
-#define CDE_BLACK_WHITE_INSIDE_MATCHING_SOLVER 1
+    unsigned long long adjKey(ui data_vertex, ui query_neighbor) const;
+    void buildAdjIndex();
+    const pair<size_t, ui> *findAdjRange(ui from_query, ui from_data,
+        ui to_query) const;
+    const ui *rangeBegin(const pair<size_t, ui> &range) const;
+    const ui *rangeEnd(const pair<size_t, ui> &range) const;
+    bool rangeHas(const pair<size_t, ui> &range, ui value) const;
+    bool candAdjacent(ui from_query, ui from_data, ui to_query, ui to_data);
+    bool hasDataEdge(ui u, ui v);
+    bool anchorAdjacent(ui anchor_query, ui anchor_data, ui target_query,
+        ui target_data);
+
+    void initState(SearchState &state) const;
+    size_t edgeIdx(ui u, ui v) const;
+    EdgeState getEdge(const SearchState &state, ui u, ui v) const;
+    void setEdgeRaw(SearchState &state, ui u, ui v,
+        EdgeState edge_state_value) const;
+    vector<ActiveEdge> &topEdgesBuffer(ui depth);
+    vector<ui> &whiteNbrsBuffer(ui depth);
+    bool tryBindRoot(SearchState &state, ui root, ui v) const;
+    bool isDataVertexUsed(const SearchState &state, ui v) const;
+    bool isSelected(const SearchState &state, ui u) const;
+    bool isBlack(const SearchState &state, ui u) const;
+    bool isWhite(const SearchState &state, ui u) const;
+    size_t mark() const;
+    void rollback(SearchState &state, size_t mark);
+    void setMap(SearchState &state, ui u, int value);
+    void setColor(SearchState &state, ui u, VertexColor value);
+    void setEdge(SearchState &state, ui u, ui v, EdgeState edge_state_value);
+    void pushUsed(SearchState &state, ui v);
+    void pushMatch(SearchState &state, ui u, ui v);
+    void setSelectedCnt(SearchState &state, ui value);
+    void setWhiteCnt(SearchState &state, ui value);
+    void replaceBucket(SearchState &state, ui u,
+        const vector<ui> &candidates_to_store);
+
+    bool calcBlackDelta(const SearchState &state, ui u, ui v, ui cost,
+        ui &delta);
+    bool collectPosRanges(const SearchState &state, ui u,
+        vector<pair<size_t, ui>> &ranges);
+    void buildRangeSource(vector<pair<size_t, ui>> &ranges,
+        vector<ui> &source);
+    void addFeasibleCand(const SearchState &state, ui u, ui candidate,
+        ui cost, vector<ui> &result);
+    bool bucketHas(const SearchState &state,
+        const WhiteCandidateBuckets &bucket, ui candidate) const;
+    ui nextBatchToken();
+    void addRangeHits(const pair<size_t, ui> *range, ui token,
+        vector<ui> &hits);
+    void invalidateRange(const pair<size_t, ui> *range, ui token);
+    void addFeasibleBatch(const SearchState &state, ui u, ui cost,
+        const vector<ui> &source, vector<ui> &result);
+    void copyBucketCands(const SearchState &state,
+        const WhiteCandidateBuckets &bucket, vector<ui> &target) const;
+    void filterByBucket(const SearchState &state,
+        const WhiteCandidateBuckets &bucket, const vector<ui> &source,
+        vector<ui> &target) const;
+    void collectAllCands(ui u, vector<ui> &target);
+    void addBucketCands(const SearchState &state, ui u, ui cost,
+        const WhiteCandidateBuckets &bucket, vector<ui> &result);
+    bool buildWhiteCands(SearchState &state, ui u, ui cost,
+        const WhiteCandidateBuckets *existing_bucket);
+    bool refreshWhiteCands(SearchState &state, ui white_u, ui cost);
+    bool initWhiteCands(SearchState &state, ui u, ui cost);
+    bool isSelectedByBlackNeighbor(const SearchState &state, ui u) const;
+    void collectWhiteNbrs(const SearchState &state, ui u,
+        vector<ui> &white_neighbors) const;
+    bool refreshWhiteByBlack(SearchState &state, ui white_u, ui black_u,
+        ui black_v, ui cost);
+
+#if CDE_BLACK_WHITE_FIXED_ORDER
+    void initFixedEdgePriorities();
+#endif
+    ui chooseRoot();
+    void initColors();
+    double blackSupport(const SearchState &state, ui u, ui anchor) const;
+    double whiteSupport(const SearchState &state, ui anchor) const;
+    bool betterEdge(const ActiveEdge &lhs, const ActiveEdge &rhs) const;
+    void selectTopEdges(ui max_count, vector<ActiveEdge> &top_edges);
+    bool collectActiveEdges(const SearchState &state, ui max_count,
+        vector<ActiveEdge> &top_edges);
+    ui chooseMatWhite(const SearchState &state) const;
+
+    bool buildTailBuckets(const SearchState &state, ui white_u, ui cost,
+        vector<vector<ui>> &buckets, ui &feasible_count, ui &min_delta);
+    bool buildTailWhites(const SearchState &state, ui cost,
+        vector<TerminalTailVertex> &tail_vertices);
+    void enumTailWhites(SearchState &state, size_t pos, ui cost,
+        vector<TerminalTailVertex> &tail_vertices);
+    void emitResult(const SearchState &state);
+
+    bool tryBindBlack(SearchState &state, ui cost, ui u, ui v,
+        ui &next_cost);
+    bool tryMaterializeWhite(SearchState &state, ui cost, ui white_u,
+        ui candidate, ui bucket_delta, ui &next_cost);
+    bool branchWhite(SearchState &state, ui cost, ui u);
+    bool branchBlack(SearchState &state, ui cost, ui u,
+        ui required_anchor = std::numeric_limits<ui>::max());
+    template <typename Continue>
+    bool branchMatWhite(SearchState &state, ui cost, ui white_u,
+        Continue continue_branch);
+    template <typename Continue>
+    bool branchMatWhites(SearchState &state, ui cost,
+        const vector<ui> &white_vertices, size_t pos,
+        Continue continue_branch);
+    bool branchBlackAnchor(SearchState &state, ui cost, ui u, ui anchor);
+    bool branchPresentEdge(SearchState &state, ui cost,
+        const ActiveEdge &edge);
+    void branchEdges(SearchState &state, ui cost,
+        const vector<ActiveEdge> &top_edges, size_t edge_idx);
+    void search(SearchState &state, ui cost);
+};
+
+} // namespace cde_black_white
+
 #include "matching/algorithms/cde_black_white/filtering.h"
 #include "matching/algorithms/cde_black_white/candidate_index.h"
 #include "matching/algorithms/cde_black_white/state_undo.h"
@@ -230,10 +350,6 @@ private:
 #include "matching/algorithms/cde_black_white/ordering.h"
 #include "matching/algorithms/cde_black_white/terminal_tail.h"
 #include "matching/algorithms/cde_black_white/branching.h"
-#undef CDE_BLACK_WHITE_INSIDE_MATCHING_SOLVER
-};
-
-} // namespace cde_black_white
 
 inline void Approximate_CDE_BlackWhite(const Graph *query_graph, const Graph *data_graph, std::vector<std::vector<std::pair<ui, ui> > > &M_ANS, ui threshold)
 {
