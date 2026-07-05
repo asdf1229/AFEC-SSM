@@ -22,14 +22,13 @@ enum EdgeState : unsigned char {
     EDGE_MISSING = 2
 };
 
-struct WhiteCandidateBuckets {
+struct WhiteCands {
     size_t begin = 0;
     ui count = 0;
     ui feasible_count = 0;
 
     void clear()
     {
-        // 清空 white 候选桶的范围和可行计数。
         begin = 0;
         count = 0;
         feasible_count = 0;
@@ -37,15 +36,15 @@ struct WhiteCandidateBuckets {
 
     bool empty() const
     {
-        // 判断当前 white 候选桶是否没有可行候选。
         return feasible_count == 0;
     }
 };
 
-struct ActiveEdge {
+struct AnchorEdge {
     ui u = 0;
     ui anchor = 0;
-    double rank_support = std::numeric_limits<double>::max();
+    VertexColor anchor_color = COLOR_UNSELECTED;
+    double support = std::numeric_limits<double>::max();
     ui live_anchor_count = 0;
     ui query_degree = 0;
 };
@@ -56,10 +55,10 @@ struct SearchState {
     vector<unsigned char> used_data_flag;
     vector<VertexColor> color;
     vector<EdgeState> edge_state;
-    vector<ActiveEdge> frontier_edges;
-    vector<int> frontier_edge_pos;
-    vector<ui> frontier_count;
-    vector<WhiteCandidateBuckets> white;
+    vector<AnchorEdge> anchor_edges;
+    vector<int> anchor_edge_pos;
+    vector<ui> anchor_count;
+    vector<WhiteCands> white;
     vector<ui> white_candidate_pool;
     vector<pair<ui, ui>> part_M;
     ui selected_count = 0;
@@ -87,9 +86,8 @@ struct UndoRecord {
     EdgeState old_edge_vu = EDGE_UNDECIDED;
     size_t old_size = 0;
     ui old_count = 0;
-    WhiteCandidateBuckets old_white;
+    WhiteCands old_white;
 };
-
 
 struct TimeStats {
     long long total_time = 0;
@@ -116,8 +114,7 @@ struct TimeStats {
     bool output_limit_reached = false;
 };
 
-
-struct TerminalTailVertex {
+struct TailWhite {
     ui u = 0;
     ui feasible_count = 0;
     ui min_delta = std::numeric_limits<ui>::max();

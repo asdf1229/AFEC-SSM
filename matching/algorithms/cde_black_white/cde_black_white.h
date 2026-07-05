@@ -1,9 +1,25 @@
 #ifndef MATCHING_ALGORITHMS_CDE_BLACK_WHITE_H_
 #define MATCHING_ALGORITHMS_CDE_BLACK_WHITE_H_
 
+#define CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING 1
+#define CDE_BLACK_WHITE_ENABLE_BRIDGE_FILTERING 1
+#define CDE_BLACK_WHITE_FIXED_ORDER 0
+#define CDE_BLACK_WHITE_STATIC_COLOR 1
+#define CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY 1
+#define CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY_GAMMA 0.9
+#ifndef CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE
+#define CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE 1
+#endif
+#ifndef CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_ANCHOR_BRANCH
+#define CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_ANCHOR_BRANCH 1
+#endif
+
+#if CDE_BLACK_WHITE_FIXED_ORDER && CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
+#error "CDE_BLACK_WHITE_FIXED_ORDER and CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY are mutually exclusive."
+#endif
+
 #include "configuration/types.h"
 #include "graph/graph.h"
-#include "matching/algorithms/cde_black_white/config.h"
 #include "matching/algorithms/cde_black_white/types.h"
 #include "matching/run_matching.h"
 #include "utility/mybitset.h"
@@ -70,16 +86,14 @@ private:
     vector<unsigned char> candidate_batch_valid;
     ui candidate_batch_token = 0;
 
-    vector<vector<ActiveEdge>> top_edges_buffer_by_depth;
-    vector<vector<ui>> white_neighbors_buffer_by_depth;
+    vector<vector<AnchorEdge>> top_edges_buffer;
+    vector<vector<pair<ui, ui>>> branch_cands_buffer;
+    vector<vector<ui>> white_neighbors_buffer;
     vector<int> component_id_buffer;
-    vector<vector<ui>> component_frontiers_buffer;
     vector<ui> component_queue_buffer;
     vector<ui> component_edge_counts_buffer;
-    vector<ui> component_seen_counts_buffer;
 
     bool outputLimitReached() const;
-    void noteOutputLimitIfReached();
     void resetState();
     void resetBuffers();
 
@@ -102,9 +116,10 @@ private:
     EdgeState getEdge(const SearchState &state, ui u, ui v) const;
     void setEdgeRaw(SearchState &state, ui u, ui v,
         EdgeState edge_state_value) const;
-    vector<ActiveEdge> &topEdgesBuffer(ui depth);
+    vector<AnchorEdge> &topEdgesBuffer(ui depth);
+    vector<pair<ui, ui>> &branchCandsBuffer(ui depth);
     vector<ui> &whiteNbrsBuffer(ui depth);
-    bool tryBindRoot(SearchState &state, ui root, ui v) const;
+    void tryMapRoot(SearchState &state, ui root, ui v) const;
     bool isDataVertexUsed(const SearchState &state, ui v) const;
     bool isSelected(const SearchState &state, ui u) const;
     bool isBlack(const SearchState &state, ui u) const;
@@ -130,7 +145,7 @@ private:
     void addFeasibleCand(const SearchState &state, ui u, ui candidate,
         ui cost, vector<ui> &result);
     bool bucketHas(const SearchState &state,
-        const WhiteCandidateBuckets &bucket, ui candidate) const;
+        const WhiteCands &bucket, ui candidate) const;
     ui nextBatchToken();
     void addRangeHits(const pair<size_t, ui> *range, ui token,
         vector<ui> &hits);
@@ -138,20 +153,18 @@ private:
     void addFeasibleBatch(const SearchState &state, ui u, ui cost,
         const vector<ui> &source, vector<ui> &result);
     void copyBucketCands(const SearchState &state,
-        const WhiteCandidateBuckets &bucket, vector<ui> &target) const;
+        const WhiteCands &bucket, vector<ui> &target) const;
     void filterByBucket(const SearchState &state,
-        const WhiteCandidateBuckets &bucket, const vector<ui> &source,
+        const WhiteCands &bucket, const vector<ui> &source,
         vector<ui> &target) const;
     void collectAllCands(ui u, vector<ui> &target);
     void addBucketCands(const SearchState &state, ui u, ui cost,
-        const WhiteCandidateBuckets &bucket, vector<ui> &result);
+        const WhiteCands &bucket, vector<ui> &result);
     bool buildWhiteCands(SearchState &state, ui u, ui cost,
-        const WhiteCandidateBuckets *existing_bucket);
+        const WhiteCands *existing_bucket);
     bool refreshWhiteCands(SearchState &state, ui white_u, ui cost);
     bool initWhiteCands(SearchState &state, ui u, ui cost);
     bool isSelectedByBlackNeighbor(const SearchState &state, ui u) const;
-    void collectWhiteNbrs(const SearchState &state, ui u,
-        vector<ui> &white_neighbors) const;
     bool refreshWhiteByBlack(SearchState &state, ui white_u, ui black_u,
         ui black_v, ui cost);
 
@@ -160,50 +173,44 @@ private:
 #endif
     ui chooseRoot();
     void initColors();
-    void addFrontierEdgeRaw(SearchState &state, ui u, ui anchor) const;
-    void removeFrontierEdgeRaw(SearchState &state, ui u, ui anchor) const;
-    void refreshFrontierEdge(SearchState &state, ui u, ui v) const;
-    void refreshFrontierEdgesIncidentTo(SearchState &state, ui u) const;
+    void addAnchorEdgeRaw(SearchState &state, ui u, ui anchor) const;
+    void removeAnchorEdgeRaw(SearchState &state, ui u, ui anchor) const;
+    void refreshAnchorEdge(SearchState &state, ui u, ui v) const;
     double blackSupport(const SearchState &state, ui u, ui anchor) const;
     double whiteSupport(const SearchState &state, ui anchor) const;
-    bool betterEdge(const ActiveEdge &lhs, const ActiveEdge &rhs) const;
-    void selectTopEdges(ui max_count, vector<ActiveEdge> &top_edges);
-    bool isActiveFrontierEdge(const SearchState &state,
-        const ActiveEdge &edge) const;
-    size_t labelFrontierComponents(const SearchState &state,
-        vector<int> &component_id, vector<vector<ui>> &component_frontiers,
-        vector<ui> &queue);
-    void restrictTopEdgesToCoveredComponent(const SearchState &state,
-        vector<ActiveEdge> &top_edges);
+    bool betterEdge(const AnchorEdge &lhs, const AnchorEdge &rhs) const;
+    void selectTopEdges(ui max_count, vector<AnchorEdge> &top_edges);
+    bool isActiveAnchorEdge(const SearchState &state,
+        const AnchorEdge &edge) const;
+    size_t labelFrontierComponents(const SearchState &state, vector<int> &component_id, vector<ui> &queue);
+    void trimToCompleteComponent(const SearchState &state,
+        vector<AnchorEdge> &top_edges);
     bool collectActiveEdges(const SearchState &state, ui max_count,
-        vector<ActiveEdge> &top_edges);
+        vector<AnchorEdge> &top_edges);
     ui chooseMatWhite(const SearchState &state) const;
 
-    bool buildTailBuckets(const SearchState &state, ui white_u, ui cost,
-        vector<vector<ui>> &buckets, ui &feasible_count, ui &min_delta);
+    bool buildTailWhite(const SearchState &state, ui cost, TailWhite &tail_white);
     bool buildTailWhites(const SearchState &state, ui cost,
-        vector<TerminalTailVertex> &tail_vertices);
+        vector<TailWhite> &tail_vertices);
     void enumTailWhites(SearchState &state, size_t pos, ui cost,
-        vector<TerminalTailVertex> &tail_vertices);
+        vector<TailWhite> &tail_vertices);
     void emitResult(const SearchState &state);
 
-    bool tryBindBlack(SearchState &state, ui cost, ui u, ui v,
-        ui &next_cost);
-    bool tryMaterializeWhite(SearchState &state, ui cost, ui white_u,
+    bool tryMapBlack(SearchState &state, ui cost, ui u, ui v, ui &next_cost);
+    bool tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui v, ui delta, ui &next_cost);
+    bool tryMapWhite(SearchState &state, ui cost, ui white_u,
         ui candidate, ui bucket_delta, ui &next_cost);
+    bool shouldExpandAsWhite(const SearchState &state, ui u, const vector<pair<ui, ui>> &anchor_candidates) const;
     bool branchWhite(SearchState &state, ui cost, ui u);
-    bool branchBlack(SearchState &state, ui cost, ui u,
-        ui required_anchor = std::numeric_limits<ui>::max());
+    void branchBlack(SearchState &state, ui cost, ui u, const vector<pair<ui, ui>> &anchor_candidates);
     bool branchMatWhite(SearchState &state, ui cost, ui white_u,
         const ContinueBranch &continue_branch);
     bool branchMatWhites(SearchState &state, ui cost,
         const vector<ui> &white_vertices, size_t pos,
         const ContinueBranch &continue_branch);
-    bool branchBlackAnchor(SearchState &state, ui cost, ui u, ui anchor);
-    bool branchPresentEdge(SearchState &state, ui cost,
-        const ActiveEdge &edge);
+    void branchBlackAnchor(SearchState &state, ui cost, ui u, ui anchor);
     void branchEdges(SearchState &state, ui cost,
-        const vector<ActiveEdge> &top_edges, size_t edge_idx);
+        const vector<AnchorEdge> &top_edges, size_t edge_idx);
     void search(SearchState &state, ui cost);
 };
 

@@ -2,105 +2,82 @@
 
 namespace cde_black_white {
 
-bool MatchingSolver::buildTailBuckets(
-    const SearchState &state, ui white_u, ui cost,
-    vector<vector<ui>> &buckets, ui &feasible_count, ui &min_delta)
+bool MatchingSolver::buildTailWhite(const SearchState &state, ui cost, TailWhite &tail_white)
 {
-    // 为终端阶段的一个 white 点按缺边增量构建候选分桶。
-    assert(cost <= threshold);
-    if (!isWhite(state, white_u) || state.mapped_q[white_u] != -1) {
-        return false;
-    }
+    ui white_u = tail_white.u;
 
-    for (ui neighbor : q_neighbors[white_u]) {
-        if (isWhite(state, neighbor)) {
-            return false;
-        }
-    }
+    assert(cost <= threshold);
+    assert(isWhite(state, white_u));
+    assert(state.mapped_q[white_u] == -1);
+#ifndef NDEBUG
+    for (ui neighbor : q_neighbors[white_u]) assert(!isWhite(state, neighbor));
+#endif
 
     ui remaining_budget = threshold - cost;
-    buckets.assign((size_t)remaining_budget + 1, vector<ui>());
-    feasible_count = 0;
-    min_delta = std::numeric_limits<ui>::max();
+    tail_white.buckets.assign((size_t)remaining_budget + 1, vector<ui>());
+    tail_white.feasible_count = 0;
+    tail_white.min_delta = std::numeric_limits<ui>::max();
 
-    WhiteCandidateBuckets white = state.white[white_u];
+    WhiteCands white = state.white[white_u];
     assert(white.begin + white.count <= state.white_candidate_pool.size());
+
     for (ui candidate_idx = 0; candidate_idx < white.count;
         ++candidate_idx) {
-        ui candidate =
-            state.white_candidate_pool[white.begin + candidate_idx];
-        if (isDataVertexUsed(state, candidate)) {
-            continue;
-        }
-
+        ui candidate = state.white_candidate_pool[white.begin + candidate_idx];
+        if (isDataVertexUsed(state, candidate)) continue;
         ui delta = 0;
-        if (!calcBlackDelta(state, white_u, candidate, cost, delta)) {
-            continue;
-        }
-        if (delta > remaining_budget) {
-            continue;
-        }
+        if (!calcBlackDelta(state, white_u, candidate, cost, delta)) continue;
+        if (delta > remaining_budget) continue;
 
-        buckets[delta].push_back(candidate);
-        feasible_count++;
-        if (delta < min_delta) {
-            min_delta = delta;
-        }
+        tail_white.buckets[delta].push_back(candidate);
+        tail_white.feasible_count++;
+
+        if (delta < tail_white.min_delta) tail_white.min_delta = delta;
     }
 
-    return feasible_count > 0;
+    return tail_white.feasible_count > 0;
 }
 
-bool MatchingSolver::buildTailWhites(const SearchState &state,
-    ui cost, vector<TerminalTailVertex> &tail_vertices)
+bool MatchingSolver::buildTailWhites(const SearchState &state, ui cost, vector<TailWhite> &tail_whites)
 {
-    // 为所有剩余 white 点构建终端 tail 枚举结构。
-    tail_vertices.clear();
-    tail_vertices.reserve(state.white_count);
+    tail_whites.clear();
+    tail_whites.reserve(state.white_count);
 
     for (ui u = 0; u < qn; ++u) {
-        if (!isWhite(state, u)) {
-            continue;
-        }
+        if (!isWhite(state, u)) continue;
 
-        TerminalTailVertex tail_vertex;
-        tail_vertex.u = u;
-        if (!buildTailBuckets(state, u, cost,
-            tail_vertex.buckets, tail_vertex.feasible_count,
-            tail_vertex.min_delta)) {
-            return false;
-        }
-        tail_vertices.push_back(std::move(tail_vertex));
+        TailWhite tail_white;
+        tail_white.u = u;
+        if (!buildTailWhite(state, cost, tail_white)) return false;
+        tail_whites.push_back(std::move(tail_white));
     }
 
-    if (tail_vertices.size() != (size_t)state.white_count) {
-        return false;
-    }
+    assert(tail_whites.size() == (size_t)state.white_count);
 
-    std::sort(tail_vertices.begin(), tail_vertices.end(),
-        [this](const TerminalTailVertex &lhs, const TerminalTailVertex &rhs) {
+    // 1. fewer feasible candidates first;
+    // 2. larger minimum delta first;
+    // 3. higher query degree first;
+    // 4. smaller vertex id first.
+    std::sort(tail_whites.begin(), tail_whites.end(),
+        [this](const TailWhite &lhs, const TailWhite &rhs) {
             if (lhs.feasible_count != rhs.feasible_count) {
                 return lhs.feasible_count < rhs.feasible_count;
             }
             if (lhs.min_delta != rhs.min_delta) {
-                return lhs.min_delta < rhs.min_delta;
+                return lhs.min_delta > rhs.min_delta;
             }
             if (q_degree[lhs.u] != q_degree[rhs.u]) {
                 return q_degree[lhs.u] > q_degree[rhs.u];
             }
             return lhs.u < rhs.u;
         });
+
     return true;
 }
 
-void MatchingSolver::enumTailWhites(SearchState &state,
-    size_t pos, ui cost, vector<TerminalTailVertex> &tail_vertices)
+void MatchingSolver::enumTailWhites(SearchState &state, size_t pos, ui cost, vector<TailWhite> &tail_vertices)
 {
-    // 递归枚举终端阶段所有 white 点的具体映射。
-    if (outputLimitReached()) {
-        stats.output_limit_reached = true;
-        return;
-    }
+    if (outputLimitReached()) return;
     stats.recursion_calls++;
     stats.terminal_tail_calls++;
     assert(cost <= threshold);
@@ -110,37 +87,31 @@ void MatchingSolver::enumTailWhites(SearchState &state,
         return;
     }
 
-    TerminalTailVertex &tail_vertex = tail_vertices[pos];
+    TailWhite &tail_vertex = tail_vertices[pos];
     ui u = tail_vertex.u;
     assert(isWhite(state, u));
     assert(state.mapped_q[u] == -1);
 
     ui remaining_budget = threshold - cost;
-    ui max_delta = std::min((ui)tail_vertex.buckets.size() - 1,
-        remaining_budget);
+    ui max_delta = std::min((ui)tail_vertex.buckets.size() - 1, remaining_budget);
     for (ui missing_delta = 0; missing_delta <= max_delta; ++missing_delta) {
         const vector<ui> &bucket = tail_vertex.buckets[missing_delta];
         for (ui v : bucket) {
-            if (isDataVertexUsed(state, v)) {
-                continue;
-            }
+            if (isDataVertexUsed(state, v)) continue;
 
             state.mapped_q[u] = (int)v;
             state.used_data_vertices.push_back(v);
             state.used_data_flag[v] = 1;
             state.part_M.push_back({ u, v });
 
-            enumTailWhites(state, pos + 1,
-                cost + missing_delta, tail_vertices);
+            enumTailWhites(state, pos + 1, cost + missing_delta, tail_vertices);
 
             state.part_M.pop_back();
             state.used_data_flag[v] = 0;
             state.used_data_vertices.pop_back();
             state.mapped_q[u] = -1;
 
-            if (outputLimitReached()) {
-                return;
-            }
+            if (outputLimitReached()) return;
         }
     }
 }

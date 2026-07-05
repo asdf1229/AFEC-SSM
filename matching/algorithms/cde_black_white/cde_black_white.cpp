@@ -10,10 +10,7 @@
 
 namespace cde_black_white {
 
-MatchingSolver::MatchingSolver()
-    : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr)
-{
-}
+MatchingSolver::MatchingSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr) {}
 
 bool MatchingSolver::init(const Graph *q, const Graph *g, ui match_threshold)
 {
@@ -30,6 +27,7 @@ bool MatchingSolver::init(const Graph *q, const Graph *g, ui match_threshold)
     label_count = max(query_graph->getLabelsCount(), data_graph->getLabelsCount());
     resetState();
 
+    // init q_matrix
     q_neighbors.assign(qn, vector<ui>());
     q_degree.assign(qn, 0);
     for (ui u = 0; u < qn; ++u) {
@@ -71,10 +69,10 @@ void MatchingSolver::match(vector<vector<pair<ui, ui>>> &results)
     results_ptr->clear();
 
     ui root = static_root < qn ? static_root : chooseRoot();
-    for (ui v0 : candidates[root]) {
+    for (ui v : candidates[root]) {
         SearchState state;
         initState(state);
-        if (!tryBindRoot(state, root, v0)) continue;
+        tryMapRoot(state, root, v);
         search(state, 0);
         if (outputLimitReached()) break;
     }
@@ -132,17 +130,11 @@ bool MatchingSolver::outputLimitReached() const
     return (size_t)MATCH_OUTPUT_LIMIT > 0 && stats.result_count >= (size_t)MATCH_OUTPUT_LIMIT;
 }
 
-void MatchingSolver::noteOutputLimitIfReached()
-{
-    if (outputLimitReached()) stats.output_limit_reached = true;
-}
-
 void MatchingSolver::emitResult(const SearchState &state)
 {
-    // 输出一个完整匹配，并更新结果计数和输出上限状态。
     assert(state.part_M.size() == qn);
     stats.result_count++;
-    noteOutputLimitIfReached();
+    if (outputLimitReached()) stats.output_limit_reached = true;
 #ifndef NDEBUG
     results_ptr->push_back(state.part_M);
 #endif

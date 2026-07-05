@@ -2,7 +2,21 @@
 
 namespace cde_black_white {
 
-bool MatchingSolver::tryBindBlack(SearchState &state, ui cost, ui u, ui v,
+void MatchingSolver::tryMapRoot(SearchState &state, ui root, ui v) const
+{
+    assert(root < qn && v < gn && candidates[root].contains(v));
+    state.color[root] = COLOR_BLACK;
+    state.mapped_q[root] = (int)v;
+    state.used_data_vertices.push_back(v);
+    state.used_data_flag[v] = 1;
+    state.part_M.push_back({ root, v });
+    state.selected_count = 1;
+    for (ui nbr : q_neighbors[root]) {
+        refreshAnchorEdge(state, root, nbr);
+    }
+}
+
+bool MatchingSolver::tryMapBlack(SearchState &state, ui cost, ui u, ui v,
     ui &next_cost)
 {
     // 尝试将未选查询点 u 绑定为 black 映射到 v。
@@ -53,7 +67,55 @@ bool MatchingSolver::tryBindBlack(SearchState &state, ui cost, ui u, ui v,
     return true;
 }
 
-bool MatchingSolver::tryMaterializeWhite(SearchState &state, ui cost, ui white_u,
+bool MatchingSolver::tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui v, ui delta, ui &next_cost)
+{
+    if (u >= qn || v >= gn || !candidates[u].contains(v)) {
+        return false;
+    }
+    if (state.color[u] != COLOR_UNSELECTED || isDataVertexUsed(state, v)) {
+        return false;
+    }
+
+    next_cost = cost + delta;
+    if (next_cost > threshold) {
+        return false;
+    }
+
+    setColor(state, u, COLOR_BLACK);
+    setMap(state, u, (int)v);
+    pushUsed(state, v);
+    pushMatch(state, u, v);
+    setSelectedCnt(state, state.selected_count + 1);
+
+    for (ui neighbor : q_neighbors[u]) {
+        if (!isBlack(state, neighbor)) {
+            continue;
+        }
+
+        EdgeState state_uv = getEdge(state, u, neighbor);
+        if (state_uv != EDGE_UNDECIDED) {
+            continue;
+        }
+
+        bool adjacent = anchorAdjacent(
+            neighbor, (ui)state.mapped_q[neighbor], u, v);
+        setEdge(state, u, neighbor,
+            adjacent ? EDGE_PRESENT : EDGE_MISSING);
+    }
+
+    for (ui neighbor : q_neighbors[u]) {
+        if (!isWhite(state, neighbor)) {
+            continue;
+        }
+        if (!refreshWhiteByBlack(state, neighbor, u, v, next_cost)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u,
     ui candidate, ui bucket_delta, ui &next_cost)
 {
     // 尝试把已选 white 点具体化为 black 映射。
@@ -134,56 +196,6 @@ bool MatchingSolver::branchWhite(SearchState &state, ui cost, ui u)
     return true;
 }
 
-bool MatchingSolver::branchBlack(SearchState &state, ui cost, ui u,
-    ui required_anchor)
-{
-    // 分支：枚举未选查询点 u 的 black 映射候选。
-    bool emitted_branch = false;
-    auto try_candidate = [&](ui candidate) -> bool {
-        size_t undo_mark = mark();
-        ui next_cost = cost;
-        if (!tryBindBlack(state, cost, u, candidate, next_cost)) {
-            rollback(state, undo_mark);
-            return false;
-        }
-        emitted_branch = true;
-        search(state, next_cost);
-        rollback(state, undo_mark);
-        if (outputLimitReached()) {
-            return true;
-        }
-        return false;
-    };
-
-#if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_ANCHOR_BRANCH
-    if (required_anchor < qn && isBlack(state, required_anchor) &&
-        getEdge(state, u, required_anchor) == EDGE_PRESENT) {
-        ui mapped_anchor = (ui)state.mapped_q[required_anchor];
-        const pair<size_t, ui> *range = findAdjRange(
-            required_anchor, mapped_anchor, u);
-        if (range == nullptr) {
-            return false;
-        }
-
-        for (const ui *it = rangeBegin(*range);
-            it != rangeEnd(*range); ++it) {
-            ui candidate = *it;
-            if (try_candidate(candidate)) {
-                return true;
-            }
-        }
-        return emitted_branch;
-    }
-#endif
-
-    for (int candidate : candidates[u]) {
-        if (try_candidate((ui)candidate)) {
-            return true;
-        }
-    }
-    return emitted_branch;
-}
-
 bool MatchingSolver::branchMatWhite(SearchState &state, ui cost,
     ui white_u, const MatchingSolver::ContinueBranch &continue_branch)
 {
@@ -193,7 +205,7 @@ bool MatchingSolver::branchMatWhite(SearchState &state, ui cost,
     }
 
     bool emitted_branch = false;
-    WhiteCandidateBuckets white_bucket = state.white[white_u];
+    WhiteCands white_bucket = state.white[white_u];
     assert(white_bucket.begin + white_bucket.count <=
         state.white_candidate_pool.size());
     for (ui candidate_idx = 0; candidate_idx < white_bucket.count;
@@ -211,7 +223,7 @@ bool MatchingSolver::branchMatWhite(SearchState &state, ui cost,
 
         size_t undo_mark = mark();
         ui next_cost = cost;
-        if (!tryMaterializeWhite(state, cost, white_u,
+        if (!tryMapWhite(state, cost, white_u,
             candidate, delta, next_cost)) {
             rollback(state, undo_mark);
             continue;
@@ -249,103 +261,141 @@ bool MatchingSolver::branchMatWhites(SearchState &state, ui cost,
         });
 }
 
-bool MatchingSolver::branchBlackAnchor(SearchState &state, ui cost, ui u,
-    ui anchor)
+bool MatchingSolver::shouldExpandAsWhite(const SearchState &state, ui u, const vector<pair<ui, ui>> &anchor_candidates) const
 {
-    // 在 anchor 已是 black 且边存在时，决定 u 走 white 或 black 分支。
-    if (!isBlack(state, anchor) || state.color[u] != COLOR_UNSELECTED ||
-        getEdge(state, u, anchor) != EDGE_PRESENT) {
-        return false;
-    }
-
-    vector<ui> &white_neighbors =
-        whiteNbrsBuffer(state.selected_count);
-    collectWhiteNbrs(state, u, white_neighbors);
-    bool emitted_white_branch = false;
-    if (white_neighbors.empty()) {
-        emitted_white_branch = branchWhite(state, cost, u);
-    }
-    else {
-        emitted_white_branch = branchMatWhites(state, cost,
-            white_neighbors, 0,
-            [&](SearchState &materialized_state, ui materialized_cost) -> bool {
-                return branchWhite(materialized_state,
-                    materialized_cost, u);
-            });
-    }
-
-    if (emitted_white_branch) {
-        return true;
-    }
-    return branchBlack(state, cost, u, anchor);
+    (void)state;
+    (void)anchor_candidates;
+#if CDE_BLACK_WHITE_STATIC_COLOR
+    assert(u < static_color.size());
+    assert(static_color[u] == COLOR_WHITE || static_color[u] == COLOR_BLACK);
+    return static_color[u] == COLOR_WHITE;
+#else
+    return true;
+#endif
 }
 
-bool MatchingSolver::branchPresentEdge(SearchState &state, ui cost,
-    const ActiveEdge &edge)
+void MatchingSolver::branchBlack(SearchState &state, ui cost, ui u, const vector<pair<ui, ui>> &anchor_candidates)
 {
-    // 存在边分支：先标记活跃边存在，再扩展相关顶点。
+    auto map_candidate = [&](const pair<ui, ui> &candidate_delta) -> bool {
+        size_t undo_mark = mark();
+
+        ui next_cost = cost;
+        if (!tryMapBlackWithDelta(state, cost, u, candidate_delta.first, candidate_delta.second, next_cost)) {
+            rollback(state, undo_mark);
+            return false;
+        }
+
+        search(state, next_cost);
+        rollback(state, undo_mark);
+        if (outputLimitReached()) return true;
+        return false;
+    };
+
+    for (const auto &candidate : anchor_candidates) {
+        if (map_candidate(candidate)) {
+            return;
+        }
+    }
+}
+
+void MatchingSolver::branchBlackAnchor(SearchState &state, ui cost, ui u, ui anchor)
+{
+    assert(u < qn && anchor < qn);
+    assert(isBlack(state, anchor));
+    assert(state.color[u] == COLOR_UNSELECTED);
+    assert(getEdge(state, u, anchor) == EDGE_PRESENT);
+
+    // build candidates supported by the anchor
+    ui mapped_anchor = (ui)state.mapped_q[anchor];
+    const pair<size_t, ui> *range = findAdjRange(anchor, mapped_anchor, u);
+    if (range == nullptr) return;
+    vector<pair<ui, ui>> &anchor_candidates = branchCandsBuffer(state.selected_count);
+    if (anchor_candidates.capacity() < range->second) {
+        anchor_candidates.reserve(range->second);
+    }
+    for (const ui *it = rangeBegin(*range); it != rangeEnd(*range); ++it) {
+        ui candidate = *it;
+        if (isDataVertexUsed(state, candidate)) continue;
+        ui delta = 0;
+        if (!calcBlackDelta(state, u, candidate, cost, delta)) continue;
+        anchor_candidates.push_back({ candidate, delta });
+    }
+    if (anchor_candidates.empty()) return;
+
+    // Decide whether to delay u as white
+    bool expand_as_white = shouldExpandAsWhite(state, u, anchor_candidates);
+
+    if(expand_as_white) {
+        vector<ui> &white_neighbors = whiteNbrsBuffer(state.selected_count);
+        for (ui neighbor : q_neighbors[u]) {
+            if (isWhite(state, neighbor)) white_neighbors.push_back(neighbor);
+        }
+        if (white_neighbors.empty()) branchWhite(state, cost, u);
+        else {
+            branchMatWhites(state, cost, white_neighbors, 0,
+                [&](SearchState &materialized_state, ui materialized_cost) -> bool {
+                    return branchWhite(materialized_state, materialized_cost, u);
+                });
+        }
+        return;
+    }
+
+    // Map u directly as black
+    branchBlack(state, cost, u, anchor_candidates);
+}
+
+// branch all top_edges.
+void MatchingSolver::branchEdges(SearchState &state, ui cost, const vector<AnchorEdge> &top_edges, size_t edge_idx)
+{
+    if(outputLimitReached()) return;
+    if(edge_idx >= top_edges.size()) return;
+    assert(cost <= threshold);
+
+    const AnchorEdge &edge = top_edges[edge_idx];
     ui u = edge.u;
     ui anchor = edge.anchor;
-    if (state.color[u] != COLOR_UNSELECTED ||
-        !isSelected(state, anchor) ||
-        getEdge(state, u, anchor) != EDGE_UNDECIDED) {
-        return false;
-    }
+    assert(u < qn && anchor < qn);
+    assert(state.color[u] == COLOR_UNSELECTED);
+    assert(isSelected(state, anchor));
+    assert(getEdge(state, u, anchor) == EDGE_UNDECIDED);
 
+    // branch 1: include edge(u, anchor).
     size_t undo_mark = mark();
     setEdge(state, u, anchor, EDGE_PRESENT);
-
-    bool emitted_branch = false;
-    if (isBlack(state, anchor)) {
-        emitted_branch = branchBlackAnchor(state, cost, u, anchor);
+    if(isBlack(state, anchor)) {
+        // black anchor
+        branchBlackAnchor(state, cost, u, anchor);
     }
     else {
-        emitted_branch = branchMatWhite(state, cost, anchor,
+        // white anchor
+        assert(isWhite(state, anchor));
+        branchMatWhite(state, cost, anchor,
         [&](SearchState &materialized_state, ui materialized_cost) -> bool {
-            return branchBlackAnchor(materialized_state,
-                materialized_cost, u, anchor);
+            branchBlackAnchor(materialized_state, materialized_cost, u, anchor);
         });
     }
     rollback(state, undo_mark);
-    return emitted_branch;
-}
+    assert(state.color[u] == COLOR_UNSELECTED);
+    assert(isSelected(state, anchor));
+    assert(getEdge(state, u, anchor) == EDGE_UNDECIDED);
 
-void MatchingSolver::branchEdges(SearchState &state, ui cost,
-    const vector<ActiveEdge> &top_edges, size_t edge_idx)
-{
-    // 对 top_edges 依次执行存在边/缺失边分支。
-    if (outputLimitReached() || cost > threshold ||
-        edge_idx >= top_edges.size()) {
-        return;
-    }
+    if (outputLimitReached()) return;
 
-    const ActiveEdge &edge = top_edges[edge_idx];
-    branchPresentEdge(state, cost, edge);
-    if (outputLimitReached()) {
-        return;
-    }
-
+    // branch 2: exclude edge(u, anchor).
     if (cost + 1 > threshold) {
         stats.prun_calls++;
         return;
     }
-
-    size_t undo_mark = mark();
-    if (state.color[edge.u] == COLOR_UNSELECTED &&
-        isSelected(state, edge.anchor) &&
-        getEdge(state, edge.u, edge.anchor) == EDGE_UNDECIDED) {
-        setEdge(state, edge.u, edge.anchor, EDGE_MISSING);
-        branchEdges(state, cost + 1, top_edges, edge_idx + 1);
-    }
+    undo_mark = mark();
+    setEdge(state, u, anchor, EDGE_MISSING);
+    branchEdges(state, cost + 1, top_edges, edge_idx + 1);
     rollback(state, undo_mark);
 }
 
 void MatchingSolver::search(SearchState &state, ui cost)
 {
-    if (outputLimitReached()) {
-        stats.output_limit_reached = true;
-        return;
-    }
+    if (outputLimitReached()) return;
+
     if (cost > threshold) {
         stats.prun_calls++;
         return;
@@ -359,9 +409,8 @@ void MatchingSolver::search(SearchState &state, ui cost)
             return;
         }
 
-        vector<TerminalTailVertex> tail_vertices;
-        if (!buildTailWhites(state, cost,
-            tail_vertices)) {
+        vector<TailWhite> tail_vertices;
+        if (!buildTailWhites(state, cost, tail_vertices)) {
             stats.prun_calls++;
             return;
         }
@@ -369,10 +418,8 @@ void MatchingSolver::search(SearchState &state, ui cost)
         return;
     }
 
-    vector<ActiveEdge> &top_edges =
-        topEdgesBuffer(state.selected_count);
-    ui max_branch_edges = threshold - cost + 1;
-    if (!collectActiveEdges(state, max_branch_edges, top_edges)) {
+    vector<AnchorEdge> &top_edges = topEdgesBuffer(state.selected_count);
+    if (!collectActiveEdges(state, threshold - cost + 1, top_edges)) {
         stats.prun_calls++;
         return;
     }

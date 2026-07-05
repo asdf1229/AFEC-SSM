@@ -10,9 +10,9 @@ void MatchingSolver::initState(SearchState &state) const
     state.used_data_flag.assign(gn, 0);
     state.color.assign(qn, COLOR_UNSELECTED);
     state.edge_state.assign((size_t)qn * qn, EDGE_UNDECIDED);
-    state.frontier_edges.clear();
-    state.frontier_edge_pos.assign((size_t)qn * qn, -1);
-    state.frontier_count.assign(qn, 0);
+    state.anchor_edges.clear();
+    state.anchor_edge_pos.assign((size_t)qn * qn, -1);
+    state.anchor_count.assign(qn, 0);
     state.white.clear();
     state.white.resize(qn);
     state.white_candidate_pool.clear();
@@ -42,27 +42,30 @@ void MatchingSolver::setEdgeRaw(SearchState &state, ui u, ui v,
 
 bool MatchingSolver::isDataVertexUsed(const SearchState &state, ui v) const
 {
-    return v < state.used_data_flag.size() && state.used_data_flag[v] != 0;
+    assert(v < gn);
+    return state.used_data_flag[v] != 0;
 }
 
 bool MatchingSolver::isSelected(const SearchState &state, ui u) const
 {
-    return u < state.color.size() && state.color[u] != COLOR_UNSELECTED;
+    assert(u < qn);
+    return state.color[u] != COLOR_UNSELECTED;
 }
 
 bool MatchingSolver::isBlack(const SearchState &state, ui u) const
 {
-    return u < state.color.size() && state.color[u] == COLOR_BLACK;
+    assert(u < qn);
+    return state.color[u] == COLOR_BLACK;
 }
 
 bool MatchingSolver::isWhite(const SearchState &state, ui u) const
 {
-    return u < state.color.size() && state.color[u] == COLOR_WHITE;
+    assert(u < qn);
+    return state.color[u] == COLOR_WHITE;
 }
 
 size_t MatchingSolver::mark() const
 {
-    // 返回当前 undo 栈大小，作为后续回滚标记。
     return undo_stack.size();
 }
 
@@ -78,12 +81,14 @@ void MatchingSolver::rollback(SearchState &state, size_t mark)
             break;
         case UNDO_COLOR:
             state.color[undo.u] = undo.old_color;
-            refreshFrontierEdgesIncidentTo(state, undo.u);
+            for (ui nbr : q_neighbors[undo.u]) {
+                refreshAnchorEdge(state, undo.u, nbr);
+            }
             break;
         case UNDO_EDGE_STATE:
             setEdgeRaw(state, undo.u, undo.v, undo.old_edge_uv);
             setEdgeRaw(state, undo.v, undo.u, undo.old_edge_vu);
-            refreshFrontierEdge(state, undo.u, undo.v);
+            refreshAnchorEdge(state, undo.u, undo.v);
             break;
         case UNDO_USED_DATA_SIZE:
             for (size_t i = undo.old_size; i < state.used_data_vertices.size(); ++i) {
@@ -131,13 +136,13 @@ void MatchingSolver::setColor(SearchState &state, ui u, VertexColor value)
     undo.old_color = state.color[u];
     undo_stack.push_back(std::move(undo));
     state.color[u] = value;
-    refreshFrontierEdgesIncidentTo(state, u);
+    for (ui nbr : q_neighbors[u]) {
+        refreshAnchorEdge(state, u, nbr);
+    }
 }
 
-void MatchingSolver::setEdge(SearchState &state, ui u, ui v,
-    EdgeState edge_state_value)
+void MatchingSolver::setEdge(SearchState &state, ui u, ui v, EdgeState edge_state_value)
 {
-    // 对称设置查询边 (u, v) 的状态，并记录 undo。
     UndoRecord undo;
     undo.kind = UNDO_EDGE_STATE;
     undo.u = u;
@@ -147,7 +152,7 @@ void MatchingSolver::setEdge(SearchState &state, ui u, ui v,
     undo_stack.push_back(std::move(undo));
     setEdgeRaw(state, u, v, edge_state_value);
     setEdgeRaw(state, v, u, edge_state_value);
-    refreshFrontierEdge(state, u, v);
+    refreshAnchorEdge(state, u, v);
 }
 
 void MatchingSolver::pushUsed(SearchState &state, ui v)
@@ -202,7 +207,7 @@ void MatchingSolver::replaceBucket(SearchState &state, ui u,
     undo.old_white = state.white[u];
     undo_stack.push_back(std::move(undo));
 
-    WhiteCandidateBuckets bucket;
+    WhiteCands bucket;
     bucket.begin = state.white_candidate_pool.size();
     assert(candidates_to_store.size() <=
         (size_t)std::numeric_limits<ui>::max());

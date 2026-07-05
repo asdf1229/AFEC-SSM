@@ -4,20 +4,18 @@ namespace cde_black_white {
 
 void MatchingSolver::resetBuffers()
 {
-    top_edges_buffer_by_depth.clear();
-    top_edges_buffer_by_depth.resize((size_t)qn + 1);
-    white_neighbors_buffer_by_depth.clear();
-    white_neighbors_buffer_by_depth.resize((size_t)qn + 1);
+    top_edges_buffer.clear();
+    top_edges_buffer.resize((size_t)qn + 1);
+    branch_cands_buffer.clear();
+    branch_cands_buffer.resize((size_t)qn + 1);
+    white_neighbors_buffer.clear();
+    white_neighbors_buffer.resize((size_t)qn + 1);
     component_id_buffer.clear();
     component_id_buffer.reserve(qn);
-    component_frontiers_buffer.clear();
-    component_frontiers_buffer.reserve(qn);
     component_queue_buffer.clear();
     component_queue_buffer.reserve(qn);
     component_edge_counts_buffer.clear();
     component_edge_counts_buffer.reserve(qn);
-    component_seen_counts_buffer.clear();
-    component_seen_counts_buffer.reserve(qn);
 
     candidate_range_buffer.clear();
     candidate_source_buffer.clear();
@@ -31,29 +29,29 @@ void MatchingSolver::resetBuffers()
     candidate_batch_token = 0;
 }
 
-vector<ActiveEdge> &MatchingSolver::topEdgesBuffer(ui depth)
+vector<AnchorEdge> &MatchingSolver::topEdgesBuffer(ui depth)
 {
-    if (top_edges_buffer_by_depth.size() <= depth) {
-        top_edges_buffer_by_depth.resize((size_t)depth + 1);
-    }
-    vector<ActiveEdge> &buffer = top_edges_buffer_by_depth[depth];
+    if (top_edges_buffer.size() <= depth) top_edges_buffer.resize((size_t)depth + 1);
+    vector<AnchorEdge> &buffer = top_edges_buffer[depth];
     buffer.clear();
-    if (buffer.capacity() < qn) {
-        buffer.reserve(qn);
-    }
+    if (buffer.capacity() < qn) buffer.reserve(qn);
     return buffer;
 }
 
 vector<ui> &MatchingSolver::whiteNbrsBuffer(ui depth)
 {
-    if (white_neighbors_buffer_by_depth.size() <= depth) {
-        white_neighbors_buffer_by_depth.resize((size_t)depth + 1);
-    }
-    vector<ui> &buffer = white_neighbors_buffer_by_depth[depth];
+    if (white_neighbors_buffer.size() <= depth) white_neighbors_buffer.resize((size_t)depth + 1);
+    vector<ui> &buffer = white_neighbors_buffer[depth];
     buffer.clear();
-    if (buffer.capacity() < qn) {
-        buffer.reserve(qn);
-    }
+    if (buffer.capacity() < qn) buffer.reserve(qn);
+    return buffer;
+}
+
+vector<pair<ui, ui>> &MatchingSolver::branchCandsBuffer(ui depth)
+{
+    if (branch_cands_buffer.size() <= depth) branch_cands_buffer.resize((size_t)depth + 1);
+    vector<pair<ui, ui>> &buffer = branch_cands_buffer[depth];
+    buffer.clear();
     return buffer;
 }
 

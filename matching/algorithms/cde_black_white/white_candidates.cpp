@@ -2,19 +2,14 @@
 
 namespace cde_black_white {
 
-bool MatchingSolver::calcBlackDelta(const SearchState &state, ui u, ui v,
-    ui cost, ui &delta)
+bool MatchingSolver::calcBlackDelta(const SearchState &state, ui u, ui v, ui cost, ui &delta)
 {
-    // 计算把 u 映射到 v 时相对已选 black 邻居新增的缺边代价。
     delta = 0;
     for (ui neighbor : q_neighbors[u]) {
-        if (!isBlack(state, neighbor)) {
-            continue;
-        }
+        if (!isBlack(state, neighbor)) continue;
 
         ui mapped_neighbor = (ui)state.mapped_q[neighbor];
-        bool adjacent = anchorAdjacent(
-            neighbor, mapped_neighbor, u, v);
+        bool adjacent = anchorAdjacent(neighbor, mapped_neighbor, u, v);
         EdgeState state_uv = getEdge(state, u, neighbor);
         if (state_uv == EDGE_PRESENT) {
             if (!adjacent) return false;
@@ -22,7 +17,7 @@ bool MatchingSolver::calcBlackDelta(const SearchState &state, ui u, ui v,
         else if (state_uv == EDGE_MISSING) {
             if (adjacent) return false;
         }
-        else if (!adjacent) {
+        else if (!adjacent) { // EDGE_UNDECIDED
             delta++;
             if (cost + delta > threshold) {
                 return false;
@@ -131,7 +126,7 @@ void MatchingSolver::addFeasibleCand(const SearchState &state, ui u,
 }
 
 bool MatchingSolver::bucketHas(const SearchState &state,
-    const WhiteCandidateBuckets &bucket, ui candidate) const
+    const WhiteCands &bucket, ui candidate) const
 {
     // 判断 white bucket 中是否包含指定候选。
     assert(bucket.begin + bucket.count <= state.white_candidate_pool.size());
@@ -281,7 +276,7 @@ void MatchingSolver::addFeasibleBatch(const SearchState &state, ui u,
 }
 
 void MatchingSolver::copyBucketCands(const SearchState &state,
-    const WhiteCandidateBuckets &bucket, vector<ui> &target) const
+    const WhiteCands &bucket, vector<ui> &target) const
 {
     // 将 white bucket 中保存的候选复制到目标缓冲区。
     assert(bucket.begin + bucket.count <= state.white_candidate_pool.size());
@@ -290,7 +285,7 @@ void MatchingSolver::copyBucketCands(const SearchState &state,
 }
 
 void MatchingSolver::filterByBucket(const SearchState &state,
-    const WhiteCandidateBuckets &bucket, const vector<ui> &source,
+    const WhiteCands &bucket, const vector<ui> &source,
     vector<ui> &target) const
 {
     // 用已有 white bucket 过滤候选源，保留仍在 bucket 中的候选。
@@ -312,7 +307,7 @@ void MatchingSolver::collectAllCands(ui u, vector<ui> &target)
 }
 
 void MatchingSolver::addBucketCands(const SearchState &state,
-    ui u, ui cost, const WhiteCandidateBuckets &bucket, vector<ui> &result)
+    ui u, ui cost, const WhiteCands &bucket, vector<ui> &result)
 {
     // 从 white bucket 中逐个追加当前状态下仍可行的候选。
     assert(bucket.begin + bucket.count <= state.white_candidate_pool.size());
@@ -323,7 +318,7 @@ void MatchingSolver::addBucketCands(const SearchState &state,
 }
 
 bool MatchingSolver::buildWhiteCands(SearchState &state, ui u, ui cost,
-    const WhiteCandidateBuckets *existing_bucket)
+    const WhiteCands *existing_bucket)
 {
     // 构建或重建查询点 u 在当前状态下的 white 可行候选缓冲。
     candidate_result_buffer.clear();
@@ -391,7 +386,7 @@ bool MatchingSolver::refreshWhiteCands(SearchState &state,
     ui white_u, ui cost)
 {
     // 基于当前状态重建已有 white 点的候选桶。
-    WhiteCandidateBuckets old_bucket = state.white[white_u];
+    WhiteCands old_bucket = state.white[white_u];
     if (!buildWhiteCands(state, white_u, cost, &old_bucket)) {
         return false;
     }
@@ -419,18 +414,6 @@ bool MatchingSolver::isSelectedByBlackNeighbor(const SearchState &state, ui u) c
         }
     }
     return false;
-}
-
-void MatchingSolver::collectWhiteNbrs(const SearchState &state, ui u,
-    vector<ui> &white_neighbors) const
-{
-    // 收集 u 当前已经选为 white 的查询邻居。
-    white_neighbors.clear();
-    for (ui neighbor : q_neighbors[u]) {
-        if (isWhite(state, neighbor)) {
-            white_neighbors.push_back(neighbor);
-        }
-    }
 }
 
 bool MatchingSolver::refreshWhiteByBlack(SearchState &state, ui white_u,

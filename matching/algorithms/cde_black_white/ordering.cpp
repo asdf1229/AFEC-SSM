@@ -131,59 +131,59 @@ void MatchingSolver::initFixedEdgePriorities()
 }
 #endif
 
-void MatchingSolver::addFrontierEdgeRaw(SearchState &state, ui u,
+void MatchingSolver::addAnchorEdgeRaw(SearchState &state, ui u,
     ui anchor) const
 {
     if (u >= qn || anchor >= qn) {
         return;
     }
     size_t idx = edgeIdx(u, anchor);
-    if (state.frontier_edge_pos[idx] != -1) {
+    if (state.anchor_edge_pos[idx] != -1) {
         return;
     }
 
-    ActiveEdge edge;
+    AnchorEdge edge;
     edge.u = u;
     edge.anchor = anchor;
-    state.frontier_edge_pos[idx] = (int)state.frontier_edges.size();
-    state.frontier_edges.push_back(edge);
-    state.frontier_count[u]++;
+    state.anchor_edge_pos[idx] = (int)state.anchor_edges.size();
+    state.anchor_edges.push_back(edge);
+    state.anchor_count[u]++;
 }
 
-void MatchingSolver::removeFrontierEdgeRaw(SearchState &state, ui u,
+void MatchingSolver::removeAnchorEdgeRaw(SearchState &state, ui u,
     ui anchor) const
 {
     if (u >= qn || anchor >= qn) {
         return;
     }
     size_t idx = edgeIdx(u, anchor);
-    int pos = state.frontier_edge_pos[idx];
+    int pos = state.anchor_edge_pos[idx];
     if (pos == -1) {
         return;
     }
 
     size_t remove_pos = (size_t)pos;
-    size_t last_pos = state.frontier_edges.size() - 1;
+    size_t last_pos = state.anchor_edges.size() - 1;
     if (remove_pos != last_pos) {
-        ActiveEdge moved = state.frontier_edges[last_pos];
-        state.frontier_edges[remove_pos] = moved;
-        state.frontier_edge_pos[edgeIdx(moved.u, moved.anchor)] = pos;
+        AnchorEdge moved = state.anchor_edges[last_pos];
+        state.anchor_edges[remove_pos] = moved;
+        state.anchor_edge_pos[edgeIdx(moved.u, moved.anchor)] = pos;
     }
-    state.frontier_edges.pop_back();
-    state.frontier_edge_pos[idx] = -1;
-    assert(state.frontier_count[u] > 0);
-    state.frontier_count[u]--;
+    state.anchor_edges.pop_back();
+    state.anchor_edge_pos[idx] = -1;
+    assert(state.anchor_count[u] > 0);
+    state.anchor_count[u]--;
 }
 
-void MatchingSolver::refreshFrontierEdge(SearchState &state, ui u,
+void MatchingSolver::refreshAnchorEdge(SearchState &state, ui u,
     ui v) const
 {
     if (u >= qn || v >= qn) {
         return;
     }
 
-    removeFrontierEdgeRaw(state, u, v);
-    removeFrontierEdgeRaw(state, v, u);
+    removeAnchorEdgeRaw(state, u, v);
+    removeAnchorEdgeRaw(state, v, u);
 
     if (getEdge(state, u, v) != EDGE_UNDECIDED) {
         return;
@@ -196,76 +196,33 @@ void MatchingSolver::refreshFrontierEdge(SearchState &state, ui u,
     }
 
     if (u_selected) {
-        addFrontierEdgeRaw(state, v, u);
+        addAnchorEdgeRaw(state, v, u);
     }
     else {
-        addFrontierEdgeRaw(state, u, v);
+        addAnchorEdgeRaw(state, u, v);
     }
 }
 
-void MatchingSolver::refreshFrontierEdgesIncidentTo(SearchState &state,
-    ui u) const
+double MatchingSolver::blackSupport(const SearchState &state, ui u, ui anchor) const
 {
-    if (u >= qn) {
-        return;
-    }
-    for (ui neighbor : q_neighbors[u]) {
-        refreshFrontierEdge(state, u, neighbor);
-    }
-}
+    assert(isBlack(state, anchor));
 
-double MatchingSolver::blackSupport(const SearchState &state, ui u,
-    ui anchor) const
-{
-    // 估计 black anchor 对未选点 u 的剩余候选支持数量。
-    if (!isBlack(state, anchor)) {
-        return 0.0;
-    }
-
-    double support_count = 0.0;
     ui mapped_anchor = (ui)state.mapped_q[anchor];
-#if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SUPPORT
-    const pair<size_t, ui> *range =
-        findAdjRange(anchor, mapped_anchor, u);
-    if (range == nullptr) {
-        return 0.0;
-    }
+    const pair<size_t, ui> *range = findAdjRange(anchor, mapped_anchor, u);
+    if (range == nullptr) return 0.0;
 
-    for (const ui *it = rangeBegin(*range);
-        it != rangeEnd(*range); ++it) {
-        ui v = *it;
-        if (isDataVertexUsed(state, v)) {
-            continue;
-        }
-        support_count += 1.0;
-    }
-#else
-    for (int candidate : candidates[u]) {
-        ui v = (ui)candidate;
-        if (isDataVertexUsed(state, v)) {
-            continue;
-        }
-        if (data_graph->hasEdge(mapped_anchor, v)) {
-            support_count += 1.0;
-        }
-    }
-#endif
-    return support_count;
+    return (double)range->second;
 }
 
+// estimate materialization branch count
 double MatchingSolver::whiteSupport(const SearchState &state, ui anchor) const
 {
-    // 估计 white anchor 的分支支持，使用其候选桶可行数量。
-    if (!isWhite(state, anchor)) {
-        return 0.0;
-    }
-    return (double)std::max((ui)1, state.white[anchor].feasible_count);
+    assert(isWhite(state, anchor));
+    return (double)state.white[anchor].feasible_count;
 }
 
-bool MatchingSolver::betterEdge(const ActiveEdge &lhs,
-    const ActiveEdge &rhs) const
+bool MatchingSolver::betterEdge(const AnchorEdge &lhs, const AnchorEdge &rhs) const
 {
-    // 比较两条活跃边的分支优先级。
 #if CDE_BLACK_WHITE_FIXED_ORDER
     ui lhs_priority = static_edge_priority[lhs.u][lhs.anchor];
     ui rhs_priority = static_edge_priority[rhs.u][rhs.anchor];
@@ -276,13 +233,10 @@ bool MatchingSolver::betterEdge(const ActiveEdge &lhs,
         return lhs.u < rhs.u;
     }
     return lhs.anchor < rhs.anchor;
-#else
-    double lhs_scaled = lhs.rank_support *
-        (double)std::max((ui)1, rhs.live_anchor_count);
-    double rhs_scaled = rhs.rank_support *
-        (double)std::max((ui)1, lhs.live_anchor_count);
-    double scale = std::max(1.0,
-        std::max(std::fabs(lhs_scaled), std::fabs(rhs_scaled)));
+#else // CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
+    double lhs_scaled = lhs.support * (double)std::max((ui)1, rhs.live_anchor_count);
+    double rhs_scaled = rhs.support * (double)std::max((ui)1, lhs.live_anchor_count);
+    double scale = std::max(1.0, std::max(std::fabs(lhs_scaled), std::fabs(rhs_scaled)));
     if (std::fabs(lhs_scaled - rhs_scaled) > 1e-12 * scale) {
         return lhs_scaled < rhs_scaled;
     }
@@ -299,83 +253,52 @@ bool MatchingSolver::betterEdge(const ActiveEdge &lhs,
 #endif
 }
 
-void MatchingSolver::selectTopEdges(ui max_count,
-    vector<ActiveEdge> &top_edges)
+void MatchingSolver::selectTopEdges(ui max_count, vector<AnchorEdge> &top_edges)
 {
-    // 从活跃边集合中按启发式选择前 max_count 条。
-    size_t selected_limit = top_edges.size();
-    if ((size_t)max_count < selected_limit) {
-        selected_limit = (size_t)max_count;
-    }
+    size_t selected_limit = min((size_t)max_count, top_edges.size());
 
 #if CDE_BLACK_WHITE_FIXED_ORDER
-    auto better_edge = [&](const ActiveEdge &lhs,
-        const ActiveEdge &rhs) {
+    auto better_edge = [&](const AnchorEdge &lhs,
+        const AnchorEdge &rhs) {
         return betterEdge(lhs, rhs);
         };
     if (top_edges.size() > selected_limit) {
-        partial_sort(top_edges.begin(), top_edges.begin() + selected_limit,
-            top_edges.end(), better_edge);
+        partial_sort(top_edges.begin(), top_edges.begin() + selected_limit, top_edges.end(), better_edge);
     }
     else {
         sort(top_edges.begin(), top_edges.end(), better_edge);
     }
-#elif CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
+#else // CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
     const double gamma = (double)CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY_GAMMA;
+    assert(gamma >= 0.0 && gamma <= 1.0);
     for (size_t selected_idx = 0; selected_idx < selected_limit; ++selected_idx) {
         size_t best_idx = selected_idx;
         for (size_t i = selected_idx + 1; i < top_edges.size(); ++i) {
-            if (betterEdge(top_edges[i], top_edges[best_idx])) {
-                best_idx = i;
-            }
+            if (betterEdge(top_edges[i], top_edges[best_idx])) best_idx = i;
         }
+        if (best_idx != selected_idx) std::swap(top_edges[selected_idx], top_edges[best_idx]);
 
-        if (best_idx != selected_idx) {
-            std::swap(top_edges[selected_idx], top_edges[best_idx]);
-        }
+        const AnchorEdge &selected = top_edges[selected_idx];
+        if (selected.anchor_color == COLOR_WHITE) continue;
 
-        const ActiveEdge &selected = top_edges[selected_idx];
         double candidate_count = (double)candidates[selected.u].size();
-        if (candidate_count <= 0.0) {
-            continue;
-        }
-
-        double factor = 1.0 - gamma * selected.rank_support / candidate_count;
-        if (factor < 0.0) {
-            factor = 0.0;
-        }
-        else if (factor > 1.0) {
-            factor = 1.0;
-        }
-
-        if (factor == 1.0) {
-            continue;
-        }
+        assert(candidate_count > 0.0 && selected.support >= 0.0);
+        assert(selected.support <= candidate_count);
+        double factor = 1.0 - gamma * selected.support / candidate_count;
+        assert(factor >= 0.0 && factor <= 1.0);
 
         for (size_t i = selected_idx + 1; i < top_edges.size(); ++i) {
             if (top_edges[i].u == selected.u) {
-                top_edges[i].rank_support *= factor;
+                assert(top_edges[i].support >= 0.0);
+                top_edges[i].support *= factor;
             }
         }
-    }
-#else
-    auto better_edge = [&](const ActiveEdge &lhs,
-        const ActiveEdge &rhs) {
-        return betterEdge(lhs, rhs);
-        };
-    if (top_edges.size() > selected_limit) {
-        partial_sort(top_edges.begin(), top_edges.begin() + selected_limit,
-            top_edges.end(), better_edge);
-    }
-    else {
-        sort(top_edges.begin(), top_edges.end(), better_edge);
     }
 #endif
     top_edges.resize(selected_limit);
 }
 
-bool MatchingSolver::isActiveFrontierEdge(const SearchState &state,
-    const ActiveEdge &edge) const
+bool MatchingSolver::isActiveAnchorEdge(const SearchState &state, const AnchorEdge &edge) const
 {
     ui u = edge.u;
     ui anchor = edge.anchor;
@@ -383,35 +306,19 @@ bool MatchingSolver::isActiveFrontierEdge(const SearchState &state,
         state.color[u] == COLOR_UNSELECTED &&
         isSelected(state, anchor) &&
         getEdge(state, u, anchor) == EDGE_UNDECIDED &&
-        state.frontier_count[u] > 0;
+        state.anchor_count[u] > 0;
 }
 
-size_t MatchingSolver::labelFrontierComponents(const SearchState &state,
-    vector<int> &component_id, vector<vector<ui>> &component_frontiers,
-    vector<ui> &queue)
+size_t MatchingSolver::labelFrontierComponents(const SearchState &state, vector<int> &component_id, vector<ui> &queue)
 {
-    // 从已有活跃 anchor 边的未选端出发，标记其所在未选连通分量。
     component_id.assign(qn, -1);
-    for (vector<ui> &frontier : component_frontiers) {
-        frontier.clear();
-    }
     queue.clear();
 
     size_t component_count = 0;
-    for (const ActiveEdge &edge : state.frontier_edges) {
-        if (!isActiveFrontierEdge(state, edge)) {
-            continue;
-        }
-
+    for (const AnchorEdge &edge : state.anchor_edges) {
+        assert(isActiveAnchorEdge(state, edge));
         ui start = edge.u;
-        if (component_id[start] != -1) {
-            continue;
-        }
-
-        if (component_frontiers.size() == component_count) {
-            component_frontiers.emplace_back();
-        }
-        vector<ui> &frontier = component_frontiers[component_count];
+        if (component_id[start] != -1) continue;
 
         int component = (int)component_count;
         component_id[start] = component;
@@ -420,15 +327,9 @@ size_t MatchingSolver::labelFrontierComponents(const SearchState &state,
 
         for (size_t head = 0; head < queue.size(); ++head) {
             ui u = queue[head];
-            if (state.frontier_count[u] > 0) {
-                frontier.push_back(u);
-            }
-
             for (ui neighbor : q_neighbors[u]) {
-                if (state.color[neighbor] != COLOR_UNSELECTED ||
-                    component_id[neighbor] != -1) {
-                    continue;
-                }
+                if (state.color[neighbor] != COLOR_UNSELECTED) continue;
+                if (component_id[neighbor] != -1) continue;
                 component_id[neighbor] = component;
                 queue.push_back(neighbor);
             }
@@ -440,90 +341,68 @@ size_t MatchingSolver::labelFrontierComponents(const SearchState &state,
     return component_count;
 }
 
-void MatchingSolver::restrictTopEdgesToCoveredComponent(
-    const SearchState &state, vector<ActiveEdge> &top_edges)
+void MatchingSolver::trimToCompleteComponent(const SearchState &state, vector<AnchorEdge> &top_edges)
 {
-    if (top_edges.empty()) {
-        return;
-    }
+    assert(!top_edges.empty());
 
-    size_t component_count = labelFrontierComponents(state,
-        component_id_buffer, component_frontiers_buffer,
-        component_queue_buffer);
-    if (component_count == 0) {
-        return;
-    }
-
+    size_t component_count = labelFrontierComponents(state, component_id_buffer, component_queue_buffer);
+    assert(component_count > 0);
     component_edge_counts_buffer.assign(component_count, 0);
-    component_seen_counts_buffer.assign(component_count, 0);
 
-    for (const ActiveEdge &edge : state.frontier_edges) {
-        if (!isActiveFrontierEdge(state, edge)) {
-            continue;
-        }
+    for (const AnchorEdge &edge : state.anchor_edges) {
+        assert(isActiveAnchorEdge(state, edge));
         int component = component_id_buffer[edge.u];
-        if (component < 0) {
-            continue;
-        }
+        assert(component >= 0);
         component_edge_counts_buffer[(size_t)component]++;
     }
 
     for (size_t edge_idx = 0; edge_idx < top_edges.size(); ++edge_idx) {
-        const ActiveEdge &edge = top_edges[edge_idx];
+        const AnchorEdge &edge = top_edges[edge_idx];
         int component = component_id_buffer[edge.u];
-        if (component < 0) {
-            continue;
-        }
+        assert(component >= 0);
 
         size_t id = (size_t)component;
-        component_seen_counts_buffer[id]++;
-        if (component_seen_counts_buffer[id] !=
-            component_edge_counts_buffer[id]) {
-            continue;
-        }
+        component_edge_counts_buffer[id]--;
+        if (component_edge_counts_buffer[id] != 0) continue;
 
         top_edges.resize(edge_idx + 1);
         return;
     }
 }
 
-bool MatchingSolver::collectActiveEdges(const SearchState &state,
-    ui max_count, vector<ActiveEdge> &top_edges)
+bool MatchingSolver::collectActiveEdges(const SearchState &state, ui max_count, vector<AnchorEdge> &top_edges)
 {
-    // 收集当前状态下可分支的活跃边，并截取 top 边。
     top_edges.clear();
-    if (max_count == 0) {
-        return false;
-    }
+    assert(max_count > 0);
 
-    for (const ActiveEdge &frontier_edge : state.frontier_edges) {
-        ui u = frontier_edge.u;
-        ui anchor = frontier_edge.anchor;
-        if (!isActiveFrontierEdge(state, frontier_edge)) {
-            continue;
-        }
+    for (const AnchorEdge &anchor_edge : state.anchor_edges) {
+        assert(isActiveAnchorEdge(state, anchor_edge));
 
-        ActiveEdge edge;
+        ui u = anchor_edge.u;
+        ui anchor = anchor_edge.anchor;
+
+        AnchorEdge edge;
         edge.u = u;
         edge.anchor = anchor;
-        edge.live_anchor_count = state.frontier_count[u];
+        edge.anchor_color = state.color[anchor];
+        edge.live_anchor_count = state.anchor_count[u];
         edge.query_degree = q_degree[u];
 #if !CDE_BLACK_WHITE_FIXED_ORDER
-        if (isBlack(state, anchor)) {
-            edge.rank_support = blackSupport(state, u, anchor);
+        if (edge.anchor_color == COLOR_BLACK) {
+            edge.support = blackSupport(state, u, anchor);
         }
         else {
-            edge.rank_support = whiteSupport(state, anchor);
+            assert(edge.anchor_color == COLOR_WHITE);
+            edge.support = whiteSupport(state, anchor);
         }
 #endif
         top_edges.push_back(edge);
     }
 
-    if (top_edges.empty()) {
-        return false;
-    }
+    if (top_edges.empty()) return false;
+
     selectTopEdges(max_count, top_edges);
-    restrictTopEdgesToCoveredComponent(state, top_edges);
+    trimToCompleteComponent(state, top_edges);
     return true;
 }
 
