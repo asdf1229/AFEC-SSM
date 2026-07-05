@@ -42,25 +42,28 @@ struct WhiteCandidateBuckets {
     }
 };
 
-struct SearchState {
-    vector<int> mapped_q;
-    vector<ui> used_data_vertices;
-    vector<unsigned char> used_data_flag;
-    vector<VertexColor> color;
-    vector<EdgeState> edge_state;
-    vector<WhiteCandidateBuckets> white;
-    vector<ui> white_candidate_pool;
-    vector<pair<ui, ui>> part_M;
-    ui selected_count = 0;
-    ui white_count = 0;
-};
-
 struct ActiveEdge {
     ui u = 0;
     ui anchor = 0;
     double rank_support = std::numeric_limits<double>::max();
     ui live_anchor_count = 0;
     ui query_degree = 0;
+};
+
+struct SearchState {
+    vector<int> mapped_q;
+    vector<ui> used_data_vertices;
+    vector<unsigned char> used_data_flag;
+    vector<VertexColor> color;
+    vector<EdgeState> edge_state;
+    vector<ActiveEdge> frontier_edges;
+    vector<int> frontier_edge_pos;
+    vector<ui> frontier_count;
+    vector<WhiteCandidateBuckets> white;
+    vector<ui> white_candidate_pool;
+    vector<pair<ui, ui>> part_M;
+    ui selected_count = 0;
+    ui white_count = 0;
 };
 
 enum UndoKind : unsigned char {

@@ -76,6 +76,7 @@ private:
     bool outputLimitReached() const;
     void noteOutputLimitIfReached();
     void resetState();
+    void resetBuffers();
 
     bool runCandidateFiltering();
 
@@ -154,6 +155,10 @@ private:
 #endif
     ui chooseRoot();
     void initColors();
+    void addFrontierEdgeRaw(SearchState &state, ui u, ui anchor) const;
+    void removeFrontierEdgeRaw(SearchState &state, ui u, ui anchor) const;
+    void refreshFrontierEdge(SearchState &state, ui u, ui v) const;
+    void refreshFrontierEdgesIncidentTo(SearchState &state, ui u) const;
     double blackSupport(const SearchState &state, ui u, ui anchor) const;
     double whiteSupport(const SearchState &state, ui anchor) const;
     bool betterEdge(const ActiveEdge &lhs, const ActiveEdge &rhs) const;

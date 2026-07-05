@@ -146,23 +146,10 @@ void MatchingSolver::resetState()
     q_degree.clear();
     q_neighbor_is_bridge.clear();
 
-    top_edges_buffer_by_depth.clear();
-    top_edges_buffer_by_depth.resize((size_t)qn + 1);
-    white_neighbors_buffer_by_depth.clear();
-    white_neighbors_buffer_by_depth.resize((size_t)qn + 1);
+    resetBuffers();
     undo_stack.clear();
     candidate_adj_index.clear();
     candidate_adj_pool.clear();
-    candidate_range_buffer.clear();
-    candidate_source_buffer.clear();
-    candidate_result_buffer.clear();
-    candidate_intersection_buffer.clear();
-    candidate_batch_mark.assign(gn, 0);
-    candidate_batch_pos.assign(gn, 0);
-    candidate_batch_present_hits.clear();
-    candidate_batch_undecided_hits.clear();
-    candidate_batch_valid.clear();
-    candidate_batch_token = 0;
     stats = TimeStats();
     static_root = 0;
     static_color.clear();

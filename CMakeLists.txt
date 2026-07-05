@@ -31,11 +31,13 @@ list(SORT SSM_GED_ALGORITHM_SOURCES)
 
 set(SSM_GED_CDE_BLACK_WHITE_SOURCES
     ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/branching.cpp
+    ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/buffers.cpp
     ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/candidate_index.cpp
     ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/filtering.cpp
     ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/ordering.cpp
     ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/state_undo.cpp
     ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/terminal_tail.cpp
+    ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/top_edges.cpp
     ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/white_candidates.cpp
 )
 
