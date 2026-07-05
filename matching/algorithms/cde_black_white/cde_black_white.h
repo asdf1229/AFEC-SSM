@@ -72,6 +72,11 @@ private:
 
     vector<vector<ActiveEdge>> top_edges_buffer_by_depth;
     vector<vector<ui>> white_neighbors_buffer_by_depth;
+    vector<int> component_id_buffer;
+    vector<vector<ui>> component_frontiers_buffer;
+    vector<ui> component_queue_buffer;
+    vector<ui> component_edge_counts_buffer;
+    vector<ui> component_seen_counts_buffer;
 
     bool outputLimitReached() const;
     void noteOutputLimitIfReached();
@@ -163,6 +168,13 @@ private:
     double whiteSupport(const SearchState &state, ui anchor) const;
     bool betterEdge(const ActiveEdge &lhs, const ActiveEdge &rhs) const;
     void selectTopEdges(ui max_count, vector<ActiveEdge> &top_edges);
+    bool isActiveFrontierEdge(const SearchState &state,
+        const ActiveEdge &edge) const;
+    size_t labelFrontierComponents(const SearchState &state,
+        vector<int> &component_id, vector<vector<ui>> &component_frontiers,
+        vector<ui> &queue);
+    void restrictTopEdgesToCoveredComponent(const SearchState &state,
+        vector<ActiveEdge> &top_edges);
     bool collectActiveEdges(const SearchState &state, ui max_count,
         vector<ActiveEdge> &top_edges);
     ui chooseMatWhite(const SearchState &state) const;

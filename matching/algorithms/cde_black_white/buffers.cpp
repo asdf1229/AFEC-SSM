@@ -8,6 +8,16 @@ void MatchingSolver::resetBuffers()
     top_edges_buffer_by_depth.resize((size_t)qn + 1);
     white_neighbors_buffer_by_depth.clear();
     white_neighbors_buffer_by_depth.resize((size_t)qn + 1);
+    component_id_buffer.clear();
+    component_id_buffer.reserve(qn);
+    component_frontiers_buffer.clear();
+    component_frontiers_buffer.reserve(qn);
+    component_queue_buffer.clear();
+    component_queue_buffer.reserve(qn);
+    component_edge_counts_buffer.clear();
+    component_edge_counts_buffer.reserve(qn);
+    component_seen_counts_buffer.clear();
+    component_seen_counts_buffer.reserve(qn);
 
     candidate_range_buffer.clear();
     candidate_source_buffer.clear();

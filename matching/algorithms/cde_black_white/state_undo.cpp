@@ -40,22 +40,6 @@ void MatchingSolver::setEdgeRaw(SearchState &state, ui u, ui v,
     state.edge_state[edgeIdx(u, v)] = edge_state_value;
 }
 
-bool MatchingSolver::tryBindRoot(SearchState &state, ui root, ui v) const
-{
-    // 尝试把根查询点绑定到数据点 v，作为搜索初始 black 映射。
-    if (root >= qn || v >= gn || !candidates[root].contains(v)) {
-        return false;
-    }
-    state.color[root] = COLOR_BLACK;
-    state.mapped_q[root] = (int)v;
-    state.used_data_vertices.push_back(v);
-    state.used_data_flag[v] = 1;
-    state.part_M.push_back({ root, v });
-    state.selected_count = 1;
-    refreshFrontierEdgesIncidentTo(state, root);
-    return true;
-}
-
 bool MatchingSolver::isDataVertexUsed(const SearchState &state, ui v) const
 {
     return v < state.used_data_flag.size() && state.used_data_flag[v] != 0;

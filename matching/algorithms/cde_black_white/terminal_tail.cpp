@@ -145,15 +145,4 @@ void MatchingSolver::enumTailWhites(SearchState &state,
     }
 }
 
-void MatchingSolver::emitResult(const SearchState &state)
-{
-    // 输出一个完整匹配，并更新结果计数和输出上限状态。
-    assert(state.part_M.size() == qn);
-    stats.result_count++;
-    noteOutputLimitIfReached();
-#ifndef NDEBUG
-    results_ptr->push_back(state.part_M);
-#endif
-}
-
 } // namespace cde_black_white
