@@ -8,14 +8,14 @@ inline void Approximate_CDE_BlackWhite(const Graph *query_graph, const Graph *da
     Timer t_total;
     t_total.restart();
 
-    cde_black_white::Workspace workspace;
-    if (workspace.init(query_graph, data_graph, threshold)) {
-        workspace.match(M_ANS);
+    cde_black_white::MatchingSolver solver;
+    if (solver.init(query_graph, data_graph, threshold)) {
+        solver.match(M_ANS);
     }
 
-    workspace.stats.total_time = t_total.elapsed();
-    workspace.printStats();
-    ssm_ged::set_reported_result_count(workspace.stats.result_count);
+    solver.stats.total_time = t_total.elapsed();
+    solver.printStats();
+    ssm_ged::set_reported_result_count(solver.stats.result_count);
 }
 
 #endif

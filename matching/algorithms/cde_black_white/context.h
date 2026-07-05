@@ -16,9 +16,9 @@
 
 namespace cde_black_white {
 
-class Workspace {
+class MatchingSolver {
 public:
-    Workspace() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr) {}
+    MatchingSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr) {}
 
     bool init(const Graph *q, const Graph *g, ui match_threshold)
     {
@@ -222,7 +222,7 @@ private:
     }
 
 
-#define CDE_BLACK_WHITE_INSIDE_WORKSPACE 1
+#define CDE_BLACK_WHITE_INSIDE_MATCHING_SOLVER 1
 #include "matching/algorithms/cde_black_white/filtering.h"
 #include "matching/algorithms/cde_black_white/candidate_index.h"
 #include "matching/algorithms/cde_black_white/state_undo.h"
@@ -230,7 +230,7 @@ private:
 #include "matching/algorithms/cde_black_white/ordering.h"
 #include "matching/algorithms/cde_black_white/terminal_tail.h"
 #include "matching/algorithms/cde_black_white/branching.h"
-#undef CDE_BLACK_WHITE_INSIDE_WORKSPACE
+#undef CDE_BLACK_WHITE_INSIDE_MATCHING_SOLVER
 };
 
 } // namespace cde_black_white

@@ -1,8 +1,8 @@
 #ifndef MATCHING_ALGORITHMS_CDE_BLACK_WHITE_BRANCHING_H_
 #define MATCHING_ALGORITHMS_CDE_BLACK_WHITE_BRANCHING_H_
 
-#ifndef CDE_BLACK_WHITE_INSIDE_WORKSPACE
-#error "This internal header must be included from cde_black_white/context.h inside Workspace."
+#ifndef CDE_BLACK_WHITE_INSIDE_MATCHING_SOLVER
+#error "This internal header must be included from cde_black_white/context.h inside MatchingSolver."
 #endif
 
     bool tryBindBlack(SearchState &state, ui cost, ui u, ui v,

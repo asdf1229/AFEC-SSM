@@ -1,8 +1,8 @@
 #ifndef MATCHING_ALGORITHMS_CDE_BLACK_WHITE_FILTERING_H_
 #define MATCHING_ALGORITHMS_CDE_BLACK_WHITE_FILTERING_H_
 
-#ifndef CDE_BLACK_WHITE_INSIDE_WORKSPACE
-#error "This internal header must be included from cde_black_white/context.h inside Workspace."
+#ifndef CDE_BLACK_WHITE_INSIDE_MATCHING_SOLVER
+#error "This internal header must be included from cde_black_white/context.h inside MatchingSolver."
 #endif
 
     // ========================================================================
@@ -10,7 +10,7 @@
     // ========================================================================
     struct CandidateFilter {
     private:
-        Workspace &solver;
+        MatchingSolver &solver;
 
         struct LabelFreq {
             LabelID label = 0;
@@ -62,7 +62,7 @@
 #endif
 
     public:
-        explicit CandidateFilter(Workspace &solver)
+        explicit CandidateFilter(MatchingSolver &solver)
             : solver(solver),
             spoke_adj(solver.qn, vector<ui>()),
             match_right(solver.max_g_deg, -1),
