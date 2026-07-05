@@ -1,7 +1,4 @@
-#ifndef MATCHING_ALGORITHMS_CDE_BLACK_WHITE_FILTERING_H_
-#define MATCHING_ALGORITHMS_CDE_BLACK_WHITE_FILTERING_H_
-
-#include "matching/algorithms/cde_black_white.h"
+#include "matching/algorithms/cde_black_white/cde_black_white.h"
 
 namespace cde_black_white {
 
@@ -623,11 +620,9 @@ private:
 #endif
 };
 
-inline bool MatchingSolver::runCandidateFiltering()
+bool MatchingSolver::runCandidateFiltering()
 {
     return CandidateFilter(*this).run();
 }
 
 } // namespace cde_black_white
-
-#endif

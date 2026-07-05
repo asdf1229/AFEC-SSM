@@ -1,11 +1,8 @@
-#ifndef MATCHING_ALGORITHMS_CDE_BLACK_WHITE_BRANCHING_H_
-#define MATCHING_ALGORITHMS_CDE_BLACK_WHITE_BRANCHING_H_
-
-#include "matching/algorithms/cde_black_white.h"
+#include "matching/algorithms/cde_black_white/cde_black_white.h"
 
 namespace cde_black_white {
 
-inline bool MatchingSolver::tryBindBlack(SearchState &state, ui cost, ui u, ui v,
+bool MatchingSolver::tryBindBlack(SearchState &state, ui cost, ui u, ui v,
     ui &next_cost)
 {
     // 尝试将未选查询点 u 绑定为 black 映射到 v。
@@ -56,7 +53,7 @@ inline bool MatchingSolver::tryBindBlack(SearchState &state, ui cost, ui u, ui v
     return true;
 }
 
-inline bool MatchingSolver::tryMaterializeWhite(SearchState &state, ui cost, ui white_u,
+bool MatchingSolver::tryMaterializeWhite(SearchState &state, ui cost, ui white_u,
     ui candidate, ui bucket_delta, ui &next_cost)
 {
     // 尝试把已选 white 点具体化为 black 映射。
@@ -104,7 +101,7 @@ inline bool MatchingSolver::tryMaterializeWhite(SearchState &state, ui cost, ui 
     return true;
 }
 
-inline bool MatchingSolver::branchWhite(SearchState &state, ui cost, ui u)
+bool MatchingSolver::branchWhite(SearchState &state, ui cost, ui u)
 {
     // 分支：将未选查询点 u 设为 white，并递归继续搜索。
     if (state.color[u] != COLOR_UNSELECTED) {
@@ -137,7 +134,7 @@ inline bool MatchingSolver::branchWhite(SearchState &state, ui cost, ui u)
     return true;
 }
 
-inline bool MatchingSolver::branchBlack(SearchState &state, ui cost, ui u,
+bool MatchingSolver::branchBlack(SearchState &state, ui cost, ui u,
     ui required_anchor)
 {
     // 分支：枚举未选查询点 u 的 black 映射候选。
@@ -187,9 +184,8 @@ inline bool MatchingSolver::branchBlack(SearchState &state, ui cost, ui u,
     return emitted_branch;
 }
 
-template <typename Continue>
-inline bool MatchingSolver::branchMatWhite(SearchState &state, ui cost,
-    ui white_u, Continue continue_branch)
+bool MatchingSolver::branchMatWhite(SearchState &state, ui cost,
+    ui white_u, const MatchingSolver::ContinueBranch &continue_branch)
 {
     // 分支：枚举一个 white 点的具体映射，再交给后续回调继续。
     if (!isWhite(state, white_u)) {
@@ -231,9 +227,9 @@ inline bool MatchingSolver::branchMatWhite(SearchState &state, ui cost,
     return emitted_branch;
 }
 
-template <typename Continue>
-inline bool MatchingSolver::branchMatWhites(SearchState &state, ui cost,
-    const vector<ui> &white_vertices, size_t pos, Continue continue_branch)
+bool MatchingSolver::branchMatWhites(SearchState &state, ui cost,
+    const vector<ui> &white_vertices, size_t pos,
+    const MatchingSolver::ContinueBranch &continue_branch)
 {
     // 分支：按顺序枚举一组 white 点的具体映射。
     if (pos == white_vertices.size()) {
@@ -253,7 +249,7 @@ inline bool MatchingSolver::branchMatWhites(SearchState &state, ui cost,
         });
 }
 
-inline bool MatchingSolver::branchBlackAnchor(SearchState &state, ui cost, ui u,
+bool MatchingSolver::branchBlackAnchor(SearchState &state, ui cost, ui u,
     ui anchor)
 {
     // 在 anchor 已是 black 且边存在时，决定 u 走 white 或 black 分支。
@@ -284,7 +280,7 @@ inline bool MatchingSolver::branchBlackAnchor(SearchState &state, ui cost, ui u,
     return branchBlack(state, cost, u, anchor);
 }
 
-inline bool MatchingSolver::branchPresentEdge(SearchState &state, ui cost,
+bool MatchingSolver::branchPresentEdge(SearchState &state, ui cost,
     const ActiveEdge &edge)
 {
     // 存在边分支：先标记活跃边存在，再扩展相关顶点。
@@ -314,7 +310,7 @@ inline bool MatchingSolver::branchPresentEdge(SearchState &state, ui cost,
     return emitted_branch;
 }
 
-inline void MatchingSolver::branchEdges(SearchState &state, ui cost,
+void MatchingSolver::branchEdges(SearchState &state, ui cost,
     const vector<ActiveEdge> &top_edges, size_t edge_idx)
 {
     // 对 top_edges 依次执行存在边/缺失边分支。
@@ -344,7 +340,7 @@ inline void MatchingSolver::branchEdges(SearchState &state, ui cost,
     rollback(state, undo_mark);
 }
 
-inline void MatchingSolver::search(SearchState &state, ui cost)
+void MatchingSolver::search(SearchState &state, ui cost)
 {
     if (outputLimitReached()) {
         stats.output_limit_reached = true;
@@ -385,5 +381,3 @@ inline void MatchingSolver::search(SearchState &state, ui cost)
 }
 
 } // namespace cde_black_white
-
-#endif

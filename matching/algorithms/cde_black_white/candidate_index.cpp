@@ -1,16 +1,13 @@
-#ifndef MATCHING_ALGORITHMS_CDE_BLACK_WHITE_CANDIDATE_INDEX_H_
-#define MATCHING_ALGORITHMS_CDE_BLACK_WHITE_CANDIDATE_INDEX_H_
-
-#include "matching/algorithms/cde_black_white.h"
+#include "matching/algorithms/cde_black_white/cde_black_white.h"
 
 namespace cde_black_white {
 
-inline unsigned long long MatchingSolver::adjKey(ui data_vertex, ui query_neighbor) const
+unsigned long long MatchingSolver::adjKey(ui data_vertex, ui query_neighbor) const
 {
     return ((unsigned long long)data_vertex << 32) | (unsigned long long)query_neighbor;
 }
 
-inline void MatchingSolver::buildAdjIndex()
+void MatchingSolver::buildAdjIndex()
 {
     candidate_adj_index.clear();
     candidate_adj_index.resize(qn);
@@ -49,7 +46,7 @@ inline void MatchingSolver::buildAdjIndex()
 }
 
 // return to_data set
-inline const pair<size_t, ui> *MatchingSolver::findAdjRange(ui from_query, ui from_data, ui to_query) const
+const pair<size_t, ui> *MatchingSolver::findAdjRange(ui from_query, ui from_data, ui to_query) const
 {
     if (from_query >= candidate_adj_index.size()) return nullptr;
     const auto &index = candidate_adj_index[from_query];
@@ -58,22 +55,22 @@ inline const pair<size_t, ui> *MatchingSolver::findAdjRange(ui from_query, ui fr
     return &it->second;
 }
 
-inline const ui *MatchingSolver::rangeBegin(const pair<size_t, ui> &range) const
+const ui *MatchingSolver::rangeBegin(const pair<size_t, ui> &range) const
 {
     return candidate_adj_pool.data() + range.first;
 }
 
-inline const ui *MatchingSolver::rangeEnd(const pair<size_t, ui> &range) const
+const ui *MatchingSolver::rangeEnd(const pair<size_t, ui> &range) const
 {
     return rangeBegin(range) + range.second;
 }
 
-inline bool MatchingSolver::rangeHas(const pair<size_t, ui> &range, ui value) const
+bool MatchingSolver::rangeHas(const pair<size_t, ui> &range, ui value) const
 {
     return std::binary_search(rangeBegin(range), rangeEnd(range), value);
 }
 
-inline bool MatchingSolver::candAdjacent(ui from_query, ui from_data, ui to_query, ui to_data)
+bool MatchingSolver::candAdjacent(ui from_query, ui from_data, ui to_query, ui to_data)
 {
     stats.candidate_edge_check_calls++;
     const pair<size_t, ui> *range = findAdjRange(from_query, from_data, to_query);
@@ -85,13 +82,13 @@ inline bool MatchingSolver::candAdjacent(ui from_query, ui from_data, ui to_quer
     return rangeHas(*range, to_data);
 }
 
-inline bool MatchingSolver::hasDataEdge(ui u, ui v)
+bool MatchingSolver::hasDataEdge(ui u, ui v)
 {
     stats.graph_has_edge_checks++;
     return data_graph->hasEdge(u, v);
 }
 
-inline bool MatchingSolver::anchorAdjacent(ui anchor_query, ui anchor_data, ui target_query, ui target_data)
+bool MatchingSolver::anchorAdjacent(ui anchor_query, ui anchor_data, ui target_query, ui target_data)
 {
     stats.candidate_edge_check_calls++;
     const pair<size_t, ui> *range = findAdjRange(anchor_query, anchor_data, target_query);
@@ -104,5 +101,3 @@ inline bool MatchingSolver::anchorAdjacent(ui anchor_query, ui anchor_data, ui t
 }
 
 } // namespace cde_black_white
-
-#endif

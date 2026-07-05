@@ -1,7 +1,4 @@
-#ifndef MATCHING_ALGORITHMS_CDE_BLACK_WHITE_ORDERING_H_
-#define MATCHING_ALGORITHMS_CDE_BLACK_WHITE_ORDERING_H_
-
-#include "matching/algorithms/cde_black_white.h"
+#include "matching/algorithms/cde_black_white/cde_black_white.h"
 
 namespace cde_black_white {
 
@@ -14,7 +11,7 @@ struct MatchingSolver::FixedEdgePriorityEntry {
     ui anchor_candidate_count = 0;
 };
 
-inline void MatchingSolver::initFixedEdgePriorities()
+void MatchingSolver::initFixedEdgePriorities()
 {
     // 根据静态候选边支持为查询边建立固定分支优先级。
     const ui invalid_priority = std::numeric_limits<ui>::max();
@@ -94,7 +91,7 @@ inline void MatchingSolver::initFixedEdgePriorities()
 }
 #endif
 
-inline ui MatchingSolver::chooseRoot()
+ui MatchingSolver::chooseRoot()
 {
     ui root = 0;
     for (ui u = 1; u < qn; ++u) {
@@ -109,14 +106,14 @@ inline ui MatchingSolver::chooseRoot()
     return root;
 }
 
-inline void MatchingSolver::initColors()
+void MatchingSolver::initColors()
 {
     static_root = chooseRoot();
     static_color.assign(qn, COLOR_WHITE);
     static_color[static_root] = COLOR_BLACK;
 }
 
-inline double MatchingSolver::blackSupport(const SearchState &state, ui u,
+double MatchingSolver::blackSupport(const SearchState &state, ui u,
     ui anchor) const
 {
     // 估计 black anchor 对未选点 u 的剩余候选支持数量。
@@ -155,7 +152,7 @@ inline double MatchingSolver::blackSupport(const SearchState &state, ui u,
     return support_count;
 }
 
-inline double MatchingSolver::whiteSupport(const SearchState &state, ui anchor) const
+double MatchingSolver::whiteSupport(const SearchState &state, ui anchor) const
 {
     // 估计 white anchor 的分支支持，使用其候选桶可行数量。
     if (!isWhite(state, anchor)) {
@@ -164,7 +161,7 @@ inline double MatchingSolver::whiteSupport(const SearchState &state, ui anchor) 
     return (double)std::max((ui)1, state.white[anchor].feasible_count);
 }
 
-inline bool MatchingSolver::betterEdge(const ActiveEdge &lhs,
+bool MatchingSolver::betterEdge(const ActiveEdge &lhs,
     const ActiveEdge &rhs) const
 {
     // 比较两条活跃边的分支优先级。
@@ -201,7 +198,7 @@ inline bool MatchingSolver::betterEdge(const ActiveEdge &lhs,
 #endif
 }
 
-inline void MatchingSolver::selectTopEdges(ui max_count,
+void MatchingSolver::selectTopEdges(ui max_count,
     vector<ActiveEdge> &top_edges)
 {
     // 从活跃边集合中按启发式选择前 max_count 条。
@@ -276,7 +273,7 @@ inline void MatchingSolver::selectTopEdges(ui max_count,
     top_edges.resize(selected_limit);
 }
 
-inline bool MatchingSolver::collectActiveEdges(const SearchState &state,
+bool MatchingSolver::collectActiveEdges(const SearchState &state,
     ui max_count, vector<ActiveEdge> &top_edges)
 {
     // 收集当前状态下可分支的活跃边，并截取 top 边。
@@ -331,7 +328,7 @@ inline bool MatchingSolver::collectActiveEdges(const SearchState &state,
     return true;
 }
 
-inline ui MatchingSolver::chooseMatWhite(const SearchState &state) const
+ui MatchingSolver::chooseMatWhite(const SearchState &state) const
 {
     // 选择候选数最少的 white 点作为优先具体化对象。
     ui chosen = qn;
@@ -350,5 +347,3 @@ inline ui MatchingSolver::chooseMatWhite(const SearchState &state) const
 }
 
 } // namespace cde_black_white
-
-#endif

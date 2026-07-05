@@ -1,11 +1,8 @@
-#ifndef MATCHING_ALGORITHMS_CDE_BLACK_WHITE_TERMINAL_TAIL_H_
-#define MATCHING_ALGORITHMS_CDE_BLACK_WHITE_TERMINAL_TAIL_H_
-
-#include "matching/algorithms/cde_black_white.h"
+#include "matching/algorithms/cde_black_white/cde_black_white.h"
 
 namespace cde_black_white {
 
-inline bool MatchingSolver::buildTailBuckets(
+bool MatchingSolver::buildTailBuckets(
     const SearchState &state, ui white_u, ui cost,
     vector<vector<ui>> &buckets, ui &feasible_count, ui &min_delta)
 {
@@ -54,7 +51,7 @@ inline bool MatchingSolver::buildTailBuckets(
     return feasible_count > 0;
 }
 
-inline bool MatchingSolver::buildTailWhites(const SearchState &state,
+bool MatchingSolver::buildTailWhites(const SearchState &state,
     ui cost, vector<TerminalTailVertex> &tail_vertices)
 {
     // 为所有剩余 white 点构建终端 tail 枚举结构。
@@ -96,7 +93,7 @@ inline bool MatchingSolver::buildTailWhites(const SearchState &state,
     return true;
 }
 
-inline void MatchingSolver::enumTailWhites(SearchState &state,
+void MatchingSolver::enumTailWhites(SearchState &state,
     size_t pos, ui cost, vector<TerminalTailVertex> &tail_vertices)
 {
     // 递归枚举终端阶段所有 white 点的具体映射。
@@ -148,7 +145,7 @@ inline void MatchingSolver::enumTailWhites(SearchState &state,
     }
 }
 
-inline void MatchingSolver::emitResult(const SearchState &state)
+void MatchingSolver::emitResult(const SearchState &state)
 {
     // 输出一个完整匹配，并更新结果计数和输出上限状态。
     assert(state.part_M.size() == qn);
@@ -160,5 +157,3 @@ inline void MatchingSolver::emitResult(const SearchState &state)
 }
 
 } // namespace cde_black_white
-
-#endif

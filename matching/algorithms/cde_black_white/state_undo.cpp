@@ -1,11 +1,8 @@
-#ifndef MATCHING_ALGORITHMS_CDE_BLACK_WHITE_STATE_UNDO_H_
-#define MATCHING_ALGORITHMS_CDE_BLACK_WHITE_STATE_UNDO_H_
-
-#include "matching/algorithms/cde_black_white.h"
+#include "matching/algorithms/cde_black_white/cde_black_white.h"
 
 namespace cde_black_white {
 
-inline void MatchingSolver::initState(SearchState &state) const
+void MatchingSolver::initState(SearchState &state) const
 {
     state.mapped_q.assign(qn, -1);
     state.used_data_vertices.clear();
@@ -23,24 +20,24 @@ inline void MatchingSolver::initState(SearchState &state) const
     state.white_count = 0;
 }
 
-inline size_t MatchingSolver::edgeIdx(ui u, ui v) const
+size_t MatchingSolver::edgeIdx(ui u, ui v) const
 {
     return (size_t)u * qn + v;
 }
 
-inline EdgeState MatchingSolver::getEdge(const SearchState &state, ui u, ui v) const
+EdgeState MatchingSolver::getEdge(const SearchState &state, ui u, ui v) const
 {
     return state.edge_state[edgeIdx(u, v)];
 }
 
-inline void MatchingSolver::setEdgeRaw(SearchState &state, ui u, ui v,
+void MatchingSolver::setEdgeRaw(SearchState &state, ui u, ui v,
     EdgeState edge_state_value) const
 {
     // 不记录 undo，直接写入有向查询边 (u, v) 的状态。
     state.edge_state[edgeIdx(u, v)] = edge_state_value;
 }
 
-inline vector<ActiveEdge> &MatchingSolver::topEdgesBuffer(ui depth)
+vector<ActiveEdge> &MatchingSolver::topEdgesBuffer(ui depth)
 {
     if (top_edges_buffer_by_depth.size() <= depth) {
         top_edges_buffer_by_depth.resize((size_t)depth + 1);
@@ -53,7 +50,7 @@ inline vector<ActiveEdge> &MatchingSolver::topEdgesBuffer(ui depth)
     return buffer;
 }
 
-inline vector<ui> &MatchingSolver::whiteNbrsBuffer(ui depth)
+vector<ui> &MatchingSolver::whiteNbrsBuffer(ui depth)
 {
     // 获取指定搜索深度复用的 white 邻居缓冲区。
     if (white_neighbors_buffer_by_depth.size() <= depth) {
@@ -67,7 +64,7 @@ inline vector<ui> &MatchingSolver::whiteNbrsBuffer(ui depth)
     return buffer;
 }
 
-inline bool MatchingSolver::tryBindRoot(SearchState &state, ui root, ui v) const
+bool MatchingSolver::tryBindRoot(SearchState &state, ui root, ui v) const
 {
     // 尝试把根查询点绑定到数据点 v，作为搜索初始 black 映射。
     if (root >= qn || v >= gn || !candidates[root].contains(v)) {
@@ -82,33 +79,33 @@ inline bool MatchingSolver::tryBindRoot(SearchState &state, ui root, ui v) const
     return true;
 }
 
-inline bool MatchingSolver::isDataVertexUsed(const SearchState &state, ui v) const
+bool MatchingSolver::isDataVertexUsed(const SearchState &state, ui v) const
 {
     return v < state.used_data_flag.size() && state.used_data_flag[v] != 0;
 }
 
-inline bool MatchingSolver::isSelected(const SearchState &state, ui u) const
+bool MatchingSolver::isSelected(const SearchState &state, ui u) const
 {
     return u < state.color.size() && state.color[u] != COLOR_UNSELECTED;
 }
 
-inline bool MatchingSolver::isBlack(const SearchState &state, ui u) const
+bool MatchingSolver::isBlack(const SearchState &state, ui u) const
 {
     return u < state.color.size() && state.color[u] == COLOR_BLACK;
 }
 
-inline bool MatchingSolver::isWhite(const SearchState &state, ui u) const
+bool MatchingSolver::isWhite(const SearchState &state, ui u) const
 {
     return u < state.color.size() && state.color[u] == COLOR_WHITE;
 }
 
-inline size_t MatchingSolver::mark() const
+size_t MatchingSolver::mark() const
 {
     // 返回当前 undo 栈大小，作为后续回滚标记。
     return undo_stack.size();
 }
 
-inline void MatchingSolver::rollback(SearchState &state, size_t mark)
+void MatchingSolver::rollback(SearchState &state, size_t mark)
 {
     while (undo_stack.size() > mark) {
         UndoRecord undo = std::move(undo_stack.back());
@@ -151,7 +148,7 @@ inline void MatchingSolver::rollback(SearchState &state, size_t mark)
     }
 }
 
-inline void MatchingSolver::setMap(SearchState &state, ui u, int value)
+void MatchingSolver::setMap(SearchState &state, ui u, int value)
 {
     // 设置查询点 u 的映射值，并记录 undo。
     UndoRecord undo;
@@ -162,7 +159,7 @@ inline void MatchingSolver::setMap(SearchState &state, ui u, int value)
     state.mapped_q[u] = value;
 }
 
-inline void MatchingSolver::setColor(SearchState &state, ui u, VertexColor value)
+void MatchingSolver::setColor(SearchState &state, ui u, VertexColor value)
 {
     // 设置查询点 u 的颜色，并记录 undo。
     UndoRecord undo;
@@ -173,7 +170,7 @@ inline void MatchingSolver::setColor(SearchState &state, ui u, VertexColor value
     state.color[u] = value;
 }
 
-inline void MatchingSolver::setEdge(SearchState &state, ui u, ui v,
+void MatchingSolver::setEdge(SearchState &state, ui u, ui v,
     EdgeState edge_state_value)
 {
     // 对称设置查询边 (u, v) 的状态，并记录 undo。
@@ -188,7 +185,7 @@ inline void MatchingSolver::setEdge(SearchState &state, ui u, ui v,
     setEdgeRaw(state, v, u, edge_state_value);
 }
 
-inline void MatchingSolver::pushUsed(SearchState &state, ui v)
+void MatchingSolver::pushUsed(SearchState &state, ui v)
 {
     // 将数据点 v 标记为已使用，并记录 used 列表大小以便回滚。
     UndoRecord undo;
@@ -199,7 +196,7 @@ inline void MatchingSolver::pushUsed(SearchState &state, ui v)
     state.used_data_flag[v] = 1;
 }
 
-inline void MatchingSolver::pushMatch(SearchState &state, ui u, ui v)
+void MatchingSolver::pushMatch(SearchState &state, ui u, ui v)
 {
     // 将匹配对 (u, v) 加入部分匹配，并记录大小以便回滚。
     UndoRecord undo;
@@ -209,7 +206,7 @@ inline void MatchingSolver::pushMatch(SearchState &state, ui u, ui v)
     state.part_M.push_back({ u, v });
 }
 
-inline void MatchingSolver::setSelectedCnt(SearchState &state, ui value)
+void MatchingSolver::setSelectedCnt(SearchState &state, ui value)
 {
     // 更新已选查询点数量，并记录 undo。
     UndoRecord undo;
@@ -219,7 +216,7 @@ inline void MatchingSolver::setSelectedCnt(SearchState &state, ui value)
     state.selected_count = value;
 }
 
-inline void MatchingSolver::setWhiteCnt(SearchState &state, ui value)
+void MatchingSolver::setWhiteCnt(SearchState &state, ui value)
 {
     // 更新 white 查询点数量，并记录 undo。
     UndoRecord undo;
@@ -229,7 +226,7 @@ inline void MatchingSolver::setWhiteCnt(SearchState &state, ui value)
     state.white_count = value;
 }
 
-inline void MatchingSolver::replaceBucket(SearchState &state, ui u,
+void MatchingSolver::replaceBucket(SearchState &state, ui u,
     const vector<ui> &candidates_to_store)
 {
     // 用新的候选列表替换 u 的 white bucket，并记录旧 bucket。
@@ -252,5 +249,3 @@ inline void MatchingSolver::replaceBucket(SearchState &state, ui u,
 }
 
 } // namespace cde_black_white
-
-#endif
