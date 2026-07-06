@@ -19,12 +19,9 @@ void MatchingSolver::tryMapRoot(SearchState &state, ui root, ui v) const
 bool MatchingSolver::tryMapBlackWithDelta(SearchState &state, ui cost,
     ui u, ui v, ui delta, ui &next_cost)
 {
-    if (u >= qn || v >= gn || !candidates[u].contains(v)) {
-        return false;
-    }
-    if (state.color[u] != COLOR_UNSELECTED || isDataVertexUsed(state, v)) {
-        return false;
-    }
+    assert(u < qn && v < gn && candidates[u].contains(v));
+    assert(state.color[u] == COLOR_UNSELECTED);
+    assert(!isDataVertexUsed(state, v));
 
     next_cost = cost + delta;
     if (next_cost > threshold) {
@@ -328,12 +325,26 @@ void MatchingSolver::search(SearchState &state, ui cost)
             return;
         }
 
+#if CDE_BLACK_WHITE_USE_TERMINAL_TAIL
         vector<TailWhite> tail_vertices;
         if (!buildTailWhites(state, cost, tail_vertices)) {
             stats.prun_calls++;
             return;
         }
         enumTailWhites(state, 0, cost, tail_vertices);
+#else
+        vector<ui> &white_vertices = whiteNbrsBuffer(state.selected_count);
+        for (ui u = 0; u < qn; ++u) {
+            if (isWhite(state, u)) white_vertices.push_back(u);
+        }
+        assert(white_vertices.size() == (size_t)state.white_count);
+        branchMatWhites(state, cost, white_vertices, 0,
+            [&](SearchState &materialized_state, ui materialized_cost) {
+                (void)materialized_cost;
+                assert(materialized_state.white_count == 0);
+                emitResult(materialized_state);
+            });
+#endif
         return;
     }
 

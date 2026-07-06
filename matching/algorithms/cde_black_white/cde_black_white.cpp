@@ -12,6 +12,32 @@ namespace cde_black_white {
 
 MatchingSolver::MatchingSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr) {}
 
+ui MatchingSolver::chooseRoot()
+{
+    ui root = 0;
+    for (ui u = 1; u < qn; ++u) {
+        size_t cand_u = candidates[u].size();
+        size_t cand_root = candidates[root].size();
+
+        ui deg_u = q_degree[u];
+        ui deg_root = q_degree[root];
+
+        if (cand_u * deg_root < cand_root * deg_u) root = u;
+    }
+    return root;
+}
+
+void MatchingSolver::initColors()
+{
+    static_root = chooseRoot();
+#if CDE_BLACK_WHITE_STATIC_COLOR_ALL_BLACK
+    static_color.assign(qn, COLOR_BLACK);
+#else
+    static_color.assign(qn, COLOR_WHITE);
+    static_color[static_root] = COLOR_BLACK;
+#endif
+}
+
 bool MatchingSolver::init(const Graph *q, const Graph *g, ui match_threshold)
 {
     Timer t_init;

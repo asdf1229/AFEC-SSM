@@ -1,12 +1,13 @@
 #ifndef MATCHING_ALGORITHMS_CDE_BLACK_WHITE_H_
 #define MATCHING_ALGORITHMS_CDE_BLACK_WHITE_H_
 
-#define CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING 1
-#define CDE_BLACK_WHITE_ENABLE_BRIDGE_FILTERING 1
-#define CDE_BLACK_WHITE_FIXED_ORDER 0
-#define CDE_BLACK_WHITE_STATIC_COLOR 1
-#define CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY 1
-#define CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY_GAMMA 0.9
+#include "configuration/config.h"
+#include "configuration/types.h"
+#include "graph/graph.h"
+#include "matching/algorithms/cde_black_white/types.h"
+#include "matching/run_matching.h"
+#include "utility/mybitset.h"
+
 #ifndef CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE
 #define CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE 1
 #endif
@@ -17,12 +18,6 @@
 #if CDE_BLACK_WHITE_FIXED_ORDER && CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
 #error "CDE_BLACK_WHITE_FIXED_ORDER and CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY are mutually exclusive."
 #endif
-
-#include "configuration/types.h"
-#include "graph/graph.h"
-#include "matching/algorithms/cde_black_white/types.h"
-#include "matching/run_matching.h"
-#include "utility/mybitset.h"
 
 #include <algorithm>
 #include <cassert>
@@ -96,6 +91,8 @@ private:
     bool outputLimitReached() const;
     void resetState();
     void resetBuffers();
+    ui chooseRoot();
+    void initColors();
 
     bool runCandidateFiltering();
 
@@ -114,6 +111,9 @@ private:
     EdgeState getEdge(const SearchState &state, ui u, ui v) const;
     void setEdgeRaw(SearchState &state, ui u, ui v,
         EdgeState edge_state_value) const;
+    void addAnchorEdgeRaw(SearchState &state, ui u, ui anchor) const;
+    void removeAnchorEdgeRaw(SearchState &state, ui u, ui anchor) const;
+    void refreshAnchorEdge(SearchState &state, ui u, ui v) const;
     vector<AnchorEdge> &topEdgesBuffer(ui depth);
     vector<pair<ui, ui>> &branchCandsBuffer(ui depth);
     vector<ui> &whiteNbrsBuffer(ui depth);
@@ -163,11 +163,6 @@ private:
 #if CDE_BLACK_WHITE_FIXED_ORDER
     void initFixedEdgePriorities();
 #endif
-    ui chooseRoot();
-    void initColors();
-    void addAnchorEdgeRaw(SearchState &state, ui u, ui anchor) const;
-    void removeAnchorEdgeRaw(SearchState &state, ui u, ui anchor) const;
-    void refreshAnchorEdge(SearchState &state, ui u, ui v) const;
     double blackSupport(const SearchState &state, ui u, ui anchor) const;
     double whiteSupport(const SearchState &state, ui anchor) const;
     bool betterEdge(const AnchorEdge &lhs, const AnchorEdge &rhs) const;

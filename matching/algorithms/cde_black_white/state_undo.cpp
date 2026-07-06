@@ -40,6 +40,78 @@ void MatchingSolver::setEdgeRaw(SearchState &state, ui u, ui v,
     state.edge_state[edgeIdx(u, v)] = edge_state_value;
 }
 
+void MatchingSolver::addAnchorEdgeRaw(SearchState &state, ui u,
+    ui anchor) const
+{
+    if (u >= qn || anchor >= qn) {
+        return;
+    }
+    size_t idx = edgeIdx(u, anchor);
+    if (state.anchor_edge_pos[idx] != -1) {
+        return;
+    }
+
+    AnchorEdge edge;
+    edge.u = u;
+    edge.anchor = anchor;
+    state.anchor_edge_pos[idx] = (int)state.anchor_edges.size();
+    state.anchor_edges.push_back(edge);
+    state.anchor_count[u]++;
+}
+
+void MatchingSolver::removeAnchorEdgeRaw(SearchState &state, ui u,
+    ui anchor) const
+{
+    if (u >= qn || anchor >= qn) {
+        return;
+    }
+    size_t idx = edgeIdx(u, anchor);
+    int pos = state.anchor_edge_pos[idx];
+    if (pos == -1) {
+        return;
+    }
+
+    size_t remove_pos = (size_t)pos;
+    size_t last_pos = state.anchor_edges.size() - 1;
+    if (remove_pos != last_pos) {
+        AnchorEdge moved = state.anchor_edges[last_pos];
+        state.anchor_edges[remove_pos] = moved;
+        state.anchor_edge_pos[edgeIdx(moved.u, moved.anchor)] = pos;
+    }
+    state.anchor_edges.pop_back();
+    state.anchor_edge_pos[idx] = -1;
+    assert(state.anchor_count[u] > 0);
+    state.anchor_count[u]--;
+}
+
+void MatchingSolver::refreshAnchorEdge(SearchState &state, ui u,
+    ui v) const
+{
+    if (u >= qn || v >= qn) {
+        return;
+    }
+
+    removeAnchorEdgeRaw(state, u, v);
+    removeAnchorEdgeRaw(state, v, u);
+
+    if (getEdge(state, u, v) != EDGE_UNDECIDED) {
+        return;
+    }
+
+    bool u_selected = isSelected(state, u);
+    bool v_selected = isSelected(state, v);
+    if (u_selected == v_selected) {
+        return;
+    }
+
+    if (u_selected) {
+        addAnchorEdgeRaw(state, v, u);
+    }
+    else {
+        addAnchorEdgeRaw(state, u, v);
+    }
+}
+
 bool MatchingSolver::isDataVertexUsed(const SearchState &state, ui v) const
 {
     assert(v < gn);

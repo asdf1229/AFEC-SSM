@@ -86,14 +86,14 @@ public:
 
 #if CDE_BLACK_WHITE_ENABLE_BRIDGE_FILTERING
         if (!timed(&TimeStats::filter_bridge_time, [&] {
-            return initBridgeSupport() && propFilter();
+            return initBridgeSupport() && propBridge();
         })) return false;
 #endif
 
 #if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
         if (!timed(&TimeStats::filter_spoke_time, [&] {
             pushAllSpokes();
-            return propFilter();
+            return propSpokeOnly();
         })) return false;
 #endif
 
@@ -188,7 +188,7 @@ private:
             solver.q_neighbor_is_bridge[u].assign(solver.q_degree[u], 0);
         }
 
-#if CDE_BLACK_WHITE_ENABLE_BRIDGE_FILTERING
+#if CDE_BLACK_WHITE_ENABLE_BRIDGE_FILTERING || CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
         vector<int> dfn(solver.qn, 0);
         vector<int> low(solver.qn, 0);
         int tim = 0;
@@ -449,30 +449,21 @@ private:
         return true;
     }
 
-    bool propFilter()
-    {
-        // 交替执行桥边传播和 spoke 传播，直到达到过滤闭包。
-        while (true) {
-            if (!propBridge()) {
-                return false;
-            }
 #if CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
-            if (pending_spokes.empty()) {
-                break;
-            }
-
+    bool propSpokeOnly()
+    {
+        // 只沿 spoke 约束传播候选删除，不在 spoke 阶段交替触发桥边支持传播。
+        while (!pending_spokes.empty()) {
             ui u = pending_spokes.front();
             pending_spokes.pop();
             queued_spoke[u] = 0;
             if (!filterSpoke(u)) {
                 return false;
             }
-#else
-            break;
-#endif
         }
         return true;
     }
+#endif
 
     bool augmentSpoke(ui left_idx)
     {

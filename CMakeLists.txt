@@ -77,6 +77,15 @@ macro(set_cde_edge_ie_identity TARGET_NAME CONFIG_NAME)
     )
 endmacro()
 
+macro(set_cde_black_white_identity TARGET_NAME CONFIG_NAME)
+    set(CDE_BLACK_WHITE_ALGORITHM_KEY "cde_black_white_${CONFIG_NAME}")
+    set(CDE_BLACK_WHITE_DISPLAY_NAME "CDE-Black-White (${CONFIG_NAME})")
+    target_compile_definitions(${TARGET_NAME} PRIVATE
+        "CDE_BLACK_WHITE_ALGORITHM_KEY=\"${CDE_BLACK_WHITE_ALGORITHM_KEY}\""
+        "CDE_BLACK_WHITE_DISPLAY_NAME=\"${CDE_BLACK_WHITE_DISPLAY_NAME}\""
+    )
+endmacro()
+
 foreach(ALGO_SOURCE ${SSM_GED_ALGORITHM_SOURCES})
     get_filename_component(ALGO_FILE_NAME ${ALGO_SOURCE} NAME_WE)
     get_filename_component(ALGO_DIR ${ALGO_SOURCE} DIRECTORY)
@@ -132,12 +141,38 @@ foreach(ALGO_SOURCE ${SSM_GED_ALGORITHM_SOURCES})
             endif()
         endif()
     elseif (ALGO_NAME STREQUAL "cde_black_white")
-        add_ssm_ged_executable(
-            "ssm_ged_cde_black_white"
-            "${ALGO_SOURCE}"
-            ""
-            ${SSM_GED_CDE_BLACK_WHITE_SOURCES}
-        )
+        if (SSM_GED_CONFIG_HEADER)
+            get_filename_component(CONFIG_NAME "${SSM_GED_CONFIG_HEADER}" NAME_WE)
+            add_ssm_ged_executable(
+                "ssm_ged_cde_black_white_${CONFIG_NAME}"
+                "${ALGO_SOURCE}"
+                "${SSM_GED_CONFIG_HEADER}"
+                ${SSM_GED_CDE_BLACK_WHITE_SOURCES}
+            )
+            set_cde_black_white_identity("ssm_ged_cde_black_white_${CONFIG_NAME}" "${CONFIG_NAME}")
+        else()
+            file(GLOB CDE_BLACK_WHITE_ABLATION_CONFIGS CONFIGURE_DEPENDS
+                RELATIVE "${PROJECT_SOURCE_DIR}"
+                "${PROJECT_SOURCE_DIR}/configuration/cde_black_white_ablation_configs/*.h"
+            )
+            list(SORT CDE_BLACK_WHITE_ABLATION_CONFIGS)
+            if (NOT CDE_BLACK_WHITE_ABLATION_CONFIGS)
+                message(FATAL_ERROR
+                    "No CDE black-white ablation configs found under configuration/cde_black_white_ablation_configs.")
+            endif()
+
+            foreach(CONFIG_HEADER ${CDE_BLACK_WHITE_ABLATION_CONFIGS})
+                get_filename_component(CONFIG_NAME "${CONFIG_HEADER}" NAME_WE)
+                set(TARGET_NAME "ssm_ged_cde_black_white_${CONFIG_NAME}")
+                add_ssm_ged_executable(
+                    "${TARGET_NAME}"
+                    "${ALGO_SOURCE}"
+                    "${CONFIG_HEADER}"
+                    ${SSM_GED_CDE_BLACK_WHITE_SOURCES}
+                )
+                set_cde_black_white_identity("${TARGET_NAME}" "${CONFIG_NAME}")
+            endforeach()
+        endif()
     else()
         add_ssm_ged_executable(
             "ssm_ged_${ALGO_NAME}"
