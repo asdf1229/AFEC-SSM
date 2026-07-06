@@ -118,12 +118,11 @@ bool MatchingSolver::tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui 
 bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u,
     ui candidate, ui bucket_delta, ui &next_cost)
 {
-    // 尝试把已选 white 点具体化为 black 映射。
-    if (!isWhite(state, white_u) || candidate >= gn ||
-        isDataVertexUsed(state, candidate) ||
-        !candidates[white_u].contains(candidate)) {
-        return false;
-    }
+    assert(isWhite(state, white_u));
+    assert(candidate < gn);
+    assert(!isDataVertexUsed(state, candidate));
+    assert(candidates[white_u].contains(candidate));
+    assert(cost <= threshold);
 
     next_cost = cost + bucket_delta;
     if (next_cost > threshold) {
