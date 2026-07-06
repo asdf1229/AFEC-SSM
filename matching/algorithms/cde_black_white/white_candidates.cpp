@@ -320,22 +320,14 @@ void MatchingSolver::addBucketCands(const SearchState &state,
 bool MatchingSolver::buildWhiteCands(SearchState &state, ui u, ui cost,
     const WhiteCands *existing_bucket)
 {
-    // 构建或重建查询点 u 在当前状态下的 white 可行候选缓冲。
+    assert(cost <= threshold);
     candidate_result_buffer.clear();
-    if (cost > threshold) {
-        return false;
-    }
     stats.white_bucket_rebuilds++;
 
-#if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE
-    if (!collectPosRanges(state, u,
-        candidate_range_buffer)) {
-        return false;
-    }
+    if (!collectPosRanges(state, u, candidate_range_buffer)) return false;
 
     if (!candidate_range_buffer.empty()) {
-        buildRangeSource(candidate_range_buffer,
-            candidate_source_buffer);
+        buildRangeSource(candidate_range_buffer, candidate_source_buffer);
 
         if (existing_bucket != nullptr &&
             existing_bucket->count <= candidate_source_buffer.size()) {
@@ -363,21 +355,18 @@ bool MatchingSolver::buildWhiteCands(SearchState &state, ui u, ui cost,
             candidate_intersection_buffer, candidate_result_buffer);
     }
     else {
-#endif
-    if (existing_bucket != nullptr) {
-        copyBucketCands(state, *existing_bucket,
-            candidate_intersection_buffer);
-        addFeasibleBatch(state, u, cost,
-            candidate_intersection_buffer, candidate_result_buffer);
+        if (existing_bucket != nullptr) {
+            copyBucketCands(state, *existing_bucket,
+                candidate_intersection_buffer);
+            addFeasibleBatch(state, u, cost,
+                candidate_intersection_buffer, candidate_result_buffer);
+        }
+        else {
+            collectAllCands(u, candidate_source_buffer);
+            addFeasibleBatch(state, u, cost,
+                candidate_source_buffer, candidate_result_buffer);
+        }
     }
-    else {
-        collectAllCands(u, candidate_source_buffer);
-        addFeasibleBatch(state, u, cost,
-            candidate_source_buffer, candidate_result_buffer);
-    }
-#if CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE
-    }
-#endif
 
     return !candidate_result_buffer.empty();
 }
@@ -393,15 +382,6 @@ bool MatchingSolver::refreshWhiteCands(SearchState &state,
 
     replaceBucket(state, white_u, candidate_result_buffer);
     return true;
-}
-
-bool MatchingSolver::initWhiteCands(SearchState &state, ui u, ui cost)
-{
-    // 为尚未选择的查询点 u 初始化 white 候选桶。
-    if (cost > threshold || !isSelectedByBlackNeighbor(state, u)) {
-        return false;
-    }
-    return buildWhiteCands(state, u, cost, nullptr);
 }
 
 bool MatchingSolver::isSelectedByBlackNeighbor(const SearchState &state, ui u) const

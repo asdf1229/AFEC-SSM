@@ -50,7 +50,7 @@ private:
 #if CDE_BLACK_WHITE_FIXED_ORDER
     struct FixedEdgePriorityEntry;
 #endif
-    using ContinueBranch = std::function<bool(SearchState &, ui)>;
+    using ContinueBranch = std::function<void(SearchState &, ui)>;
 
     const Graph *query_graph;
     const Graph *data_graph;
@@ -163,7 +163,6 @@ private:
     bool buildWhiteCands(SearchState &state, ui u, ui cost,
         const WhiteCands *existing_bucket);
     bool refreshWhiteCands(SearchState &state, ui white_u, ui cost);
-    bool initWhiteCands(SearchState &state, ui u, ui cost);
     bool isSelectedByBlackNeighbor(const SearchState &state, ui u) const;
     bool refreshWhiteByBlack(SearchState &state, ui white_u, ui black_u,
         ui black_v, ui cost);
@@ -201,11 +200,11 @@ private:
     bool tryMapWhite(SearchState &state, ui cost, ui white_u,
         ui candidate, ui bucket_delta, ui &next_cost);
     bool shouldExpandAsWhite(const SearchState &state, ui u, const vector<pair<ui, ui>> &anchor_candidates) const;
-    bool branchWhite(SearchState &state, ui cost, ui u);
+    void branchWhite(SearchState &state, ui cost, ui u);
     void branchBlack(SearchState &state, ui cost, ui u, const vector<pair<ui, ui>> &anchor_candidates);
-    bool branchMatWhite(SearchState &state, ui cost, ui white_u,
+    void branchMatWhite(SearchState &state, ui cost, ui white_u,
         const ContinueBranch &continue_branch);
-    bool branchMatWhites(SearchState &state, ui cost,
+    void branchMatWhites(SearchState &state, ui cost,
         const vector<ui> &white_vertices, size_t pos,
         const ContinueBranch &continue_branch);
     void branchBlackAnchor(SearchState &state, ui cost, ui u, ui anchor);

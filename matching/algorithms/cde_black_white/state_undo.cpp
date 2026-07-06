@@ -118,7 +118,6 @@ void MatchingSolver::rollback(SearchState &state, size_t mark)
 
 void MatchingSolver::setMap(SearchState &state, ui u, int value)
 {
-    // 设置查询点 u 的映射值，并记录 undo。
     UndoRecord undo;
     undo.kind = UNDO_MAPPED_Q;
     undo.u = u;
@@ -129,7 +128,6 @@ void MatchingSolver::setMap(SearchState &state, ui u, int value)
 
 void MatchingSolver::setColor(SearchState &state, ui u, VertexColor value)
 {
-    // 设置查询点 u 的颜色，并记录 undo。
     UndoRecord undo;
     undo.kind = UNDO_COLOR;
     undo.u = u;
@@ -178,7 +176,6 @@ void MatchingSolver::pushMatch(SearchState &state, ui u, ui v)
 
 void MatchingSolver::setSelectedCnt(SearchState &state, ui value)
 {
-    // 更新已选查询点数量，并记录 undo。
     UndoRecord undo;
     undo.kind = UNDO_SELECTED_COUNT;
     undo.old_count = state.selected_count;
@@ -188,7 +185,6 @@ void MatchingSolver::setSelectedCnt(SearchState &state, ui value)
 
 void MatchingSolver::setWhiteCnt(SearchState &state, ui value)
 {
-    // 更新 white 查询点数量，并记录 undo。
     UndoRecord undo;
     undo.kind = UNDO_WHITE_COUNT;
     undo.old_count = state.white_count;

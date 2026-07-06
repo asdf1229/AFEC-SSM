@@ -163,28 +163,16 @@ bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u,
     return true;
 }
 
-bool MatchingSolver::branchWhite(SearchState &state, ui cost, ui u)
+void MatchingSolver::branchWhite(SearchState &state, ui cost, ui u)
 {
-    // 分支：将未选查询点 u 设为 white，并递归继续搜索。
-    if (state.color[u] != COLOR_UNSELECTED) {
-        return false;
-    }
-    if (u >= static_color.size() || static_color[u] != COLOR_WHITE) {
-        return false;
-    }
+    assert(u < qn);
+    assert(state.color[u] == COLOR_UNSELECTED);
+#ifndef NDEBUG
+    for (ui neighbor : q_neighbors[u]) assert(!isWhite(state, neighbor));
+#endif
 
-    for (ui neighbor : q_neighbors[u]) {
-        if (isWhite(state, neighbor)) {
-            return false;
-        }
-    }
-
-    if (!initWhiteCands(state, u, cost)) {
-        return false;
-    }
-    if (candidate_result_buffer.empty()) {
-        return false;
-    }
+    if (!buildWhiteCands(state, u, cost, nullptr)) return;
+    if (candidate_result_buffer.empty()) return;
 
     size_t undo_mark = mark();
     setColor(state, u, COLOR_WHITE);
@@ -193,71 +181,49 @@ bool MatchingSolver::branchWhite(SearchState &state, ui cost, ui u)
     setWhiteCnt(state, state.white_count + 1);
     search(state, cost);
     rollback(state, undo_mark);
-    return true;
+    return;
 }
 
-bool MatchingSolver::branchMatWhite(SearchState &state, ui cost,
+void MatchingSolver::branchMatWhite(SearchState &state, ui cost,
     ui white_u, const MatchingSolver::ContinueBranch &continue_branch)
 {
-    // 分支：枚举一个 white 点的具体映射，再交给后续回调继续。
-    if (!isWhite(state, white_u)) {
-        return false;
-    }
+    assert(isWhite(state, white_u));
 
-    bool emitted_branch = false;
     WhiteCands white_bucket = state.white[white_u];
-    assert(white_bucket.begin + white_bucket.count <=
-        state.white_candidate_pool.size());
-    for (ui candidate_idx = 0; candidate_idx < white_bucket.count;
-        ++candidate_idx) {
-        ui candidate =
-            state.white_candidate_pool[white_bucket.begin + candidate_idx];
-        if (isDataVertexUsed(state, candidate)) {
-            continue;
-        }
-
+    assert(white_bucket.begin + white_bucket.count <= state.white_candidate_pool.size());
+    for (ui candidate_idx = 0; candidate_idx < white_bucket.count; ++candidate_idx) {
+        ui candidate = state.white_candidate_pool[white_bucket.begin + candidate_idx];
+        if (isDataVertexUsed(state, candidate)) continue;
         ui delta = 0;
-        if (!calcBlackDelta(state, white_u, candidate, cost, delta)) {
-            continue;
-        }
+        if (!calcBlackDelta(state, white_u, candidate, cost, delta)) continue;
 
         size_t undo_mark = mark();
         ui next_cost = cost;
-        if (!tryMapWhite(state, cost, white_u,
-            candidate, delta, next_cost)) {
+        if (!tryMapWhite(state, cost, white_u, candidate, delta, next_cost)) {
             rollback(state, undo_mark);
             continue;
         }
-        if (continue_branch(state, next_cost)) {
-            emitted_branch = true;
-        }
+        continue_branch(state, next_cost);
         rollback(state, undo_mark);
-        if (outputLimitReached()) {
-            return true;
-        }
+        if (outputLimitReached()) return;
     }
-    return emitted_branch;
 }
 
-bool MatchingSolver::branchMatWhites(SearchState &state, ui cost,
+void MatchingSolver::branchMatWhites(SearchState &state, ui cost,
     const vector<ui> &white_vertices, size_t pos,
     const MatchingSolver::ContinueBranch &continue_branch)
 {
-    // 分支：按顺序枚举一组 white 点的具体映射。
     if (pos == white_vertices.size()) {
-        return continue_branch(state, cost);
+        continue_branch(state, cost);
+        return;
     }
 
     ui white_u = white_vertices[pos];
-    if (!isWhite(state, white_u)) {
-        return branchMatWhites(state, cost, white_vertices,
-            pos + 1, continue_branch);
-    }
+    assert(isWhite(state, white_u));
 
-    return branchMatWhite(state, cost, white_u,
-        [&](SearchState &next_state, ui next_cost) -> bool {
-            return branchMatWhites(next_state, next_cost,
-                white_vertices, pos + 1, continue_branch);
+    branchMatWhite(state, cost, white_u,
+        [&](SearchState &next_state, ui next_cost) {
+            branchMatWhites(next_state, next_cost, white_vertices, pos + 1, continue_branch);
         });
 }
 
@@ -333,8 +299,8 @@ void MatchingSolver::branchBlackAnchor(SearchState &state, ui cost, ui u, ui anc
         if (white_neighbors.empty()) branchWhite(state, cost, u);
         else {
             branchMatWhites(state, cost, white_neighbors, 0,
-                [&](SearchState &materialized_state, ui materialized_cost) -> bool {
-                    return branchWhite(materialized_state, materialized_cost, u);
+                [&](SearchState &materialized_state, ui materialized_cost) {
+                    branchWhite(materialized_state, materialized_cost, u);
                 });
         }
         return;
@@ -370,9 +336,9 @@ void MatchingSolver::branchEdges(SearchState &state, ui cost, const vector<Ancho
         // white anchor
         assert(isWhite(state, anchor));
         branchMatWhite(state, cost, anchor,
-        [&](SearchState &materialized_state, ui materialized_cost) -> bool {
-            branchBlackAnchor(materialized_state, materialized_cost, u, anchor);
-        });
+            [&](SearchState &materialized_state, ui materialized_cost) {
+                branchBlackAnchor(materialized_state, materialized_cost, u, anchor);
+            });
     }
     rollback(state, undo_mark);
     assert(state.color[u] == COLOR_UNSELECTED);
