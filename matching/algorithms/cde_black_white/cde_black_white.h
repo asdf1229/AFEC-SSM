@@ -106,8 +106,6 @@ private:
     const ui *rangeBegin(const pair<size_t, ui> &range) const;
     const ui *rangeEnd(const pair<size_t, ui> &range) const;
     bool rangeHas(const pair<size_t, ui> &range, ui value) const;
-    bool candAdjacent(ui from_query, ui from_data, ui to_query, ui to_data);
-    bool hasDataEdge(ui u, ui v);
     bool anchorAdjacent(ui anchor_query, ui anchor_data, ui target_query,
         ui target_data);
 
@@ -142,8 +140,6 @@ private:
         vector<pair<size_t, ui>> &ranges);
     void buildRangeSource(vector<pair<size_t, ui>> &ranges,
         vector<ui> &source);
-    void addFeasibleCand(const SearchState &state, ui u, ui candidate,
-        ui cost, vector<ui> &result);
     bool bucketHas(const SearchState &state,
         const WhiteCands &bucket, ui candidate) const;
     ui nextBatchToken();
@@ -158,12 +154,9 @@ private:
         const WhiteCands &bucket, const vector<ui> &source,
         vector<ui> &target) const;
     void collectAllCands(ui u, vector<ui> &target);
-    void addBucketCands(const SearchState &state, ui u, ui cost,
-        const WhiteCands &bucket, vector<ui> &result);
     bool buildWhiteCands(SearchState &state, ui u, ui cost,
         const WhiteCands *existing_bucket);
     bool refreshWhiteCands(SearchState &state, ui white_u, ui cost);
-    bool isSelectedByBlackNeighbor(const SearchState &state, ui u) const;
     bool refreshWhiteByBlack(SearchState &state, ui white_u, ui black_u,
         ui black_v, ui cost);
 
@@ -186,7 +179,6 @@ private:
         vector<AnchorEdge> &top_edges);
     bool collectActiveEdges(const SearchState &state, ui max_count,
         vector<AnchorEdge> &top_edges);
-    ui chooseMatWhite(const SearchState &state) const;
 
     bool buildTailWhite(const SearchState &state, ui cost, TailWhite &tail_white);
     bool buildTailWhites(const SearchState &state, ui cost,
@@ -195,13 +187,15 @@ private:
         vector<TailWhite> &tail_vertices);
     void emitResult(const SearchState &state);
 
-    bool tryMapBlack(SearchState &state, ui cost, ui u, ui v, ui &next_cost);
-    bool tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui v, ui delta, ui &next_cost);
+    bool tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui v,
+        ui delta, ui &next_cost);
     bool tryMapWhite(SearchState &state, ui cost, ui white_u,
-        ui candidate, ui bucket_delta, ui &next_cost);
-    bool shouldExpandAsWhite(const SearchState &state, ui u, const vector<pair<ui, ui>> &anchor_candidates) const;
+        ui candidate, ui &next_cost);
+    bool shouldExpandAsWhite(const SearchState &state, ui u,
+        const vector<pair<ui, ui>> &anchor_candidates) const;
     void branchWhite(SearchState &state, ui cost, ui u);
-    void branchBlack(SearchState &state, ui cost, ui u, const vector<pair<ui, ui>> &anchor_candidates);
+    void branchBlack(SearchState &state, ui cost, ui u,
+        const vector<pair<ui, ui>> &anchor_candidates);
     void branchMatWhite(SearchState &state, ui cost, ui white_u,
         const ContinueBranch &continue_branch);
     void branchMatWhites(SearchState &state, ui cost,

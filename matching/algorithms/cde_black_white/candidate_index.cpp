@@ -70,24 +70,6 @@ bool MatchingSolver::rangeHas(const pair<size_t, ui> &range, ui value) const
     return std::binary_search(rangeBegin(range), rangeEnd(range), value);
 }
 
-bool MatchingSolver::candAdjacent(ui from_query, ui from_data, ui to_query, ui to_data)
-{
-    stats.candidate_edge_check_calls++;
-    const pair<size_t, ui> *range = findAdjRange(from_query, from_data, to_query);
-    if (range == nullptr) {
-        stats.candidate_range_misses++;
-        return false;
-    }
-    stats.candidate_range_hits++;
-    return rangeHas(*range, to_data);
-}
-
-bool MatchingSolver::hasDataEdge(ui u, ui v)
-{
-    stats.graph_has_edge_checks++;
-    return data_graph->hasEdge(u, v);
-}
-
 bool MatchingSolver::anchorAdjacent(ui anchor_query, ui anchor_data, ui target_query, ui target_data)
 {
     stats.candidate_edge_check_calls++;

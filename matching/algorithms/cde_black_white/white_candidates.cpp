@@ -111,20 +111,6 @@ void MatchingSolver::buildRangeSource(
     }
 }
 
-void MatchingSolver::addFeasibleCand(const SearchState &state, ui u,
-    ui candidate, ui cost, vector<ui> &result)
-{
-    // 检查单个候选是否可行，可行则追加到结果。
-    if (isDataVertexUsed(state, candidate)) {
-        return;
-    }
-
-    ui delta = 0;
-    if (calcBlackDelta(state, u, candidate, cost, delta)) {
-        result.push_back(candidate);
-    }
-}
-
 bool MatchingSolver::bucketHas(const SearchState &state,
     const WhiteCands &bucket, ui candidate) const
 {
@@ -306,17 +292,6 @@ void MatchingSolver::collectAllCands(ui u, vector<ui> &target)
     }
 }
 
-void MatchingSolver::addBucketCands(const SearchState &state,
-    ui u, ui cost, const WhiteCands &bucket, vector<ui> &result)
-{
-    // 从 white bucket 中逐个追加当前状态下仍可行的候选。
-    assert(bucket.begin + bucket.count <= state.white_candidate_pool.size());
-    for (ui i = 0; i < bucket.count; ++i) {
-        ui candidate = state.white_candidate_pool[bucket.begin + i];
-        addFeasibleCand(state, u, candidate, cost, result);
-    }
-}
-
 bool MatchingSolver::buildWhiteCands(SearchState &state, ui u, ui cost,
     const WhiteCands *existing_bucket)
 {
@@ -382,18 +357,6 @@ bool MatchingSolver::refreshWhiteCands(SearchState &state,
 
     replaceBucket(state, white_u, candidate_result_buffer);
     return true;
-}
-
-bool MatchingSolver::isSelectedByBlackNeighbor(const SearchState &state, ui u) const
-{
-    // 判断 u 是否存在非缺失的已选 black 邻居。
-    for (ui neighbor : q_neighbors[u]) {
-        if (isBlack(state, neighbor) &&
-            getEdge(state, u, neighbor) != EDGE_MISSING) {
-            return true;
-        }
-    }
-    return false;
 }
 
 bool MatchingSolver::refreshWhiteByBlack(SearchState &state, ui white_u,

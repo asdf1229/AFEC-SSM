@@ -16,58 +16,8 @@ void MatchingSolver::tryMapRoot(SearchState &state, ui root, ui v) const
     }
 }
 
-bool MatchingSolver::tryMapBlack(SearchState &state, ui cost, ui u, ui v,
-    ui &next_cost)
-{
-    // 尝试将未选查询点 u 绑定为 black 映射到 v。
-    if (u >= qn || v >= gn || !candidates[u].contains(v)) {
-        return false;
-    }
-    if (state.color[u] != COLOR_UNSELECTED || isDataVertexUsed(state, v)) {
-        return false;
-    }
-
-    ui delta = 0;
-    if (!calcBlackDelta(state, u, v, cost, delta)) {
-        return false;
-    }
-    next_cost = cost + delta;
-    if (next_cost > threshold) {
-        return false;
-    }
-
-    setColor(state, u, COLOR_BLACK);
-    setMap(state, u, (int)v);
-    pushUsed(state, v);
-    pushMatch(state, u, v);
-    setSelectedCnt(state, state.selected_count + 1);
-
-    for (ui neighbor : q_neighbors[u]) {
-        if (!isBlack(state, neighbor)) {
-            continue;
-        }
-        EdgeState state_uv = getEdge(state, u, neighbor);
-        if (state_uv != EDGE_UNDECIDED) {
-            continue;
-        }
-        bool adjacent = anchorAdjacent(
-            neighbor, (ui)state.mapped_q[neighbor], u, v);
-        setEdge(state, u, neighbor,
-            adjacent ? EDGE_PRESENT : EDGE_MISSING);
-    }
-
-    for (ui neighbor : q_neighbors[u]) {
-        if (!isWhite(state, neighbor)) {
-            continue;
-        }
-        if (!refreshWhiteByBlack(state, neighbor, u, v, next_cost)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool MatchingSolver::tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui v, ui delta, ui &next_cost)
+bool MatchingSolver::tryMapBlackWithDelta(SearchState &state, ui cost,
+    ui u, ui v, ui delta, ui &next_cost)
 {
     if (u >= qn || v >= gn || !candidates[u].contains(v)) {
         return false;
@@ -93,14 +43,13 @@ bool MatchingSolver::tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui 
         }
 
         EdgeState state_uv = getEdge(state, u, neighbor);
-        if (state_uv != EDGE_UNDECIDED) {
-            continue;
+        if (state_uv == EDGE_UNDECIDED) {
+            ui mapped_neighbor = (ui)state.mapped_q[neighbor];
+            bool adjacent = anchorAdjacent(
+                neighbor, mapped_neighbor, u, v);
+            setEdge(state, u, neighbor,
+                adjacent ? EDGE_PRESENT : EDGE_MISSING);
         }
-
-        bool adjacent = anchorAdjacent(
-            neighbor, (ui)state.mapped_q[neighbor], u, v);
-        setEdge(state, u, neighbor,
-            adjacent ? EDGE_PRESENT : EDGE_MISSING);
     }
 
     for (ui neighbor : q_neighbors[u]) {
@@ -116,18 +65,13 @@ bool MatchingSolver::tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui 
 }
 
 bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u,
-    ui candidate, ui bucket_delta, ui &next_cost)
+    ui candidate, ui &next_cost)
 {
     assert(isWhite(state, white_u));
     assert(candidate < gn);
     assert(!isDataVertexUsed(state, candidate));
     assert(candidates[white_u].contains(candidate));
     assert(cost <= threshold);
-
-    next_cost = cost + bucket_delta;
-    if (next_cost > threshold) {
-        return false;
-    }
 
     setColor(state, white_u, COLOR_BLACK);
     assert(state.white_count > 0);
@@ -136,6 +80,7 @@ bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u,
     pushUsed(state, candidate);
     pushMatch(state, white_u, candidate);
 
+    ui delta = 0;
     for (ui neighbor : q_neighbors[white_u]) {
         if (!isSelected(state, neighbor)) {
             continue;
@@ -155,10 +100,18 @@ bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u,
             if (adjacent) return false;
         }
         else {
+            if (!adjacent) {
+                delta++;
+                if (cost + delta > threshold) {
+                    return false;
+                }
+            }
             setEdge(state, white_u, neighbor,
                 adjacent ? EDGE_PRESENT : EDGE_MISSING);
         }
     }
+
+    next_cost = cost + delta;
     return true;
 }
 
@@ -193,12 +146,10 @@ void MatchingSolver::branchMatWhite(SearchState &state, ui cost,
     for (ui candidate_idx = 0; candidate_idx < white_bucket.count; ++candidate_idx) {
         ui candidate = state.white_candidate_pool[white_bucket.begin + candidate_idx];
         if (isDataVertexUsed(state, candidate)) continue;
-        ui delta = 0;
-        if (!calcBlackDelta(state, white_u, candidate, cost, delta)) continue;
 
         size_t undo_mark = mark();
         ui next_cost = cost;
-        if (!tryMapWhite(state, cost, white_u, candidate, delta, next_cost)) {
+        if (!tryMapWhite(state, cost, white_u, candidate, next_cost)) {
             rollback(state, undo_mark);
             continue;
         }
@@ -226,7 +177,8 @@ void MatchingSolver::branchMatWhites(SearchState &state, ui cost,
         });
 }
 
-bool MatchingSolver::shouldExpandAsWhite(const SearchState &state, ui u, const vector<pair<ui, ui>> &anchor_candidates) const
+bool MatchingSolver::shouldExpandAsWhite(const SearchState &state, ui u,
+    const vector<pair<ui, ui>> &anchor_candidates) const
 {
     (void)state;
     (void)anchor_candidates;
@@ -239,13 +191,15 @@ bool MatchingSolver::shouldExpandAsWhite(const SearchState &state, ui u, const v
 #endif
 }
 
-void MatchingSolver::branchBlack(SearchState &state, ui cost, ui u, const vector<pair<ui, ui>> &anchor_candidates)
+void MatchingSolver::branchBlack(SearchState &state, ui cost, ui u,
+    const vector<pair<ui, ui>> &anchor_candidates)
 {
     auto map_candidate = [&](const pair<ui, ui> &candidate_delta) -> bool {
         size_t undo_mark = mark();
 
         ui next_cost = cost;
-        if (!tryMapBlackWithDelta(state, cost, u, candidate_delta.first, candidate_delta.second, next_cost)) {
+        if (!tryMapBlackWithDelta(state, cost, u,
+                candidate_delta.first, candidate_delta.second, next_cost)) {
             rollback(state, undo_mark);
             return false;
         }

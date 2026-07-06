@@ -24,24 +24,6 @@ void MatchingSolver::initColors()
     static_color[static_root] = COLOR_BLACK;
 }
 
-ui MatchingSolver::chooseMatWhite(const SearchState &state) const
-{
-    // 选择候选数最少的 white 点作为优先具体化对象。
-    ui chosen = qn;
-    ui best_count = std::numeric_limits<ui>::max();
-    for (ui u = 0; u < qn; ++u) {
-        if (!isWhite(state, u)) {
-            continue;
-        }
-        ui count = state.white[u].feasible_count;
-        if (count < best_count || (count == best_count && u < chosen)) {
-            chosen = u;
-            best_count = count;
-        }
-    }
-    return chosen;
-}
-
 #if CDE_BLACK_WHITE_FIXED_ORDER
 struct MatchingSolver::FixedEdgePriorityEntry {
     ui u = 0;

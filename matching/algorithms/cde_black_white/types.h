@@ -26,18 +26,6 @@ struct WhiteCands {
     size_t begin = 0;
     ui count = 0;
     ui feasible_count = 0;
-
-    void clear()
-    {
-        begin = 0;
-        count = 0;
-        feasible_count = 0;
-    }
-
-    bool empty() const
-    {
-        return feasible_count == 0;
-    }
 };
 
 struct AnchorEdge {
