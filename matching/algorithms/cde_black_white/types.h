@@ -48,6 +48,7 @@ struct SearchState {
     vector<ui> anchor_count;
     vector<WhiteCands> white;
     vector<ui> white_candidate_pool;
+    vector<ui> white_candidate_delta_pool;
     vector<pair<ui, ui>> part_M;
     ui selected_count = 0;
     ui white_count = 0;

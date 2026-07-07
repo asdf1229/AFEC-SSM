@@ -23,6 +23,7 @@ void MatchingSolver::buildAdjIndex()
     candidate_range_buffer.reserve(qn);
     candidate_source_buffer.reserve(total_candidate_count);
     candidate_result_buffer.reserve(total_candidate_count);
+    candidate_result_delta_buffer.reserve(total_candidate_count);
     candidate_intersection_buffer.reserve(total_candidate_count);
 
     for (ui u = 0; u < qn; ++u) {

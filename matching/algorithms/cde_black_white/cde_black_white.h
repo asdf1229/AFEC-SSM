@@ -79,6 +79,7 @@ private:
     vector<pair<size_t, ui>> candidate_range_buffer;
     vector<ui> candidate_source_buffer;
     vector<ui> candidate_result_buffer;
+    vector<ui> candidate_result_delta_buffer;
     vector<ui> candidate_intersection_buffer;
 
     vector<ui> candidate_batch_mark;
@@ -141,7 +142,8 @@ private:
     void setSelectedCnt(SearchState &state, ui value);
     void setWhiteCnt(SearchState &state, ui value);
     void replaceBucket(SearchState &state, ui u,
-        const vector<ui> &candidates_to_store);
+        const vector<ui> &candidates_to_store,
+        const vector<ui> &candidate_deltas_to_store);
 
     bool calcBlackDelta(const SearchState &state, ui u, ui v, ui cost,
         ui &delta);
@@ -156,16 +158,15 @@ private:
         vector<ui> &hits);
     void invalidateRange(const pair<size_t, ui> *range, ui token);
     void addFeasibleBatch(const SearchState &state, ui u, ui cost,
-        const vector<ui> &source, vector<ui> &result);
+        const vector<ui> &source, vector<ui> &result,
+        vector<ui> &result_deltas);
     void copyBucketCands(const SearchState &state,
         const WhiteCands &bucket, vector<ui> &target) const;
     void filterByBucket(const SearchState &state,
         const WhiteCands &bucket, const vector<ui> &source,
         vector<ui> &target) const;
     void collectAllCands(ui u, vector<ui> &target);
-    bool buildWhiteCands(SearchState &state, ui u, ui cost,
-        const WhiteCands *existing_bucket);
-    bool refreshWhiteCands(SearchState &state, ui white_u, ui cost);
+    bool buildWhiteCands(SearchState &state, ui u, ui cost);
     bool refreshWhiteByBlack(SearchState &state, ui white_u, ui black_u,
         ui black_v, ui cost);
 

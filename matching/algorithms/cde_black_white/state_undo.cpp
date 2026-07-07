@@ -17,6 +17,8 @@ void MatchingSolver::initState(SearchState &state) const
     state.white.resize(qn);
     state.white_candidate_pool.clear();
     state.white_candidate_pool.reserve(stats.filter_candidate_count);
+    state.white_candidate_delta_pool.clear();
+    state.white_candidate_delta_pool.reserve(stats.filter_candidate_count);
     state.part_M.clear();
     state.part_M.reserve(qn);
     state.selected_count = 0;
@@ -157,6 +159,7 @@ void MatchingSolver::rollback(SearchState &state, size_t mark)
             break;
         case UNDO_WHITE_BUCKET:
             state.white_candidate_pool.resize(undo.old_size);
+            state.white_candidate_delta_pool.resize(undo.old_size);
             state.white[undo.u] = undo.old_white;
             break;
         }
@@ -235,8 +238,14 @@ void MatchingSolver::setWhiteCnt(SearchState &state, ui value)
     state.white_count = value;
 }
 
-void MatchingSolver::replaceBucket(SearchState &state, ui u, const vector<ui> &candidates_to_store)
+void MatchingSolver::replaceBucket(SearchState &state, ui u,
+    const vector<ui> &candidates_to_store,
+    const vector<ui> &candidate_deltas_to_store)
 {
+    assert(candidates_to_store.size() == candidate_deltas_to_store.size());
+    assert(state.white_candidate_pool.size() ==
+        state.white_candidate_delta_pool.size());
+
     UndoRecord undo;
     undo.kind = UNDO_WHITE_BUCKET;
     undo.u = u;
@@ -249,6 +258,8 @@ void MatchingSolver::replaceBucket(SearchState &state, ui u, const vector<ui> &c
     bucket.count = (ui)candidates_to_store.size();
     bucket.feasible_count = bucket.count;
     state.white_candidate_pool.insert(state.white_candidate_pool.end(), candidates_to_store.begin(), candidates_to_store.end());
+    state.white_candidate_delta_pool.insert(state.white_candidate_delta_pool.end(),
+        candidate_deltas_to_store.begin(), candidate_deltas_to_store.end());
     state.white[u] = bucket;
 }
 

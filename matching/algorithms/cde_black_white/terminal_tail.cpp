@@ -20,12 +20,13 @@ bool MatchingSolver::buildTailWhite(const SearchState &state, ui cost, TailWhite
 
     WhiteCands white = state.white[white_u];
     assert(white.begin + white.count <= state.white_candidate_pool.size());
+    assert(white.begin + white.count <= state.white_candidate_delta_pool.size());
 
     for (ui candidate_idx = 0; candidate_idx < white.count; ++candidate_idx) {
-        ui candidate = state.white_candidate_pool[white.begin + candidate_idx];
+        size_t pool_idx = white.begin + candidate_idx;
+        ui candidate = state.white_candidate_pool[pool_idx];
         if (isDataVertexUsed(state, candidate)) continue;
-        ui delta = 0;
-        if (!calcBlackDelta(state, white_u, candidate, cost, delta)) continue;
+        ui delta = state.white_candidate_delta_pool[pool_idx];
         if (delta > remaining_budget) continue;
 
         tail_white.buckets[delta].push_back(candidate);

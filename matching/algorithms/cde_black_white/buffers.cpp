@@ -20,6 +20,7 @@ void MatchingSolver::resetBuffers()
     candidate_range_buffer.clear();
     candidate_source_buffer.clear();
     candidate_result_buffer.clear();
+    candidate_result_delta_buffer.clear();
     candidate_intersection_buffer.clear();
     candidate_batch_mark.assign(gn, 0);
     candidate_batch_pos.assign(gn, 0);

@@ -34,8 +34,11 @@ bool MatchingSolver::collectRequiredRanges(const SearchState &state, ui u, vecto
     ranges.clear();
     for (ui neighbor : q_neighbors[u]) {
         if (!isBlack(state, neighbor)) continue;
-        if (getEdge(state, u, neighbor) != EDGE_PRESENT) continue;
-        if (!isQueryBridgeEdge(u, neighbor)) continue;
+
+        EdgeState state_uv = getEdge(state, u, neighbor);
+        if (state_uv == EDGE_MISSING) continue;
+        if (state_uv == EDGE_UNDECIDED && !isQueryBridgeEdge(u, neighbor)) continue;
+        // EDGE_PRESENT or EDGE_UNDECIDED with query bridge edge
 
         const pair<size_t, ui> *range = findAdjRange(neighbor, (ui)state.mapped_q[neighbor], u);
         if (range == nullptr) {
@@ -176,7 +179,7 @@ void MatchingSolver::invalidateRange(const pair<size_t, ui> *range, ui token)
 }
 
 void MatchingSolver::addFeasibleBatch(const SearchState &state, ui u,
-    ui cost, const vector<ui> &source, vector<ui> &result)
+    ui cost, const vector<ui> &source, vector<ui> &result, vector<ui> &result_deltas)
 {
     // 批量检查候选源中哪些候选满足当前 black 邻居约束。
     if (source.empty()) {
@@ -253,6 +256,7 @@ void MatchingSolver::addFeasibleBatch(const SearchState &state, ui u,
             ? undecided_count - adjacent_undecided : 0;
         if (cost + delta <= threshold) {
             result.push_back(source[i]);
+            result_deltas.push_back(delta);
         }
     }
 }
@@ -288,10 +292,11 @@ void MatchingSolver::collectAllCands(ui u, vector<ui> &target)
     }
 }
 
-bool MatchingSolver::buildWhiteCands(SearchState &state, ui u, ui cost, const WhiteCands *existing_bucket)
+bool MatchingSolver::buildWhiteCands(SearchState &state, ui u, ui cost)
 {
     assert(cost <= threshold);
     candidate_result_buffer.clear();
+    candidate_result_delta_buffer.clear();
     stats.white_bucket_rebuilds++;
 
     if (!collectRequiredRanges(state, u, candidate_range_buffer)) return false;
@@ -299,44 +304,75 @@ bool MatchingSolver::buildWhiteCands(SearchState &state, ui u, ui cost, const Wh
 
     intersectRequiredRanges(candidate_range_buffer, candidate_source_buffer);
 
-    if (existing_bucket != nullptr && existing_bucket->count <= candidate_source_buffer.size()) {
-        copyBucketCands(state, *existing_bucket, candidate_intersection_buffer);
-        addFeasibleBatch(state, u, cost, candidate_intersection_buffer, candidate_result_buffer);
-    }
-    else {
-        const vector<ui> *source = &candidate_source_buffer;
-        if (existing_bucket != nullptr) {
-            filterByBucket(state, *existing_bucket, candidate_source_buffer, candidate_intersection_buffer);
-            source = &candidate_intersection_buffer;
-        }
-        addFeasibleBatch(state, u, cost, *source, candidate_result_buffer);
-    }
-
+    addFeasibleBatch(state, u, cost, candidate_source_buffer, candidate_result_buffer, candidate_result_delta_buffer);
+    assert(candidate_result_buffer.size() == candidate_result_delta_buffer.size());
     return !candidate_result_buffer.empty();
-}
-
-bool MatchingSolver::refreshWhiteCands(SearchState &state, ui white_u, ui cost)
-{
-    // 基于当前状态重建已有 white 点的候选桶。
-    WhiteCands old_bucket = state.white[white_u];
-    if (!buildWhiteCands(state, white_u, cost, &old_bucket)) {
-        return false;
-    }
-
-    replaceBucket(state, white_u, candidate_result_buffer);
-    return true;
 }
 
 bool MatchingSolver::refreshWhiteByBlack(SearchState &state, ui white_u, ui black_u, ui black_v, ui cost)
 {
-    // TODO: use incremental update instead of full rebuild
+    // 新增 black 邻居后，仅用这一条新约束增量过滤 white bucket。
     assert(isWhite(state, white_u));
     assert(isBlack(state, black_u));
-    (void)black_u;
-    (void)black_v;
+    assert(state.mapped_q[black_u] == (int)black_v);
     assert(cost <= threshold);
 
-    return refreshWhiteCands(state, white_u, cost);
+    WhiteCands old_bucket = state.white[white_u];
+    assert(old_bucket.begin + old_bucket.count <=
+        state.white_candidate_pool.size());
+    assert(old_bucket.begin + old_bucket.count <=
+        state.white_candidate_delta_pool.size());
+
+    EdgeState state_uv = getEdge(state, white_u, black_u);
+    bool bridge = isQueryBridgeEdge(white_u, black_u);
+    const pair<size_t, ui> *range = findAdjRange(black_u, black_v, white_u);
+
+    stats.candidate_edge_check_calls += (long long)old_bucket.count;
+    if (range == nullptr) {
+        stats.candidate_range_misses++;
+    }
+    else {
+        stats.candidate_range_hits++;
+    }
+
+    ui remaining_budget = threshold - cost;
+    candidate_result_buffer.clear();
+    candidate_result_delta_buffer.clear();
+
+    for (ui candidate_idx = 0; candidate_idx < old_bucket.count;
+        ++candidate_idx) {
+        size_t pool_idx = old_bucket.begin + candidate_idx;
+        ui candidate = state.white_candidate_pool[pool_idx];
+        if (isDataVertexUsed(state, candidate)) continue;
+
+        bool adjacent = range != nullptr && rangeHas(*range, candidate);
+        ui delta = state.white_candidate_delta_pool[pool_idx];
+        bool keep = true;
+
+        if (state_uv == EDGE_PRESENT) {
+            keep = adjacent;
+        }
+        else if (state_uv == EDGE_MISSING) {
+            keep = !adjacent;
+        }
+        else if (!adjacent) { // EDGE_UNDECIDED
+            if (bridge) {
+                keep = false;
+            }
+            else {
+                delta++;
+            }
+        }
+
+        if (!keep || delta > remaining_budget) continue;
+        candidate_result_buffer.push_back(candidate);
+        candidate_result_delta_buffer.push_back(delta);
+    }
+
+    if (candidate_result_buffer.empty()) return false;
+    replaceBucket(state, white_u, candidate_result_buffer,
+        candidate_result_delta_buffer);
+    return true;
 }
 
 } // namespace cde_black_white
