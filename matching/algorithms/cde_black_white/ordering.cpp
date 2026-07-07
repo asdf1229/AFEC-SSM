@@ -13,7 +13,6 @@ struct MatchingSolver::FixedEdgePriorityEntry {
 
 void MatchingSolver::initFixedEdgePriorities()
 {
-    // 根据静态候选边支持为查询边建立固定分支优先级。
     const ui invalid_priority = std::numeric_limits<ui>::max();
     static_edge_support.assign(qn, vector<unsigned long long>(qn, 0));
     static_edge_priority.assign(qn, vector<ui>(qn, invalid_priority));
@@ -100,6 +99,7 @@ void MatchingSolver::initFixedEdgePriorities()
 }
 #endif
 
+// black-anchor edge: support(u,a) = min(|C(u)|, deg_label(u)(v_a)).
 double MatchingSolver::blackSupport(const SearchState &state, ui u, ui anchor) const
 {
     assert(isBlack(state, anchor));
@@ -111,7 +111,7 @@ double MatchingSolver::blackSupport(const SearchState &state, ui u, ui anchor) c
     return (double)range->second;
 }
 
-// estimate materialization branch count
+// white-anchor edge: support(u,a) = |C(a)|, i.e., the materialization branch count of the white anchor.
 double MatchingSolver::whiteSupport(const SearchState &state, ui anchor) const
 {
     assert(isWhite(state, anchor));

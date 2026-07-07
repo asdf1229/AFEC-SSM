@@ -33,23 +33,16 @@ EdgeState MatchingSolver::getEdge(const SearchState &state, ui u, ui v) const
     return state.edge_state[edgeIdx(u, v)];
 }
 
-void MatchingSolver::setEdgeRaw(SearchState &state, ui u, ui v,
-    EdgeState edge_state_value) const
+void MatchingSolver::setEdgeRaw(SearchState &state, ui u, ui v, EdgeState edge_state_value) const
 {
-    // 不记录 undo，直接写入有向查询边 (u, v) 的状态。
     state.edge_state[edgeIdx(u, v)] = edge_state_value;
 }
 
-void MatchingSolver::addAnchorEdgeRaw(SearchState &state, ui u,
-    ui anchor) const
+void MatchingSolver::addAnchorEdgeRaw(SearchState &state, ui u, ui anchor) const
 {
-    if (u >= qn || anchor >= qn) {
-        return;
-    }
+    assert(u < qn && anchor < qn);
     size_t idx = edgeIdx(u, anchor);
-    if (state.anchor_edge_pos[idx] != -1) {
-        return;
-    }
+    if (state.anchor_edge_pos[idx] != -1) return;
 
     AnchorEdge edge;
     edge.u = u;
@@ -59,17 +52,12 @@ void MatchingSolver::addAnchorEdgeRaw(SearchState &state, ui u,
     state.anchor_count[u]++;
 }
 
-void MatchingSolver::removeAnchorEdgeRaw(SearchState &state, ui u,
-    ui anchor) const
+void MatchingSolver::removeAnchorEdgeRaw(SearchState &state, ui u, ui anchor) const
 {
-    if (u >= qn || anchor >= qn) {
-        return;
-    }
+    assert(u < qn && anchor < qn);
     size_t idx = edgeIdx(u, anchor);
     int pos = state.anchor_edge_pos[idx];
-    if (pos == -1) {
-        return;
-    }
+    if (pos == -1) return;
 
     size_t remove_pos = (size_t)pos;
     size_t last_pos = state.anchor_edges.size() - 1;
@@ -84,32 +72,21 @@ void MatchingSolver::removeAnchorEdgeRaw(SearchState &state, ui u,
     state.anchor_count[u]--;
 }
 
-void MatchingSolver::refreshAnchorEdge(SearchState &state, ui u,
-    ui v) const
+void MatchingSolver::refreshAnchorEdge(SearchState &state, ui u, ui v) const
 {
-    if (u >= qn || v >= qn) {
-        return;
-    }
+    assert(u < qn && v < qn);
 
     removeAnchorEdgeRaw(state, u, v);
     removeAnchorEdgeRaw(state, v, u);
 
-    if (getEdge(state, u, v) != EDGE_UNDECIDED) {
-        return;
-    }
+    if (getEdge(state, u, v) != EDGE_UNDECIDED) return;
 
     bool u_selected = isSelected(state, u);
     bool v_selected = isSelected(state, v);
-    if (u_selected == v_selected) {
-        return;
-    }
+    if (u_selected == v_selected) return;
 
-    if (u_selected) {
-        addAnchorEdgeRaw(state, v, u);
-    }
-    else {
-        addAnchorEdgeRaw(state, u, v);
-    }
+    if (u_selected) addAnchorEdgeRaw(state, v, u);
+    else addAnchorEdgeRaw(state, u, v);
 }
 
 bool MatchingSolver::isDataVertexUsed(const SearchState &state, ui v) const
@@ -153,9 +130,7 @@ void MatchingSolver::rollback(SearchState &state, size_t mark)
             break;
         case UNDO_COLOR:
             state.color[undo.u] = undo.old_color;
-            for (ui nbr : q_neighbors[undo.u]) {
-                refreshAnchorEdge(state, undo.u, nbr);
-            }
+            for (ui nbr : q_neighbors[undo.u]) refreshAnchorEdge(state, undo.u, nbr);
             break;
         case UNDO_EDGE_STATE:
             setEdgeRaw(state, undo.u, undo.v, undo.old_edge_uv);
@@ -206,9 +181,7 @@ void MatchingSolver::setColor(SearchState &state, ui u, VertexColor value)
     undo.old_color = state.color[u];
     undo_stack.push_back(std::move(undo));
     state.color[u] = value;
-    for (ui nbr : q_neighbors[u]) {
-        refreshAnchorEdge(state, u, nbr);
-    }
+    for (ui nbr : q_neighbors[u]) refreshAnchorEdge(state, u, nbr);
 }
 
 void MatchingSolver::setEdge(SearchState &state, ui u, ui v, EdgeState edge_state_value)
@@ -227,7 +200,6 @@ void MatchingSolver::setEdge(SearchState &state, ui u, ui v, EdgeState edge_stat
 
 void MatchingSolver::pushUsed(SearchState &state, ui v)
 {
-    // 将数据点 v 标记为已使用，并记录 used 列表大小以便回滚。
     UndoRecord undo;
     undo.kind = UNDO_USED_DATA_SIZE;
     undo.old_size = state.used_data_vertices.size();
@@ -238,7 +210,6 @@ void MatchingSolver::pushUsed(SearchState &state, ui v)
 
 void MatchingSolver::pushMatch(SearchState &state, ui u, ui v)
 {
-    // 将匹配对 (u, v) 加入部分匹配，并记录大小以便回滚。
     UndoRecord undo;
     undo.kind = UNDO_PART_M_SIZE;
     undo.old_size = state.part_M.size();
@@ -264,10 +235,8 @@ void MatchingSolver::setWhiteCnt(SearchState &state, ui value)
     state.white_count = value;
 }
 
-void MatchingSolver::replaceBucket(SearchState &state, ui u,
-    const vector<ui> &candidates_to_store)
+void MatchingSolver::replaceBucket(SearchState &state, ui u, const vector<ui> &candidates_to_store)
 {
-    // 用新的候选列表替换 u 的 white bucket，并记录旧 bucket。
     UndoRecord undo;
     undo.kind = UNDO_WHITE_BUCKET;
     undo.u = u;
@@ -277,12 +246,9 @@ void MatchingSolver::replaceBucket(SearchState &state, ui u,
 
     WhiteCands bucket;
     bucket.begin = state.white_candidate_pool.size();
-    assert(candidates_to_store.size() <=
-        (size_t)std::numeric_limits<ui>::max());
     bucket.count = (ui)candidates_to_store.size();
     bucket.feasible_count = bucket.count;
-    state.white_candidate_pool.insert(state.white_candidate_pool.end(),
-        candidates_to_store.begin(), candidates_to_store.end());
+    state.white_candidate_pool.insert(state.white_candidate_pool.end(), candidates_to_store.begin(), candidates_to_store.end());
     state.white[u] = bucket;
 }
 

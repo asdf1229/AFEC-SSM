@@ -145,9 +145,9 @@ private:
 
     bool calcBlackDelta(const SearchState &state, ui u, ui v, ui cost,
         ui &delta);
-    bool collectPosRanges(const SearchState &state, ui u,
+    bool collectRequiredRanges(const SearchState &state, ui u,
         vector<pair<size_t, ui>> &ranges);
-    void buildRangeSource(vector<pair<size_t, ui>> &ranges,
+    void intersectRequiredRanges(vector<pair<size_t, ui>> &ranges,
         vector<ui> &source);
     bool bucketHas(const SearchState &state,
         const WhiteCands &bucket, ui candidate) const;

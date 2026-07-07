@@ -21,8 +21,7 @@ bool MatchingSolver::buildTailWhite(const SearchState &state, ui cost, TailWhite
     WhiteCands white = state.white[white_u];
     assert(white.begin + white.count <= state.white_candidate_pool.size());
 
-    for (ui candidate_idx = 0; candidate_idx < white.count;
-        ++candidate_idx) {
+    for (ui candidate_idx = 0; candidate_idx < white.count; ++candidate_idx) {
         ui candidate = state.white_candidate_pool[white.begin + candidate_idx];
         if (isDataVertexUsed(state, candidate)) continue;
         ui delta = 0;
