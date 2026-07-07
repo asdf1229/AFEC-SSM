@@ -93,6 +93,12 @@ private:
     void resetBuffers();
     ui chooseRoot();
     void initColors();
+    void initQueryBridgeMarks();
+    void markQueryBridgeNeighbor(ui from, ui to);
+    void markQueryBridge(ui a, ui b);
+    void findQueryBridges(ui u, ui parent, vector<int> &dfn,
+        vector<int> &low, int &time);
+    bool isQueryBridgeEdge(ui u, ui v) const;
 
     bool runCandidateFiltering();
 

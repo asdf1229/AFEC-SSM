@@ -34,7 +34,8 @@ bool MatchingSolver::tryMapBlackWithDelta(SearchState &state, ui cost,
     pushMatch(state, u, v);
     setSelectedCnt(state, state.selected_count + 1);
 
-    for (ui neighbor : q_neighbors[u]) {
+    for (ui neighbor_idx = 0; neighbor_idx < q_degree[u]; ++neighbor_idx) {
+        ui neighbor = q_neighbors[u][neighbor_idx];
         if (!isBlack(state, neighbor)) {
             continue;
         }
@@ -44,6 +45,9 @@ bool MatchingSolver::tryMapBlackWithDelta(SearchState &state, ui cost,
             ui mapped_neighbor = (ui)state.mapped_q[neighbor];
             bool adjacent = anchorAdjacent(
                 neighbor, mapped_neighbor, u, v);
+            if (!adjacent && q_neighbor_is_bridge[u][neighbor_idx]) {
+                return false;
+            }
             setEdge(state, u, neighbor,
                 adjacent ? EDGE_PRESENT : EDGE_MISSING);
         }
@@ -78,7 +82,8 @@ bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u,
     pushMatch(state, white_u, candidate);
 
     ui delta = 0;
-    for (ui neighbor : q_neighbors[white_u]) {
+    for (ui neighbor_idx = 0; neighbor_idx < q_degree[white_u]; ++neighbor_idx) {
+        ui neighbor = q_neighbors[white_u][neighbor_idx];
         if (!isSelected(state, neighbor)) {
             continue;
         }
@@ -98,6 +103,9 @@ bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u,
         }
         else {
             if (!adjacent) {
+                if (q_neighbor_is_bridge[white_u][neighbor_idx]) {
+                    return false;
+                }
                 delta++;
                 if (cost + delta > threshold) {
                     return false;
@@ -296,6 +304,7 @@ void MatchingSolver::branchEdges(SearchState &state, ui cost, const vector<Ancho
     assert(getEdge(state, u, anchor) == EDGE_UNDECIDED);
 
     if (outputLimitReached()) return;
+    if (isQueryBridgeEdge(u, anchor)) return;
 
     // branch 2: exclude edge(u, anchor).
     if (cost + 1 > threshold) {

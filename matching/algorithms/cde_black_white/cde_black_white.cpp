@@ -32,10 +32,84 @@ void MatchingSolver::initColors()
     static_root = chooseRoot();
 #if CDE_BLACK_WHITE_STATIC_COLOR_ALL_BLACK
     static_color.assign(qn, COLOR_BLACK);
+#elif CDE_BLACK_WHITE_STATIC_COLOR_ALL_WHITE
+    static_color.assign(qn, COLOR_WHITE);
+    static_color[static_root] = COLOR_BLACK;
 #else
     static_color.assign(qn, COLOR_WHITE);
     static_color[static_root] = COLOR_BLACK;
+    // TODO
 #endif
+}
+
+void MatchingSolver::markQueryBridgeNeighbor(ui from, ui to)
+{
+    bool marked = false;
+    const vector<ui> &neighbors = q_neighbors[from];
+    for (ui i = 0; i < q_degree[from]; ++i) {
+        if (neighbors[i] == to) {
+            q_neighbor_is_bridge[from][i] = 1;
+            marked = true;
+            break;
+        }
+    }
+    assert(marked);
+    (void)marked;
+}
+
+void MatchingSolver::markQueryBridge(ui a, ui b)
+{
+    markQueryBridgeNeighbor(a, b);
+    markQueryBridgeNeighbor(b, a);
+}
+
+void MatchingSolver::findQueryBridges(ui u, ui parent, vector<int> &dfn,
+    vector<int> &low, int &time)
+{
+    dfn[u] = low[u] = ++time;
+    for (ui v : q_neighbors[u]) {
+        if (dfn[v] == 0) {
+            findQueryBridges(v, u, dfn, low, time);
+            low[u] = std::min(low[u], low[v]);
+            if (low[v] > dfn[u]) {
+                markQueryBridge(u, v);
+            }
+        }
+        else if (v != parent) {
+            low[u] = std::min(low[u], dfn[v]);
+        }
+    }
+}
+
+void MatchingSolver::initQueryBridgeMarks()
+{
+    q_neighbor_is_bridge.assign(qn, vector<char>());
+    for (ui u = 0; u < qn; ++u) {
+        q_neighbor_is_bridge[u].assign(q_degree[u], 0);
+    }
+
+    vector<int> dfn(qn, 0);
+    vector<int> low(qn, 0);
+    int time = 0;
+    for (ui u = 0; u < qn; ++u) {
+        if (dfn[u] == 0) {
+            findQueryBridges(u, qn, dfn, low, time);
+        }
+    }
+}
+
+bool MatchingSolver::isQueryBridgeEdge(ui u, ui v) const
+{
+    assert(u < qn && v < qn);
+    assert(q_neighbor_is_bridge.size() == qn);
+    const vector<ui> &neighbors = q_neighbors[u];
+    for (ui i = 0; i < q_degree[u]; ++i) {
+        if (neighbors[i] == v) {
+            return q_neighbor_is_bridge[u][i] != 0;
+        }
+    }
+    assert(false);
+    return false;
 }
 
 bool MatchingSolver::init(const Graph *q, const Graph *g, ui match_threshold)
@@ -63,6 +137,7 @@ bool MatchingSolver::init(const Graph *q, const Graph *g, ui match_threshold)
         for (ui i = 0; i < deg; ++i) q_neighbors[u].push_back(nbrs[i]);
         q_degree[u] = (ui)q_neighbors[u].size();
     }
+    initQueryBridgeMarks();
 
     Timer t_filter;
     bool res = runCandidateFiltering();

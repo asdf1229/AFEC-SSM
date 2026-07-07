@@ -132,22 +132,6 @@ private:
         return (ui)bridge_arcs.size() - 1;
     }
 
-    void markBridgeNeighbor(ui from, ui to)
-    {
-        // 在查询邻接缓存中标记 from 到 to 这条边为桥边。
-        bool marked = false;
-        const vector<ui> &neighbors = solver.q_neighbors[from];
-        for (ui i = 0; i < solver.q_degree[from]; ++i) {
-            if (neighbors[i] == to) {
-                solver.q_neighbor_is_bridge[from][i] = 1;
-                marked = true;
-                break;
-            }
-        }
-        assert(marked);
-        (void)marked;
-    }
-
     void addBridge(ui a, ui b)
     {
         // 记录一条无向桥边，并建立两个方向的支持依赖。
@@ -155,50 +139,22 @@ private:
         ui ba = addBridgeArc(b, a);
         bridge_nbrs[a].push_back({ b, ba });
         bridge_nbrs[b].push_back({ a, ab });
-        markBridgeNeighbor(a, b);
-        markBridgeNeighbor(b, a);
-    }
-
-    void tarjan(ui u, ui parent, vector<int> &dfn, vector<int> &low, int &time)
-    {
-        // 使用 Tarjan DFS 发现查询图中的桥边。
-        dfn[u] = low[u] = ++time;
-        for (ui v : solver.q_neighbors[u]) {
-            if (dfn[v] == 0) {
-                tarjan(v, u, dfn, low, time);
-                low[u] = std::min(low[u], low[v]);
-                if (low[v] > dfn[u]) {
-                    addBridge(u, v);
-                }
-            }
-            else if (v != parent) {
-                low[u] = std::min(low[u], dfn[v]);
-            }
-        }
     }
 
     void buildBridgeIndex()
     {
-        // 构建桥边邻接索引，并初始化每个查询邻接位置的桥边标记。
+        // 构建过滤阶段使用的桥边邻接索引；桥边标记由 solver 初始化。
         bridge_arcs.clear();
         bridge_nbrs.assign(solver.qn, vector<BridgeNbr>());
-        solver.q_neighbor_is_bridge.assign(solver.qn, vector<char>());
 
         for (ui u = 0; u < solver.qn; ++u) {
-            solver.q_neighbor_is_bridge[u].assign(solver.q_degree[u], 0);
-        }
-
-#if CDE_BLACK_WHITE_ENABLE_BRIDGE_FILTERING || CDE_BLACK_WHITE_ENABLE_SPOKE_FILTERING
-        vector<int> dfn(solver.qn, 0);
-        vector<int> low(solver.qn, 0);
-        int tim = 0;
-
-        for (ui u = 0; u < solver.qn; ++u) {
-            if (dfn[u] == 0) {
-                tarjan(u, solver.qn, dfn, low, tim);
+            for (ui i = 0; i < solver.q_degree[u]; ++i) {
+                ui v = solver.q_neighbors[u][i];
+                if (u < v && solver.q_neighbor_is_bridge[u][i]) {
+                    addBridge(u, v);
+                }
             }
         }
-#endif
     }
 
     void buildLabelCache()
