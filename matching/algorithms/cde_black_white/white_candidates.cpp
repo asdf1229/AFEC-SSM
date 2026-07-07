@@ -5,8 +5,7 @@ namespace cde_black_white {
 bool MatchingSolver::calcBlackDelta(const SearchState &state, ui u, ui v, ui cost, ui &delta)
 {
     delta = 0;
-    for (ui neighbor_idx = 0; neighbor_idx < q_degree[u]; ++neighbor_idx) {
-        ui neighbor = q_neighbors[u][neighbor_idx];
+    for (ui neighbor : q_neighbors[u]) {
         if (!isBlack(state, neighbor)) continue;
 
         ui mapped_neighbor = (ui)state.mapped_q[neighbor];
@@ -19,7 +18,7 @@ bool MatchingSolver::calcBlackDelta(const SearchState &state, ui u, ui v, ui cos
             if (adjacent) return false;
         }
         else if (!adjacent) { // EDGE_UNDECIDED
-            if (q_neighbor_is_bridge[u][neighbor_idx]) return false;
+            if (isQueryBridgeEdge(u, neighbor)) return false;
             delta++;
             if (cost + delta > threshold) {
                 return false;
@@ -213,8 +212,7 @@ void MatchingSolver::addFeasibleBatch(const SearchState &state, ui u,
 
     ui present_count = 0;
     ui undecided_count = 0;
-    for (ui neighbor_idx = 0; neighbor_idx < q_degree[u]; ++neighbor_idx) {
-        ui neighbor = q_neighbors[u][neighbor_idx];
+    for (ui neighbor : q_neighbors[u]) {
         if (!isBlack(state, neighbor)) {
             continue;
         }
@@ -240,7 +238,7 @@ void MatchingSolver::addFeasibleBatch(const SearchState &state, ui u,
         else if (state_uv == EDGE_MISSING) {
             invalidateRange(range, token);
         }
-        else if (q_neighbor_is_bridge[u][neighbor_idx]) {
+        else if (isQueryBridgeEdge(u, neighbor)) {
             present_count++;
             addRangeHits(range, token,
                 candidate_batch_present_hits);

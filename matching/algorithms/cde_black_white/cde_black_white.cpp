@@ -42,25 +42,11 @@ void MatchingSolver::initColors()
 #endif
 }
 
-void MatchingSolver::markQueryBridgeNeighbor(ui from, ui to)
-{
-    bool marked = false;
-    const vector<ui> &neighbors = q_neighbors[from];
-    for (ui i = 0; i < q_degree[from]; ++i) {
-        if (neighbors[i] == to) {
-            q_neighbor_is_bridge[from][i] = 1;
-            marked = true;
-            break;
-        }
-    }
-    assert(marked);
-    (void)marked;
-}
-
 void MatchingSolver::markQueryBridge(ui a, ui b)
 {
-    markQueryBridgeNeighbor(a, b);
-    markQueryBridgeNeighbor(b, a);
+    assert(a < qn && b < qn);
+    q_bridge_matrix[a][b] = 1;
+    q_bridge_matrix[b][a] = 1;
 }
 
 void MatchingSolver::findQueryBridges(ui u, ui parent, vector<int> &dfn,
@@ -83,10 +69,7 @@ void MatchingSolver::findQueryBridges(ui u, ui parent, vector<int> &dfn,
 
 void MatchingSolver::initQueryBridgeMarks()
 {
-    q_neighbor_is_bridge.assign(qn, vector<char>());
-    for (ui u = 0; u < qn; ++u) {
-        q_neighbor_is_bridge[u].assign(q_degree[u], 0);
-    }
+    q_bridge_matrix.assign(qn, vector<char>(qn, 0));
 
     vector<int> dfn(qn, 0);
     vector<int> low(qn, 0);
@@ -101,15 +84,8 @@ void MatchingSolver::initQueryBridgeMarks()
 bool MatchingSolver::isQueryBridgeEdge(ui u, ui v) const
 {
     assert(u < qn && v < qn);
-    assert(q_neighbor_is_bridge.size() == qn);
-    const vector<ui> &neighbors = q_neighbors[u];
-    for (ui i = 0; i < q_degree[u]; ++i) {
-        if (neighbors[i] == v) {
-            return q_neighbor_is_bridge[u][i] != 0;
-        }
-    }
-    assert(false);
-    return false;
+    assert(q_bridge_matrix.size() == qn);
+    return q_bridge_matrix[u][v] != 0;
 }
 
 bool MatchingSolver::init(const Graph *q, const Graph *g, ui match_threshold)
@@ -248,7 +224,7 @@ void MatchingSolver::resetState()
 
     q_neighbors.clear();
     q_degree.clear();
-    q_neighbor_is_bridge.clear();
+    q_bridge_matrix.clear();
 
     resetBuffers();
     undo_stack.clear();

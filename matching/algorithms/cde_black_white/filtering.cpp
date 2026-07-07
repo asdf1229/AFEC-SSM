@@ -150,7 +150,7 @@ private:
         for (ui u = 0; u < solver.qn; ++u) {
             for (ui i = 0; i < solver.q_degree[u]; ++i) {
                 ui v = solver.q_neighbors[u][i];
-                if (u < v && solver.q_neighbor_is_bridge[u][i]) {
+                if (u < v && solver.isQueryBridgeEdge(u, v)) {
                     addBridge(u, v);
                 }
             }
@@ -195,7 +195,7 @@ private:
                 if (bridge_counts[label_idx] == 0 && non_bridge_counts[label_idx] == 0) {
                     touched_labels.push_back(label_idx);
                 }
-                if (solver.q_neighbor_is_bridge[u][i]) {
+                if (solver.isQueryBridgeEdge(u, u1)) {
                     query_bridge_degree[u]++;
                     bridge_counts[label_idx]++;
                 }
@@ -457,7 +457,7 @@ private:
         for (ui i = 0; i < deg_u; ++i) {
             spoke_adj[i].clear();
             ui u1 = u_neighbors[i];
-            left_is_bridge[i] = solver.q_neighbor_is_bridge[u][i];
+            left_is_bridge[i] = solver.isQueryBridgeEdge(u, u1);
             for (ui j = 0; j < deg_v; ++j) {
                 ui v1 = v_neighbors[j];
                 if (solver.candidates[u1].contains(v1)) {

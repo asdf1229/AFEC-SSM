@@ -56,7 +56,7 @@ private:
     ui max_g_deg;
     vector<vector<ui>> q_neighbors;
     vector<ui> q_degree;
-    vector<vector<char>> q_neighbor_is_bridge;
+    vector<vector<char>> q_bridge_matrix;
 
     vector<MyBitset> candidates;
     ui static_root = 0;
@@ -94,7 +94,6 @@ private:
     ui chooseRoot();
     void initColors();
     void initQueryBridgeMarks();
-    void markQueryBridgeNeighbor(ui from, ui to);
     void markQueryBridge(ui a, ui b);
     void findQueryBridges(ui u, ui parent, vector<int> &dfn,
         vector<int> &low, int &time);
