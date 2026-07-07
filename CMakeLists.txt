@@ -14,6 +14,7 @@ include_directories(
 )
 
 find_package(Threads REQUIRED)
+find_package(absl REQUIRED)
 
 set(SSM_GED_COMMON_SOURCES
     ${PROJECT_SOURCE_DIR}/graph/graph.cpp
@@ -59,7 +60,7 @@ macro(add_ssm_ged_executable TARGET_NAME ALGO_SOURCE CONFIG_HEADER)
         target_compile_definitions(${TARGET_NAME} PRIVATE
             "SSM_GED_CONFIG_HEADER=\"${CONFIG_HEADER}\"")
     endif()
-    target_link_libraries(${TARGET_NAME} PRIVATE Threads::Threads)
+    target_link_libraries(${TARGET_NAME} PRIVATE Threads::Threads absl::hash absl::raw_hash_set absl::base)
     list(APPEND SSM_GED_EXECUTABLES ${TARGET_NAME})
 endmacro()
 

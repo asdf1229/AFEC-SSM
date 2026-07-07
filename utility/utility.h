@@ -21,6 +21,7 @@
 #include <limits>
 #include "configuration/types.h"
 #include "configuration/config.h"
+#include <absl/container/flat_hash_map.h>
 
 #define pb push_back
 #define mp make_pair

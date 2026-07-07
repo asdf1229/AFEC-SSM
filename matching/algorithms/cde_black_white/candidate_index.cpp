@@ -18,10 +18,12 @@ void MatchingSolver::buildAdjIndex()
         total_candidate_count += (size_t)candidates[u].size();
         candidate_adj_index[u].reserve((size_t)candidates[u].size() * q_neighbors[u].size());
     }
+
+    // Reserve temporary buffers
+    candidate_range_buffer.reserve(qn);
     candidate_source_buffer.reserve(total_candidate_count);
     candidate_result_buffer.reserve(total_candidate_count);
     candidate_intersection_buffer.reserve(total_candidate_count);
-    candidate_range_buffer.reserve(qn);
 
     for (ui u = 0; u < qn; ++u) {
         for (ui v : candidates[u]) {

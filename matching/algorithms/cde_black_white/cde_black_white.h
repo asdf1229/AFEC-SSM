@@ -15,6 +15,8 @@
 #define CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_ANCHOR_BRANCH 1
 #endif
 
+#define CDE_BLACK_WHITE_USE_FLAT_HASH_MAP 1
+
 #if CDE_BLACK_WHITE_FIXED_ORDER && CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
 #error "CDE_BLACK_WHITE_FIXED_ORDER and CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY are mutually exclusive."
 #endif
@@ -68,12 +70,17 @@ private:
 
     vector<UndoRecord> undo_stack;
 
+#if CDE_BLACK_WHITE_USE_FLAT_HASH_MAP
+    vector<absl::flat_hash_map<unsigned long long, pair<size_t, ui>>> candidate_adj_index;
+#else
     vector<unordered_map<unsigned long long, pair<size_t, ui>>> candidate_adj_index;
+#endif
     vector<ui> candidate_adj_pool;
     vector<pair<size_t, ui>> candidate_range_buffer;
     vector<ui> candidate_source_buffer;
     vector<ui> candidate_result_buffer;
     vector<ui> candidate_intersection_buffer;
+
     vector<ui> candidate_batch_mark;
     vector<ui> candidate_batch_pos;
     vector<ui> candidate_batch_present_hits;
@@ -93,10 +100,8 @@ private:
     void resetBuffers();
     ui chooseRoot();
     void initColors();
-    void initQueryBridgeMarks();
-    void markQueryBridge(ui a, ui b);
-    void findQueryBridges(ui u, ui parent, vector<int> &dfn,
-        vector<int> &low, int &time);
+    void initQueryBridge();
+    void tarjan(ui u, ui parent, vector<int> &dfn, vector<int> &low, int &tim);
     bool isQueryBridgeEdge(ui u, ui v) const;
 
     bool runCandidateFiltering();

@@ -42,23 +42,16 @@ void MatchingSolver::initColors()
 #endif
 }
 
-void MatchingSolver::markQueryBridge(ui a, ui b)
+void MatchingSolver::tarjan(ui u, ui parent, vector<int> &dfn, vector<int> &low, int &tim)
 {
-    assert(a < qn && b < qn);
-    q_bridge_matrix[a][b] = 1;
-    q_bridge_matrix[b][a] = 1;
-}
-
-void MatchingSolver::findQueryBridges(ui u, ui parent, vector<int> &dfn,
-    vector<int> &low, int &time)
-{
-    dfn[u] = low[u] = ++time;
+    dfn[u] = low[u] = ++tim;
     for (ui v : q_neighbors[u]) {
         if (dfn[v] == 0) {
-            findQueryBridges(v, u, dfn, low, time);
+            tarjan(v, u, dfn, low, tim);
             low[u] = std::min(low[u], low[v]);
             if (low[v] > dfn[u]) {
-                markQueryBridge(u, v);
+                q_bridge_matrix[u][v] = 1;
+                q_bridge_matrix[v][u] = 1;
             }
         }
         else if (v != parent) {
@@ -67,16 +60,15 @@ void MatchingSolver::findQueryBridges(ui u, ui parent, vector<int> &dfn,
     }
 }
 
-void MatchingSolver::initQueryBridgeMarks()
+void MatchingSolver::initQueryBridge()
 {
     q_bridge_matrix.assign(qn, vector<char>(qn, 0));
-
     vector<int> dfn(qn, 0);
     vector<int> low(qn, 0);
-    int time = 0;
+    int tim = 0;
     for (ui u = 0; u < qn; ++u) {
         if (dfn[u] == 0) {
-            findQueryBridges(u, qn, dfn, low, time);
+            tarjan(u, qn, dfn, low, tim);
         }
     }
 }
@@ -84,7 +76,6 @@ void MatchingSolver::initQueryBridgeMarks()
 bool MatchingSolver::isQueryBridgeEdge(ui u, ui v) const
 {
     assert(u < qn && v < qn);
-    assert(q_bridge_matrix.size() == qn);
     return q_bridge_matrix[u][v] != 0;
 }
 
@@ -113,7 +104,7 @@ bool MatchingSolver::init(const Graph *q, const Graph *g, ui match_threshold)
         for (ui i = 0; i < deg; ++i) q_neighbors[u].push_back(nbrs[i]);
         q_degree[u] = (ui)q_neighbors[u].size();
     }
-    initQueryBridgeMarks();
+    initQueryBridge();
 
     Timer t_filter;
     bool res = runCandidateFiltering();
