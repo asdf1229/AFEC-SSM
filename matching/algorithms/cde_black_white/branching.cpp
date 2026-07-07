@@ -94,8 +94,7 @@ void MatchingSolver::branchWhite(SearchState &state, ui cost, ui u)
 
     size_t undo_mark = mark();
     setColor(state, u, COLOR_WHITE);
-    replaceBucket(state, u, candidate_result_buffer,
-        candidate_result_delta_buffer);
+    replaceBucket(state, u, candidate_result_buffer, candidate_result_delta_buffer);
     setSelectedCnt(state, state.selected_count + 1);
     setWhiteCnt(state, state.white_count + 1);
     search(state, cost);
@@ -111,14 +110,13 @@ void MatchingSolver::branchMatWhite(SearchState &state, ui cost,
 
     WhiteCands white_bucket = state.white[white_u];
     assert(white_bucket.begin + white_bucket.count <= state.white_candidate_pool.size());
-    assert(white_bucket.begin + white_bucket.count <=
-        state.white_candidate_delta_pool.size());
+    assert(white_bucket.begin + white_bucket.count <= state.white_candidate_delta_pool.size());
     for (ui candidate_idx = 0; candidate_idx < white_bucket.count; ++candidate_idx) {
         size_t pool_idx = white_bucket.begin + candidate_idx;
         ui candidate = state.white_candidate_pool[pool_idx];
         if (isDataVertexUsed(state, candidate)) continue;
         ui candidate_delta = state.white_candidate_delta_pool[pool_idx];
-        if (candidate_delta > threshold - cost) continue;
+        if (cost + candidate_delta > threshold) continue;
 
         size_t undo_mark = mark();
         ui next_cost = cost;

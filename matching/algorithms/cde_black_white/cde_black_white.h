@@ -8,13 +8,6 @@
 #include "matching/run_matching.h"
 #include "utility/mybitset.h"
 
-#ifndef CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE
-#define CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_SOURCE 1
-#endif
-#ifndef CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_ANCHOR_BRANCH
-#define CDE_BLACK_WHITE_USE_CANDIDATE_RANGE_ANCHOR_BRANCH 1
-#endif
-
 #define CDE_BLACK_WHITE_USE_FLAT_HASH_MAP 1
 
 #if CDE_BLACK_WHITE_FIXED_ORDER && CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
@@ -151,21 +144,13 @@ private:
         vector<pair<size_t, ui>> &ranges);
     void intersectRequiredRanges(vector<pair<size_t, ui>> &ranges,
         vector<ui> &source);
-    bool bucketHas(const SearchState &state,
-        const WhiteCands &bucket, ui candidate) const;
     ui nextBatchToken();
     void addRangeHits(const pair<size_t, ui> *range, ui token,
         vector<ui> &hits);
     void invalidateRange(const pair<size_t, ui> *range, ui token);
-    void addFeasibleBatch(const SearchState &state, ui u, ui cost,
+    void computeWhiteCandCosts(const SearchState &state, ui u, ui cost,
         const vector<ui> &source, vector<ui> &result,
         vector<ui> &result_deltas);
-    void copyBucketCands(const SearchState &state,
-        const WhiteCands &bucket, vector<ui> &target) const;
-    void filterByBucket(const SearchState &state,
-        const WhiteCands &bucket, const vector<ui> &source,
-        vector<ui> &target) const;
-    void collectAllCands(ui u, vector<ui> &target);
     bool buildWhiteCands(SearchState &state, ui u, ui cost);
     bool refreshWhiteByBlack(SearchState &state, ui white_u, ui black_u,
         ui black_v, ui cost);

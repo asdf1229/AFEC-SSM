@@ -259,7 +259,7 @@ void MatchingSolver::replaceBucket(SearchState &state, ui u,
     bucket.feasible_count = bucket.count;
     state.white_candidate_pool.insert(state.white_candidate_pool.end(), candidates_to_store.begin(), candidates_to_store.end());
     state.white_candidate_delta_pool.insert(state.white_candidate_delta_pool.end(),
-        candidate_deltas_to_store.begin(), candidate_deltas_to_store.end());
+                                            candidate_deltas_to_store.begin(), candidate_deltas_to_store.end());
     state.white[u] = bucket;
 }
 
