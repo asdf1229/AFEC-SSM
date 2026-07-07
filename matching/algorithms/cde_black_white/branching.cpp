@@ -2,20 +2,6 @@
 
 namespace cde_black_white {
 
-void MatchingSolver::tryMapRoot(SearchState &state, ui root, ui v) const
-{
-    assert(root < qn && v < gn && candidates[root].contains(v));
-    state.color[root] = COLOR_BLACK;
-    state.mapped_q[root] = (int)v;
-    state.used_data_vertices.push_back(v);
-    state.used_data_flag[v] = 1;
-    state.part_M.push_back({ root, v });
-    state.selected_count = 1;
-    for (ui nbr : q_neighbors[root]) {
-        refreshAnchorEdge(state, root, nbr);
-    }
-}
-
 bool MatchingSolver::tryMapBlackWithDelta(SearchState &state, ui cost,
     ui u, ui v, ui delta, ui &next_cost)
 {

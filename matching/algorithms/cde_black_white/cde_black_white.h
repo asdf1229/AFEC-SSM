@@ -127,7 +127,6 @@ private:
     vector<AnchorEdge> &topEdgesBuffer(ui depth);
     vector<pair<ui, ui>> &branchCandsBuffer(ui depth);
     vector<ui> &whiteNbrsBuffer(ui depth);
-    void tryMapRoot(SearchState &state, ui root, ui v) const;
     bool isDataVertexUsed(const SearchState &state, ui v) const;
     bool isSelected(const SearchState &state, ui u) const;
     bool isBlack(const SearchState &state, ui u) const;

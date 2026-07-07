@@ -136,12 +136,15 @@ void MatchingSolver::match(vector<vector<pair<ui, ui>>> &results)
     results_ptr = &results;
     results_ptr->clear();
 
-    ui root = static_root < qn ? static_root : chooseRoot();
+    ui root = static_root;
+    SearchState state;
+    initState(state);
+    size_t root_mark = mark();
+
     for (ui v : candidates[root]) {
-        SearchState state;
-        initState(state);
-        tryMapRoot(state, root, v);
-        search(state, 0);
+        ui next_cost = 0;
+        if (tryMapBlackWithDelta(state, 0, root, v, 0, next_cost)) search(state, next_cost);
+        rollback(state, root_mark);
         if (outputLimitReached()) break;
     }
 
