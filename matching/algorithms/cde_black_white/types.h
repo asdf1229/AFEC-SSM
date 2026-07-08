@@ -99,6 +99,8 @@ struct TimeStats {
     long long candidate_range_misses = 0;
     long long candidate_intersection_calls = 0;
     long long candidate_edge_check_calls = 0;
+    long long split_calls = 0;
+    long long split_branches = 0;
     size_t result_count = 0;
     bool output_limit_reached = false;
 };

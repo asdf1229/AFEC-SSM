@@ -1,4 +1,5 @@
 #include "matching/algorithms/cde_black_white/cde_black_white.h"
+#include "matching/algorithms/cde_black_white/split.h"
 
 namespace cde_black_white {
 
@@ -38,13 +39,15 @@ bool MatchingSolver::tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui 
     return true;
 }
 
-bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u, ui candidate, ui &next_cost)
+bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u,
+    ui candidate, ui candidate_delta, ui &next_cost)
 {
     assert(isWhite(state, white_u));
     assert(candidate < gn);
     assert(!isDataVertexUsed(state, candidate));
     assert(candidates[white_u].contains(candidate));
     assert(cost <= threshold);
+    assert(cost + candidate_delta <= threshold);
 
     setColor(state, white_u, COLOR_BLACK);
     assert(state.white_count > 0);
@@ -70,13 +73,20 @@ bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u, ui can
         else { // EDGE_UNDECIDED
             if (!adjacent) {
                 if (isQueryBridgeEdge(white_u, neighbor)) return false;
+#if !CDE_BLACK_WHITE_ENABLE_SPLIT
                 delta++;
                 if (cost + delta > threshold) return false;
+#endif
             }
             setEdge(state, white_u, neighbor, adjacent ? EDGE_PRESENT : EDGE_MISSING);
         }
     }
 
+#if CDE_BLACK_WHITE_ENABLE_SPLIT
+    delta = candidate_delta;
+#else
+    assert(delta == candidate_delta);
+#endif
     next_cost = cost + delta;
     return true;
 }
@@ -97,7 +107,11 @@ void MatchingSolver::branchWhite(SearchState &state, ui cost, ui u)
     replaceBucket(state, u, candidate_result_buffer, candidate_result_delta_buffer);
     setSelectedCnt(state, state.selected_count + 1);
     setWhiteCnt(state, state.white_count + 1);
+#if CDE_BLACK_WHITE_ENABLE_SPLIT
+    continueAfterSplit(state, cost);
+#else
     search(state, cost);
+#endif
     rollback(state, undo_mark);
     return;
 }
@@ -120,7 +134,7 @@ void MatchingSolver::branchMatWhite(SearchState &state, ui cost,
 
         size_t undo_mark = mark();
         ui next_cost = cost;
-        if (!tryMapWhite(state, cost, white_u, candidate, next_cost)) {
+        if (!tryMapWhite(state, cost, white_u, candidate, candidate_delta, next_cost)) {
             rollback(state, undo_mark);
             continue;
         }
@@ -176,7 +190,11 @@ void MatchingSolver::branchBlack(SearchState &state, ui cost, ui u,
             return false;
         }
 
+#if CDE_BLACK_WHITE_ENABLE_SPLIT
+        continueAfterSplit(state, next_cost);
+#else
         search(state, next_cost);
+#endif
         rollback(state, undo_mark);
         if (outputLimitReached()) return true;
         return false;

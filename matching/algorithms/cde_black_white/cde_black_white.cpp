@@ -186,6 +186,10 @@ void MatchingSolver::printStats() const
         stats.candidate_range_hits, stats.candidate_range_misses);
     printf("Range Intersections: %lld\n", stats.candidate_intersection_calls);
     printf("Range Edge Checks:   %lld\n", stats.candidate_edge_check_calls);
+#if CDE_BLACK_WHITE_ENABLE_SPLIT
+    printf("Split Calls:         %lld\n", stats.split_calls);
+    printf("Split Branches:      %lld\n", stats.split_branches);
+#endif
     printf("Results Found:       %zu\n", stats.result_count);
 #if MATCH_OUTPUT_LIMIT > 0
     printf("Output Limit:        %zu%s\n",

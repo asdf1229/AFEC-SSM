@@ -180,7 +180,16 @@ private:
     bool tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui v,
         ui delta, ui &next_cost);
     bool tryMapWhite(SearchState &state, ui cost, ui white_u,
-        ui candidate, ui &next_cost);
+        ui candidate, ui candidate_delta, ui &next_cost);
+#if CDE_BLACK_WHITE_ENABLE_SPLIT
+    bool chooseSplitWhite(const SearchState &state, ui cost, ui &split_u,
+        bool &needs_split) const;
+    void branchSplitWhite(SearchState &state, ui cost, ui white_u,
+        const ContinueBranch &continue_branch);
+    void branchSplitWhites(SearchState &state, ui cost,
+        const ContinueBranch &continue_branch);
+    void continueAfterSplit(SearchState &state, ui cost);
+#endif
     bool shouldExpandAsWhite(const SearchState &state, ui u,
         const vector<pair<ui, ui>> &anchor_candidates) const;
     void branchWhite(SearchState &state, ui cost, ui u);
