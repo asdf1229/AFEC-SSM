@@ -123,7 +123,9 @@ ui MatchingSolver::nextBatchToken()
 
 void MatchingSolver::addRangeHits(const pair<size_t, ui> *range, ui token, vector<ui> &hits)
 {
-    assert(range != nullptr);
+    if (range == nullptr) {
+        return;
+    }
 
     for (const ui *it = rangeBegin(*range); it != rangeEnd(*range); ++it) {
         ui candidate = *it;
@@ -140,7 +142,9 @@ void MatchingSolver::addRangeHits(const pair<size_t, ui> *range, ui token, vecto
 
 void MatchingSolver::invalidateRange(const pair<size_t, ui> *range, ui token)
 {
-    assert(range != nullptr);
+    if (range == nullptr) {
+        return;
+    }
 
     for (const ui *it = rangeBegin(*range); it != rangeEnd(*range); ++it) {
         ui candidate = *it;
