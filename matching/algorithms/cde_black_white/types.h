@@ -105,14 +105,6 @@ struct TimeStats {
     bool output_limit_reached = false;
 };
 
-struct TailWhite {
-    ui u = 0;
-    ui feasible_count = 0;
-    ui min_delta = std::numeric_limits<ui>::max();
-    vector<vector<ui>> buckets;
-};
-
-
 } // namespace cde_black_white
 
 #endif

@@ -316,11 +316,23 @@ void MatchingSolver::search(SearchState &state, ui cost)
         }
 
 #if CDE_BLACK_WHITE_USE_TERMINAL_TAIL
-        vector<TailWhite> tail_vertices;
-        if (!buildTailWhites(state, cost, tail_vertices)) {
-            stats.prun_calls++;
-            return;
+        vector<ui> &tail_vertices = whiteNbrsBuffer(state.selected_count);
+        for (ui u = 0; u < qn; ++u) {
+            if (isWhite(state, u)) tail_vertices.push_back(u);
         }
+        assert(tail_vertices.size() == (size_t)state.white_count);
+        std::sort(tail_vertices.begin(), tail_vertices.end(),
+            [this, &state](ui lhs, ui rhs) {
+                const WhiteCands &lhs_bucket = state.white[lhs];
+                const WhiteCands &rhs_bucket = state.white[rhs];
+                if (lhs_bucket.feasible_count != rhs_bucket.feasible_count) {
+                    return lhs_bucket.feasible_count < rhs_bucket.feasible_count;
+                }
+                if (q_degree[lhs] != q_degree[rhs]) {
+                    return q_degree[lhs] > q_degree[rhs];
+                }
+                return lhs < rhs;
+            });
         enumTailWhites(state, 0, cost, tail_vertices);
 #else
         vector<ui> &white_vertices = whiteNbrsBuffer(state.selected_count);

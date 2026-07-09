@@ -170,11 +170,8 @@ private:
     bool collectActiveEdges(const SearchState &state, ui max_count,
         vector<AnchorEdge> &top_edges);
 
-    bool buildTailWhite(const SearchState &state, ui cost, TailWhite &tail_white);
-    bool buildTailWhites(const SearchState &state, ui cost,
-        vector<TailWhite> &tail_vertices);
     void enumTailWhites(SearchState &state, size_t pos, ui cost,
-        vector<TailWhite> &tail_vertices);
+        const vector<ui> &tail_vertices);
     void emitResult(const SearchState &state);
 
     bool tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui v,
