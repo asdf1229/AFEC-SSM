@@ -315,7 +315,8 @@ void MatchingSolver::search(SearchState &state, ui cost)
             return;
         }
 
-#if CDE_BLACK_WHITE_USE_TERMINAL_TAIL
+#if CDE_BLACK_WHITE_ENABLE_SPLIT
+        // Split has already charged every remaining white candidate's delta.
         vector<ui> &tail_vertices = whiteNbrsBuffer(state.selected_count);
         for (ui u = 0; u < qn; ++u) {
             if (isWhite(state, u)) tail_vertices.push_back(u);
@@ -335,17 +336,14 @@ void MatchingSolver::search(SearchState &state, ui cost)
             });
         enumTailWhites(state, 0, cost, tail_vertices);
 #else
-        vector<ui> &white_vertices = whiteNbrsBuffer(state.selected_count);
-        for (ui u = 0; u < qn; ++u) {
-            if (isWhite(state, u)) white_vertices.push_back(u);
+        // Without split, terminal enumeration must still charge each white
+        // candidate's stored delta against the shared remaining budget.
+        vector<TerminalTailVertex> tail_vertices;
+        if (!buildTerminalTail(state, cost, tail_vertices)) {
+            stats.prun_calls++;
+            return;
         }
-        assert(white_vertices.size() == (size_t)state.white_count);
-        branchMatWhites(state, cost, white_vertices, 0,
-            [&](SearchState &materialized_state, ui materialized_cost) {
-                (void)materialized_cost;
-                assert(materialized_state.white_count == 0);
-                emitResult(materialized_state);
-            });
+        enumTailWhites(state, 0, cost, tail_vertices);
 #endif
         return;
     }

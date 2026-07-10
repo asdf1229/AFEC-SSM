@@ -13,6 +13,8 @@ struct MatchingSolver::FixedEdgePriorityEntry {
 
 void MatchingSolver::initFixedEdgePriorities()
 {
+    // Rank every directed query edge once from the filtered candidate graph.
+    // Search states reuse this rank; only edge availability changes at runtime.
     const ui invalid_priority = std::numeric_limits<ui>::max();
     static_edge_support.assign(qn, vector<unsigned long long>(qn, 0));
     static_edge_priority.assign(qn, vector<ui>(qn, invalid_priority));

@@ -170,8 +170,21 @@ private:
     bool collectActiveEdges(const SearchState &state, ui max_count,
         vector<AnchorEdge> &top_edges);
 
+#if CDE_BLACK_WHITE_ENABLE_SPLIT
     void enumTailWhites(SearchState &state, size_t pos, ui cost,
         const vector<ui> &tail_vertices);
+#else
+    struct TerminalTailVertex {
+        ui u = 0;
+        ui feasible_count = 0;
+        ui min_delta = std::numeric_limits<ui>::max();
+        vector<vector<ui>> candidates_by_delta;
+    };
+    bool buildTerminalTail(const SearchState &state, ui cost,
+        vector<TerminalTailVertex> &tail_vertices) const;
+    void enumTailWhites(SearchState &state, size_t pos, ui cost,
+        const vector<TerminalTailVertex> &tail_vertices);
+#endif
     void emitResult(const SearchState &state);
 
     bool tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui v,
