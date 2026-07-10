@@ -162,3 +162,18 @@ missing for those points.
 
 The y-axis is logarithmic by default. Pass `--linear-scale` to use a linear
 y-axis.
+
+## Timeout Count Tables
+
+`make_timeout_count_tables.py` counts runs for which an algorithm did not
+capture a result and writes `timeout_counts_by_t.html`. With the default
+`count` result metric, missing, `NA`, and other non-numeric `*_count` values
+are counted. This matches the current `compare.sh` timeout output.
+
+```bash
+python3 -B scripts/make_timeout_count_tables.py result/20260423_174256
+```
+
+The table contains one row per dataset and algorithm, one column per `t`, and a
+total column. Use `--algorithms`, `--thresholds`, or `--result-metric` to change
+the selection.
