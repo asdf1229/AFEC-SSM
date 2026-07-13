@@ -589,11 +589,6 @@ struct DecQSolver::Impl {
         live_match_rows += rows;
         stats.peak_live_match_rows = std::max(stats.peak_live_match_rows,
             live_match_rows);
-#if DECQ_INTERMEDIATE_MATCH_LIMIT > 0
-        if (live_match_rows > static_cast<size_t>(DECQ_INTERMEDIATE_MATCH_LIMIT)) {
-            stats.intermediate_limit_reached = true;
-        }
-#endif
     }
 
     void releaseOwnedRows(GlobalPattern &pattern)
@@ -616,21 +611,7 @@ struct DecQSolver::Impl {
 
     bool stopped() const
     {
-        return stats.intermediate_limit_reached || stats.output_limit_reached;
-    }
-
-    bool pendingRowsExceedLimit(size_t pending_rows)
-    {
-#if DECQ_INTERMEDIATE_MATCH_LIMIT > 0
-        if (live_match_rows + pending_rows >
-            static_cast<size_t>(DECQ_INTERMEDIATE_MATCH_LIMIT)) {
-            stats.intermediate_limit_reached = true;
-            return true;
-        }
-#else
-        (void)pending_rows;
-#endif
-        return false;
+        return stats.output_limit_reached;
     }
 
     Relation exactMatch(const std::vector<unsigned char> &vertices,
@@ -680,9 +661,7 @@ struct DecQSolver::Impl {
         Mapping mapping(qn, -1);
         std::vector<unsigned char> used_data(gn, 0);
         std::function<void(size_t)> search = [&](size_t depth) {
-            if (stats.intermediate_limit_reached) return;
             if (depth == order.size()) {
-                if (pendingRowsExceedLimit(relation.rows->size() + 1)) return;
                 relation.rows->push_back(mapping);
                 return;
             }
@@ -729,13 +708,11 @@ struct DecQSolver::Impl {
                         continue;
                     }
                     explore_candidate(v);
-                    if (stats.intermediate_limit_reached) break;
                 }
             }
             else {
                 for (ui v : candidates[u]) {
                     explore_candidate(v);
-                    if (stats.intermediate_limit_reached) break;
                 }
             }
         };
@@ -805,7 +782,6 @@ struct DecQSolver::Impl {
             bundle->components.push_back(exactMatch(component_vertices,
                 component_edges));
             stats.local_components++;
-            if (stats.intermediate_limit_reached) break;
         }
         if (removed_isolated_vertex || bundle->components.size() > 1) {
             stats.disconnected_local_patterns++;
@@ -823,7 +799,6 @@ struct DecQSolver::Impl {
                 node.edge_ids.size());
             forEachSubsetLexicographic(node.edge_ids, maximum_deletions,
                 [&](const std::vector<size_t> &deleted_edges) {
-                    if (stats.intermediate_limit_reached) return;
                     std::vector<unsigned char> missing(query_edges.size(), 0);
                     for (size_t edge_id : deleted_edges) missing[edge_id] = 1;
                     if (!queryConnectedAfterMissing(missing)) {
@@ -836,7 +811,6 @@ struct DecQSolver::Impl {
                     decomposition[node_id].table.insert(std::make_pair(key, bundle));
                     stats.local_patterns++;
                 });
-            if (stats.intermediate_limit_reached) break;
         }
         long long elapsed = phase_timer.elapsed();
         stats.local_pattern_time = elapsed > stats.local_matching_time
@@ -934,10 +908,8 @@ struct DecQSolver::Impl {
                     }
                 }
                 if (!compatible) continue;
-                if (pendingRowsExceedLimit(output.rows->size() + 1)) break;
                 output.rows->push_back(merged);
             }
-            if (stats.intermediate_limit_reached) break;
         }
 
         stats.hash_join_output_rows += output.rows->size();
@@ -953,7 +925,7 @@ struct DecQSolver::Impl {
         merged->components.insert(merged->components.end(),
             right.components.begin(), right.components.end());
 
-        while (!stats.intermediate_limit_reached) {
+        while (true) {
             size_t best_i = merged->components.size();
             size_t best_j = merged->components.size();
             long double best_product = std::numeric_limits<long double>::max();
@@ -1004,7 +976,7 @@ struct DecQSolver::Impl {
             static_cast<size_t>(node.left), missing);
         std::shared_ptr<Bundle> right = materializeNode(
             static_cast<size_t>(node.right), missing);
-        if (!left || !right || stats.intermediate_limit_reached) {
+        if (!left || !right) {
             return std::shared_ptr<Bundle>();
         }
         std::shared_ptr<Bundle> result = mergeBundles(*left, *right);
@@ -1074,7 +1046,6 @@ struct DecQSolver::Impl {
             if (mapping[edge.u] >= 0 && mapping[edge.v] >= 0 &&
                 data_graph->hasEdge(static_cast<ui>(mapping[edge.u]),
                     static_cast<ui>(mapping[edge.v]))) {
-                if (pendingRowsExceedLimit(output->size() + 1)) break;
                 output->push_back(mapping);
             }
         }
@@ -1155,7 +1126,7 @@ struct DecQSolver::Impl {
     bool materializeMinimalPattern(GlobalPattern &pattern)
     {
         std::shared_ptr<Bundle> bundle = materializeNode(0, pattern.missing);
-        if (!bundle || stats.intermediate_limit_reached) return false;
+        if (!bundle) return false;
         if (bundle->components.empty()) {
             pattern.matches.reset(new MatchSet());
             return true;
@@ -1200,8 +1171,10 @@ struct DecQSolver::Impl {
 
     void runGlobalMatching()
     {
+        bool materialization_failed = false;
         for (int signed_level = static_cast<int>(threshold);
-            signed_level >= 0 && !stopped(); --signed_level) {
+            signed_level >= 0 && !stopped() && !materialization_failed;
+            --signed_level) {
             size_t level = static_cast<size_t>(signed_level);
             for (GlobalPattern &pattern : lattice[level]) {
                 bool materialized = false;
@@ -1217,8 +1190,8 @@ struct DecQSolver::Impl {
                     stats.edge_validation_time += timer.elapsed();
                     stats.nonminimal_patterns_processed++;
                 }
-                if (!materialized || stats.intermediate_limit_reached) {
-                    stats.intermediate_limit_reached = true;
+                if (!materialized) {
+                    materialization_failed = true;
                     break;
                 }
                 stats.global_pattern_rows += pattern.matches->size();
@@ -1228,7 +1201,7 @@ struct DecQSolver::Impl {
                 if (stopped()) break;
             }
 
-            if (!stopped() && level + 1 < lattice.size()) {
+            if (!stopped() && !materialization_failed && level + 1 < lattice.size()) {
                 for (GlobalPattern &child : lattice[level + 1]) {
                     releaseOwnedRows(child);
                 }
@@ -1285,12 +1258,10 @@ struct DecQSolver::Impl {
         stats.decomposition_time = phase_timer.elapsed();
 
         enumerateLocalPatterns();
-        if (!stats.intermediate_limit_reached) {
-            phase_timer.restart();
-            buildGlobalLattice();
-            stats.lattice_time = phase_timer.elapsed();
-            runGlobalMatching();
-        }
+        phase_timer.restart();
+        buildGlobalLattice();
+        stats.lattice_time = phase_timer.elapsed();
+        runGlobalMatching();
         stats.total_time = stats.data_index_time + total_timer.elapsed();
     }
 };
@@ -1365,11 +1336,6 @@ void DecQSolver::printStats() const
     std::printf("Output Limit:               %zu%s\n",
         static_cast<size_t>(MATCH_OUTPUT_LIMIT),
         stats.output_limit_reached ? " (reached)" : "");
-#endif
-#if DECQ_INTERMEDIATE_MATCH_LIMIT > 0
-    std::printf("Intermediate Match Limit:   %zu%s\n",
-        static_cast<size_t>(DECQ_INTERMEDIATE_MATCH_LIMIT),
-        stats.intermediate_limit_reached ? " (reached)" : "");
 #endif
     std::printf("------------------------------------------\n");
 }

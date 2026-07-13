@@ -8,8 +8,6 @@
 #include "matching/run_matching.h"
 #include "utility/mybitset.h"
 
-#define CDE_BLACK_WHITE_USE_FLAT_HASH_MAP 1
-
 #if CDE_BLACK_WHITE_FIXED_ORDER && CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
 #error "CDE_BLACK_WHITE_FIXED_ORDER and CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY are mutually exclusive."
 #endif

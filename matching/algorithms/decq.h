@@ -7,14 +7,6 @@
 
 #include <memory>
 
-#ifndef DECQ_INTERMEDIATE_MATCH_LIMIT
-#define DECQ_INTERMEDIATE_MATCH_LIMIT 0
-#endif
-
-#if DECQ_INTERMEDIATE_MATCH_LIMIT < 0
-#error "DECQ_INTERMEDIATE_MATCH_LIMIT must be non-negative."
-#endif
-
 namespace ssm {
 
 // A clean-room implementation of the DecQ execution plan described in
@@ -76,7 +68,6 @@ public:
         double decomposition_estimated_cost = 0.0;
 
         bool output_limit_reached = false;
-        bool intermediate_limit_reached = false;
     } stats;
 
     DecQSolver();

@@ -80,7 +80,7 @@ struct SASUMSolver::Impl {
             stats.exact_matching_executions = 1;
             stats.exact_matching_time = phase_timer.elapsed();
             stats.query_pattern_match_rows = query_matches.size();
-            if (!intermediateLimitReached()) addOutputs(query_matches);
+            addOutputs(query_matches);
             stats.total_time = stats.data_index_time + total_timer.elapsed();
             return;
         }
@@ -106,11 +106,6 @@ struct SASUMSolver::Impl {
             exactMatch(base_graphs[selected_base_ids[i]].pattern, seed_matches[i]);
             stats.exact_matching_executions++;
             stats.seed_match_rows += seed_matches[i].size();
-            if (intermediateLimitReached()) {
-                stats.exact_matching_time = phase_timer.elapsed();
-                stats.total_time = stats.data_index_time + total_timer.elapsed();
-                return;
-            }
         }
         stats.exact_matching_time = phase_timer.elapsed();
 
@@ -150,10 +145,6 @@ struct SASUMSolver::Impl {
                 const Pattern &base = base_graphs[selected_base_ids[best_seed]].pattern;
                 deriveCoveredMatches(base, terminals[terminal_id],
                     seed_matches[best_seed], current_matches[terminal_id]);
-            }
-            if (intermediateLimitReached()) {
-                finish_derivation();
-                return;
             }
             stats.query_pattern_match_rows += current_matches[terminal_id].size();
             addOutputs(current_matches[terminal_id]);
@@ -205,11 +196,6 @@ struct SASUMSolver::Impl {
                         parent_matches[parent_id]);
                 }
 
-                if (intermediateLimitReached()) {
-                    finish_derivation();
-                    return;
-                }
-
                 stats.query_pattern_match_rows += parent_matches[parent_id].size();
                 addOutputs(parent_matches[parent_id]);
                 if (outputLimitReached()) {
@@ -251,11 +237,6 @@ struct SASUMSolver::Impl {
         std::printf("Output Limit:           %zu%s\n",
             static_cast<size_t>(MATCH_OUTPUT_LIMIT),
             stats.output_limit_reached ? " (reached)" : "");
-#endif
-#if SASUM_INTERMEDIATE_MATCH_LIMIT > 0
-        std::printf("Intermediate Limit:     %zu%s\n",
-            static_cast<size_t>(SASUM_INTERMEDIATE_MATCH_LIMIT),
-            stats.intermediate_limit_reached ? " (reached)" : "");
 #endif
         std::printf("------------------------------------------\n");
     }
@@ -714,28 +695,11 @@ struct SASUMSolver::Impl {
         return true;
     }
 
-    bool intermediateLimitReached() const
+    void noteIntermediateRow()
     {
-#if SASUM_INTERMEDIATE_MATCH_LIMIT > 0
-        return stats.intermediate_limit_reached;
-#else
-        return false;
-#endif
-    }
-
-    bool reserveIntermediateRow()
-    {
-#if SASUM_INTERMEDIATE_MATCH_LIMIT > 0
-        if (live_intermediate_rows >=
-            static_cast<size_t>(SASUM_INTERMEDIATE_MATCH_LIMIT)) {
-            stats.intermediate_limit_reached = true;
-            return false;
-        }
-#endif
         live_intermediate_rows++;
         stats.peak_live_match_rows = std::max(
             stats.peak_live_match_rows, live_intermediate_rows);
-        return true;
     }
 
     void releaseMatchSet(MatchSet &matches)
@@ -755,9 +719,8 @@ struct SASUMSolver::Impl {
 
     void exactDfs(size_t depth, ExactSearchState &state)
     {
-        if (intermediateLimitReached()) return;
         if (depth == state.order.size()) {
-            if (!reserveIntermediateRow()) return;
+            noteIntermediateRow();
             state.output->push_back(state.mapping);
             stats.exact_embeddings++;
             return;
@@ -787,7 +750,6 @@ struct SASUMSolver::Impl {
                 exactDfs(depth + 1, state);
                 state.used_data[v] = 0;
                 state.mapping[u] = -1;
-                if (intermediateLimitReached()) return;
             }
         }
         else {
@@ -802,7 +764,6 @@ struct SASUMSolver::Impl {
                 exactDfs(depth + 1, state);
                 state.used_data[v] = 0;
                 state.mapping[u] = -1;
-                if (intermediateLimitReached()) return;
             }
         }
     }
@@ -828,7 +789,7 @@ struct SASUMSolver::Impl {
             if (mapping[edge.u] < 0 || mapping[edge.v] < 0) continue;
             if (data_graph->hasEdge(static_cast<ui>(mapping[edge.u]),
                     static_cast<ui>(mapping[edge.v]))) {
-                if (!reserveIntermediateRow()) return;
+                noteIntermediateRow();
                 output.push_back(mapping);
             }
         }
@@ -887,7 +848,7 @@ struct SASUMSolver::Impl {
 
                 Mapping extended = mapping;
                 extended[added_vertex] = static_cast<int>(candidate);
-                if (!reserveIntermediateRow()) return;
+                noteIntermediateRow();
                 output.push_back(extended);
             }
         }

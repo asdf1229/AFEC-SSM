@@ -32,7 +32,6 @@ public:
         size_t result_count = 0;
         size_t peak_live_match_rows = 0;
         bool output_limit_reached = false;
-        bool intermediate_limit_reached = false;
     } stats;
 
     SASUMSolver();

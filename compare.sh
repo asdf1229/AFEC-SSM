@@ -149,7 +149,7 @@ discover_algorithms() {
     local resolved=()
 
     for exe in "${candidates[@]}"; do
-        if [ -f "$exe" ]; then
+        if [ -x "$exe" ] && [ ! -d "$exe" ]; then
             resolved+=("$exe")
         fi
     done
@@ -187,7 +187,7 @@ resolve_selected_algorithms() {
         key="${key%.exe}"
         found=false
         for candidate in "${build_dir}/ssm_${key}" "${build_dir}/ssm_${key}.exe"; do
-            if [ -f "$candidate" ]; then
+            if [ -x "$candidate" ] && [ ! -d "$candidate" ]; then
                 resolved+=("$candidate")
                 found=true
                 break

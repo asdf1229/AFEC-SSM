@@ -16,12 +16,7 @@ void Graph::print_graph() const {
 //     for (ui u = 0; u < n; ++u) {
 //         for (ept eid = pstart[u]; eid < pstart[u + 1]; ++eid) {
 //             ui v = edges[eid];
-// #ifdef ENABLE_EDGE_LABEL
-//             LabelID L = elabels[eid];
-//             std::cout << "  e " << u << " " << v << " " << L << "\n";
-// #else
 //             std::cout << "  e " << u << " " << v << "\n";
-// #endif
 //         }
 //     }
 
