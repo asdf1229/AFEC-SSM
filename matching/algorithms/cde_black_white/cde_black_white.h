@@ -8,17 +8,13 @@
 #include "matching/run_matching.h"
 #include "utility/mybitset.h"
 
-#if CDE_BLACK_WHITE_FIXED_ORDER && CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY
-#error "CDE_BLACK_WHITE_FIXED_ORDER and CDE_BLACK_WHITE_TOPK_SUPPORT_DECAY are mutually exclusive."
-#endif
-
 #include <algorithm>
 #include <cassert>
-#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <iterator>
 #include <queue>
+#include <random>
 #include <unordered_map>
 
 namespace cde_black_white {
@@ -54,9 +50,13 @@ private:
     vector<MyBitset> candidates;
     ui static_root = 0;
     vector<VertexColor> static_color;
+    vector<ui> static_candidate_count;
     vector<vector<unsigned long long>> static_edge_support;
 #if CDE_BLACK_WHITE_FIXED_ORDER
     vector<vector<ui>> static_edge_priority;
+#endif
+#if CDE_BLACK_WHITE_RANDOM_ORDER
+    std::mt19937 random_order_rng;
 #endif
 
     vector<UndoRecord> undo_stack;
@@ -153,11 +153,14 @@ private:
     bool refreshWhiteByBlack(SearchState &state, ui white_u, ui black_u,
         ui black_v, ui cost);
 
+#if !CDE_BLACK_WHITE_FIXED_ORDER && !CDE_BLACK_WHITE_RANDOM_ORDER
+    void initStaticEdgeSupports();
+#endif
 #if CDE_BLACK_WHITE_FIXED_ORDER
     void initFixedEdgePriorities();
 #endif
     double blackSupport(const SearchState &state, ui u, ui anchor) const;
-    double whiteSupport(const SearchState &state, ui anchor) const;
+    double whiteSupport(const SearchState &state, ui u, ui anchor) const;
     bool betterEdge(const AnchorEdge &lhs, const AnchorEdge &rhs) const;
     void selectTopEdges(ui max_count, vector<AnchorEdge> &top_edges);
     bool isActiveAnchorEdge(const SearchState &state,

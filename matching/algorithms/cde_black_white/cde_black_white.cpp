@@ -15,6 +15,18 @@ MatchingSolver::MatchingSolver() : query_graph(nullptr), data_graph(nullptr), re
 ui MatchingSolver::chooseRoot()
 {
     ui root = 0;
+#if CDE_BLACK_WHITE_FIXED_ORDER
+    // Match TreeSpan's root rule: minimum filtered candidate count, then
+    // maximum query degree, then the smallest vertex id.
+    for (ui u = 1; u < qn; ++u) {
+        size_t cand_u = candidates[u].size();
+        size_t cand_root = candidates[root].size();
+        if (cand_u < cand_root ||
+            (cand_u == cand_root && q_degree[u] > q_degree[root])) {
+            root = u;
+        }
+    }
+#else
     for (ui u = 1; u < qn; ++u) {
         size_t cand_u = candidates[u].size();
         size_t cand_root = candidates[root].size();
@@ -24,6 +36,7 @@ ui MatchingSolver::chooseRoot()
 
         if (cand_u * deg_root < cand_root * deg_u) root = u;
     }
+#endif
     return root;
 }
 
@@ -122,6 +135,8 @@ bool MatchingSolver::init(const Graph *q, const Graph *g, ui match_threshold)
 
 #if CDE_BLACK_WHITE_FIXED_ORDER
     initFixedEdgePriorities();
+#elif !CDE_BLACK_WHITE_RANDOM_ORDER
+    initStaticEdgeSupports();
 #endif
 
     stats.init_time = t_init.elapsed();
@@ -231,9 +246,14 @@ void MatchingSolver::resetState()
     stats = TimeStats();
     static_root = 0;
     static_color.clear();
+    static_candidate_count.clear();
     static_edge_support.clear();
 #if CDE_BLACK_WHITE_FIXED_ORDER
     static_edge_priority.clear();
+#endif
+#if CDE_BLACK_WHITE_RANDOM_ORDER
+    // A fixed seed keeps the random-order ablation reproducible.
+    random_order_rng.seed(0xC0DEu);
 #endif
 }
 
