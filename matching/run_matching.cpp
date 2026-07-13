@@ -347,6 +347,10 @@ namespace ssm_ged {
             printf("!!! Threshold is not provided! Exit !!!\n");
             return 1;
         }
+        if (threshold < 0) {
+            printf("!!! Threshold must be non-negative! Exit !!!\n");
+            return 1;
+        }
 
         string data_graph_file = data_option->value();
         string query_graph_file = query_option->value();

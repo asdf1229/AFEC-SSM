@@ -443,9 +443,13 @@ run_task() {
 
     summary_line=$(grep '^SSM_GED_SUMMARY ' "$out" | tail -n 1 || true)
     if parse_summary_line "$summary_line"; then
-        status="OK"
         count="$SUMMARY_COUNT"
         run_value="$SUMMARY_RUN_MS"
+        if grep -Eq '(Output|Intermediate) Limit:.*\(reached\)' "$out"; then
+            status="ResourceLimit"
+        else
+            status="OK"
+        fi
     else
         status="ParseError"
     fi
@@ -567,6 +571,16 @@ aggregate_results() {
         if [ "$case_failed" = false ]; then
             local baseline_algo="${ALGO_KEYS[0]}"
             expected_count="${counts[$baseline_algo]}"
+            for algo in "${ALGO_KEYS[@]}"; do
+                if [ "${counts[$algo]}" != "$expected_count" ]; then
+                    case_failed=true
+                    case_reason="CountMismatch"
+                    record_failure "$dataset_group" "$dirname" "$query_group_label" \
+                        "$qname" "$t" "$algo" \
+                        "CountMismatch(expected=${expected_count},actual=${counts[$algo]})" \
+                        "${outputs[$algo]}"
+                fi
+            done
         fi
 
         local row=("$dataset_group" "$dirname" "$query_group_label" "$qname" "$t")

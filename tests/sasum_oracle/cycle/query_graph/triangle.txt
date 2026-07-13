@@ -1,0 +1,7 @@
+t # triangle_query
+v 0 A
+v 1 B
+v 2 C
+e 0 1
+e 1 2
+e 0 2

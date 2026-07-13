@@ -32,7 +32,11 @@ public:
         }
 
         mapped_q.assign(qn, -1);
-        mapped_g.assign(gn, -1);
+        used_data_vertices.clear();
+        used_data_vertices.reserve(qn);
+        used_data_flag.assign(gn, 0);
+        undo_stack.clear();
+        undo_stack.reserve((size_t)qn * 2);
         candidates.assign(qn, MyBitset(gn));
 
         buildQueryMatrix();
@@ -50,8 +54,14 @@ public:
         }
 
         cacheCandidateCounts();
+
+        Timer t_index;
+        t_index.restart();
+        buildAdjIndex();
+        stats.index_time = t_index.elapsed();
+
         initOrderingStatistics();
-        orderQueryEdges();
+        cacheDirectedEdgeScores();
 
         root = selectRoot();
 
@@ -72,6 +82,10 @@ public:
         results_ptr = &results;
         results_ptr->clear();
         result_keys.clear();
+        std::fill(mapped_q.begin(), mapped_q.end(), -1);
+        std::fill(used_data_flag.begin(), used_data_flag.end(), 0);
+        used_data_vertices.clear();
+        undo_stack.clear();
 
         const QISequence *seq = getQISequence(initial_tree);
         if (seq == nullptr) {
@@ -80,16 +94,17 @@ public:
         }
 
         ui start_u = seq->S[0];
+        size_t root_mark = mark();
         for (ui v : candidates[start_u]) {
             if (outputLimitReached()) break;
 
-            mapped_q[start_u] = (int)v;
-            mapped_g[v] = (int)start_u;
+            setMap(start_u, (int)v);
+            pushUsed(v);
 
             SimSearchOnDemand(1, initial_tree, 0);
 
-            mapped_q[start_u] = -1;
-            mapped_g[v] = -1;
+            rollback(root_mark);
+            assert(mark() == root_mark);
 
             if (outputLimitReached()) break;
         }
@@ -102,11 +117,14 @@ public:
         long long total_time = 0;
         long long init_time = 0;
         long long filter_time = 0;
+        long long index_time = 0;
         long long search_time = 0;
         long long enum_time = 0;
         long long verify_time = 0;
         long long recursion_calls = 0;
-        long long has_edge_calls = 0;
+        long long candidate_range_hits = 0;
+        long long candidate_range_misses = 0;
+        long long candidate_edge_check_calls = 0;
         long long replacement_calls = 0;
         long long sequences_count = 0;
         long long enum_call_count = 0;
@@ -129,6 +147,7 @@ public:
         printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
         printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
         printf("  - Filter Time:     %.4lf ms (%.2f%% of Init)\n", stats.filter_time / 1000.0, pct(stats.filter_time, stats.init_time));
+        printf("  - Adj Index Time:  %.4lf ms (%.2f%% of Init)\n", stats.index_time / 1000.0, pct(stats.index_time, stats.init_time));
         printf("Search Time:         %.4lf ms (%.2f%%)\n", stats.search_time / 1000.0, pct(stats.search_time, stats.total_time));
         printf("  - Q_T OD Time:     %.4lf ms (%.2f%% of Search)\n", stats.enum_time / 1000.0, pct(stats.enum_time, stats.search_time));
         printf("  - Verify Time:     %.4lf ms (%.2f%% of Search)\n", stats.verify_time / 1000.0, pct(stats.verify_time, stats.search_time));
@@ -137,7 +156,9 @@ public:
         printf("Replacement Calls:   %lld\n", stats.replacement_calls);
         printf("QISequences Cached:  %lld\n", stats.sequences_count);
         printf("OD Calls:            %lld\n", stats.enum_call_count);
-        printf("[hasEdge] Calls:     %lld\n", stats.has_edge_calls);
+        printf("Range Hits/Misses:   %lld / %lld\n",
+            stats.candidate_range_hits, stats.candidate_range_misses);
+        printf("Range Edge Checks:   %lld\n", stats.candidate_edge_check_calls);
         printf("Duplicate Results:   %lld\n", stats.duplicate_results);
         printf("Results Found:       %zu\n", stats.result_count);
 #if MATCH_OUTPUT_LIMIT > 0
@@ -151,10 +172,17 @@ public:
 private:
     static const ui INVALID_EDGE = (ui)-1;
 
+    struct DirectedScore {
+        unsigned long long numerator = 0;
+        unsigned long long denominator = 1;
+    };
+
     struct QEdge {
         ui u = 0;
         ui v = 0;
         ui id = 0;
+        DirectedScore u_to_v; // u is the new vertex and v is the anchor.
+        DirectedScore v_to_u; // v is the new vertex and u is the anchor.
     };
 
     struct LabelCount {
@@ -172,6 +200,18 @@ private:
         vector<ui> sEdgeIds;           // sEdgeIds[i] connects S[i] to the prefix.
         vector<vector<ui>> bEdgeIds;   // Non-tree edges from S[i] to the prefix.
         set<ui> R;
+    };
+
+    enum UndoKind : unsigned char {
+        UNDO_MAPPED_Q = 0,
+        UNDO_USED_DATA_SIZE = 1
+    };
+
+    struct UndoRecord {
+        UndoKind kind = UNDO_MAPPED_Q;
+        ui u = 0;
+        int old_mapped_q = -1;
+        size_t old_size = 0;
     };
 
     struct DisjointSet {
@@ -224,7 +264,12 @@ private:
     vector<QEdge> all_q_edges;
 
     vector<int> mapped_q;
-    vector<int> mapped_g;
+    vector<ui> used_data_vertices;
+    vector<unsigned char> used_data_flag;
+    vector<UndoRecord> undo_stack;
+
+    vector<absl::flat_hash_map<unsigned long long, pair<size_t, ui>>> candidate_adj_index;
+    vector<ui> candidate_adj_pool;
 
     TreeState initial_tree;
     map<string, QISequence> sequence_cache;
@@ -266,10 +311,165 @@ private:
         q_edge_id.clear();
         all_q_edges.clear();
         mapped_q.clear();
-        mapped_g.clear();
+        used_data_vertices.clear();
+        used_data_flag.clear();
+        undo_stack.clear();
+        candidate_adj_index.clear();
+        candidate_adj_pool.clear();
         initial_tree = TreeState();
         sequence_cache.clear();
         result_keys.clear();
+    }
+
+    unsigned long long adjKey(ui data_vertex, ui query_neighbor) const
+    {
+        return ((unsigned long long)data_vertex << 32) |
+            (unsigned long long)query_neighbor;
+    }
+
+    void buildAdjIndex()
+    {
+        candidate_adj_index.clear();
+        candidate_adj_index.resize(qn);
+        candidate_adj_pool.clear();
+
+        for (ui u = 0; u < qn; ++u) {
+            ui query_degree = 0;
+            query_graph->getVertexNeighbors(u, query_degree);
+            candidate_adj_index[u].reserve(
+                (size_t)candidate_counts[u] * query_degree);
+        }
+
+        for (ui u = 0; u < qn; ++u) {
+            ui query_degree = 0;
+            const ui *query_neighbors =
+                query_graph->getVertexNeighbors(u, query_degree);
+
+            for (ui v : candidates[u]) {
+                ui data_degree = 0;
+                const ui *data_neighbors =
+                    data_graph->getVertexNeighbors(v, data_degree);
+
+                for (ui i = 0; i < query_degree; ++i) {
+                    ui query_neighbor = query_neighbors[i];
+                    size_t begin = candidate_adj_pool.size();
+
+                    for (ui j = 0; j < data_degree; ++j) {
+                        ui data_neighbor = data_neighbors[j];
+                        if (candidates[query_neighbor].contains(data_neighbor)) {
+                            candidate_adj_pool.push_back(data_neighbor);
+                        }
+                    }
+
+                    ui len = (ui)(candidate_adj_pool.size() - begin);
+                    if (len == 0) continue;
+
+                    candidate_adj_index[u].emplace(
+                        adjKey(v, query_neighbor), pair<size_t, ui>(begin, len));
+                }
+            }
+        }
+    }
+
+    const pair<size_t, ui> *findAdjRange(ui from_query, ui from_data,
+        ui to_query) const
+    {
+        if (from_query >= candidate_adj_index.size()) return nullptr;
+        const auto &index = candidate_adj_index[from_query];
+        auto it = index.find(adjKey(from_data, to_query));
+        if (it == index.end()) return nullptr;
+        return &it->second;
+    }
+
+    const ui *rangeBegin(const pair<size_t, ui> &range) const
+    {
+        return candidate_adj_pool.data() + range.first;
+    }
+
+    const ui *rangeEnd(const pair<size_t, ui> &range) const
+    {
+        return rangeBegin(range) + range.second;
+    }
+
+    bool rangeHas(const pair<size_t, ui> &range, ui value) const
+    {
+        return std::binary_search(rangeBegin(range), rangeEnd(range), value);
+    }
+
+    bool anchorAdjacent(ui anchor_query, ui anchor_data, ui target_query,
+        ui target_data)
+    {
+        stats.candidate_edge_check_calls++;
+        const pair<size_t, ui> *range =
+            findAdjRange(anchor_query, anchor_data, target_query);
+        if (range == nullptr) {
+            stats.candidate_range_misses++;
+            return false;
+        }
+        stats.candidate_range_hits++;
+        return rangeHas(*range, target_data);
+    }
+
+    bool isDataVertexUsed(ui v) const
+    {
+        assert(v < used_data_flag.size());
+        return used_data_flag[v] != 0;
+    }
+
+    size_t mark() const
+    {
+        return undo_stack.size();
+    }
+
+    void rollback(size_t undo_mark)
+    {
+        assert(undo_mark <= undo_stack.size());
+        while (undo_stack.size() > undo_mark) {
+            UndoRecord undo = std::move(undo_stack.back());
+            undo_stack.pop_back();
+
+            switch (undo.kind) {
+            case UNDO_MAPPED_Q:
+                mapped_q[undo.u] = undo.old_mapped_q;
+                break;
+            case UNDO_USED_DATA_SIZE:
+                for (size_t i = undo.old_size;
+                    i < used_data_vertices.size(); ++i) {
+                    ui used_v = used_data_vertices[i];
+                    assert(used_v < used_data_flag.size());
+                    used_data_flag[used_v] = 0;
+                }
+                used_data_vertices.resize(undo.old_size);
+                break;
+            }
+        }
+    }
+
+    void setMap(ui u, int value)
+    {
+        assert(u < mapped_q.size());
+        assert(value >= 0 && (ui)value < gn);
+        assert(mapped_q[u] == -1);
+        UndoRecord undo;
+        undo.kind = UNDO_MAPPED_Q;
+        undo.u = u;
+        undo.old_mapped_q = mapped_q[u];
+        undo_stack.push_back(std::move(undo));
+        mapped_q[u] = value;
+    }
+
+    void pushUsed(ui v)
+    {
+        assert(v < used_data_flag.size());
+        assert(!isDataVertexUsed(v));
+
+        UndoRecord undo;
+        undo.kind = UNDO_USED_DATA_SIZE;
+        undo.old_size = used_data_vertices.size();
+        undo_stack.push_back(std::move(undo));
+
+        used_data_vertices.push_back(v);
+        used_data_flag[v] = 1;
     }
 
     void buildQueryMatrix()
@@ -288,7 +488,10 @@ private:
                     QEdge e;
                     e.u = u;
                     e.v = v;
+                    e.id = (ui)all_q_edges.size();
                     all_q_edges.push_back(e);
+                    q_edge_id[u][v] = (int)e.id;
+                    q_edge_id[v][u] = (int)e.id;
                 }
             }
         }
@@ -325,41 +528,21 @@ private:
         }
     }
 
-    void orderQueryEdges()
+    DirectedScore makeDirectedScore(ui new_u, ui anchor) const
     {
-        sort(all_q_edges.begin(), all_q_edges.end(),
-            [this](const QEdge &lhs, const QEdge &rhs) {
-                ui lhs_new = lhs.u;
-                ui lhs_anchor = lhs.v;
-                if (isDirectedScoreLess(lhs.v, lhs.u, lhs.u, lhs.v)) {
-                    lhs_new = lhs.v;
-                    lhs_anchor = lhs.u;
-                }
+        DirectedScore score;
+        score.numerator =
+            (unsigned long long)candidate_counts[new_u] *
+            (unsigned long long)dataEdgeLabelFrequency(new_u, anchor);
+        score.denominator = (unsigned long long)dataLabelFrequency(new_u);
+        return score;
+    }
 
-                ui rhs_new = rhs.u;
-                ui rhs_anchor = rhs.v;
-                if (isDirectedScoreLess(rhs.v, rhs.u, rhs.u, rhs.v)) {
-                    rhs_new = rhs.v;
-                    rhs_anchor = rhs.u;
-                }
-
-                if (isDirectedScoreLess(lhs_new, lhs_anchor, rhs_new, rhs_anchor)) {
-                    return true;
-                }
-                if (isDirectedScoreLess(rhs_new, rhs_anchor, lhs_new, lhs_anchor)) {
-                    return false;
-                }
-                if (lhs.u != rhs.u) return lhs.u < rhs.u;
-                return lhs.v < rhs.v;
-            });
-
-        q_edge_id.assign(qn, vector<int>(qn, -1));
-        for (ui i = 0; i < all_q_edges.size(); ++i) {
-            all_q_edges[i].id = i;
-            ui u = all_q_edges[i].u;
-            ui v = all_q_edges[i].v;
-            q_edge_id[u][v] = (int)i;
-            q_edge_id[v][u] = (int)i;
+    void cacheDirectedEdgeScores()
+    {
+        for (QEdge &edge : all_q_edges) {
+            edge.u_to_v = makeDirectedScore(edge.u, edge.v);
+            edge.v_to_u = makeDirectedScore(edge.v, edge.u);
         }
     }
 
@@ -535,17 +718,21 @@ private:
     bool isDirectedScoreLess(ui lhs_new_u, ui lhs_anchor,
         ui rhs_new_u, ui rhs_anchor) const
     {
-        unsigned long long lhs_num =
-            (unsigned long long)candidate_counts[lhs_new_u] *
-            (unsigned long long)dataEdgeLabelFrequency(lhs_new_u, lhs_anchor);
-        unsigned long long rhs_num =
-            (unsigned long long)candidate_counts[rhs_new_u] *
-            (unsigned long long)dataEdgeLabelFrequency(rhs_new_u, rhs_anchor);
-        unsigned long long lhs_den = (unsigned long long)dataLabelFrequency(lhs_new_u);
-        unsigned long long rhs_den = (unsigned long long)dataLabelFrequency(rhs_new_u);
+        int lhs_edge_id = q_edge_id[lhs_new_u][lhs_anchor];
+        int rhs_edge_id = q_edge_id[rhs_new_u][rhs_anchor];
+        assert(lhs_edge_id >= 0 && rhs_edge_id >= 0);
 
-        __uint128_t lhs = (__uint128_t)lhs_num * rhs_den;
-        __uint128_t rhs = (__uint128_t)rhs_num * lhs_den;
+        const QEdge &lhs_edge = all_q_edges[(ui)lhs_edge_id];
+        const QEdge &rhs_edge = all_q_edges[(ui)rhs_edge_id];
+        const DirectedScore &lhs_score = lhs_new_u == lhs_edge.u
+            ? lhs_edge.u_to_v : lhs_edge.v_to_u;
+        const DirectedScore &rhs_score = rhs_new_u == rhs_edge.u
+            ? rhs_edge.u_to_v : rhs_edge.v_to_u;
+
+        __uint128_t lhs =
+            (__uint128_t)lhs_score.numerator * rhs_score.denominator;
+        __uint128_t rhs =
+            (__uint128_t)rhs_score.numerator * lhs_score.denominator;
         if (lhs != rhs) return lhs < rhs;
 
         if (candidate_counts[lhs_new_u] != candidate_counts[rhs_new_u]) {
@@ -660,12 +847,36 @@ private:
         }
 
         ui replacement = INVALID_EDGE;
+        ui replacement_new_u = 0;
+        ui replacement_anchor = 0;
+        int root_component = dsu.find((int)root);
         for (const QEdge &edge : all_q_edges) {
             if (in_tree[edge.id]) continue;
             if (state.R.find(edge.id) != state.R.end()) continue;
-            if (dsu.find((int)edge.u) != dsu.find((int)edge.v)) {
+
+            int u_component = dsu.find((int)edge.u);
+            int v_component = dsu.find((int)edge.v);
+            if (u_component == v_component) continue;
+
+            ui new_u = 0;
+            ui anchor = 0;
+            // The endpoint in the root component is reached first in the
+            // reordered rooted tree, so it is the anchor of this direction.
+            if (u_component == root_component) {
+                anchor = edge.u;
+                new_u = edge.v;
+            }
+            else {
+                assert(v_component == root_component);
+                anchor = edge.v;
+                new_u = edge.u;
+            }
+
+            if (isBetterDirectedEdge(edge.id, new_u, anchor,
+                replacement, replacement_new_u, replacement_anchor)) {
                 replacement = edge.id;
-                break;
+                replacement_new_u = new_u;
+                replacement_anchor = anchor;
             }
         }
 
@@ -811,13 +1022,17 @@ private:
         if (v_parent_int < 0) return;
 
         ui v_parent = (ui)v_parent_int;
-        ui deg_g;
-        const ui *neighbors_g = data_graph->getVertexNeighbors(v_parent, deg_g);
+        const pair<size_t, ui> *tree_range =
+            findAdjRange(u_parent, v_parent, u_curr);
 
-        for (ui i = 0; i < deg_g; ++i) {
-            ui v_curr = neighbors_g[i];
-            if (mapped_g[v_curr] != -1) continue;
-            if (!candidates[u_curr].contains(v_curr)) continue;
+        const ui *tree_begin = tree_range == nullptr
+            ? nullptr : rangeBegin(*tree_range);
+        const ui *tree_end = tree_range == nullptr
+            ? nullptr : rangeEnd(*tree_range);
+
+        for (const ui *it = tree_begin; it != tree_end; ++it) {
+            ui v_curr = *it;
+            if (isDataVertexUsed(v_curr)) continue;
 
             ui new_gamma = gamma;
             bool possible = true;
@@ -831,8 +1046,8 @@ private:
                     break;
                 }
 
-                bool edge_exists = data_graph->hasEdge(v_curr, (ui)v_target_int);
-                stats.has_edge_calls++;
+                bool edge_exists = anchorAdjacent(
+                    u_target, (ui)v_target_int, u_curr, v_curr);
 
                 bool in_R = seq.R.find(back_edge_id) != seq.R.end();
                 if (in_R) {
@@ -852,13 +1067,14 @@ private:
 
             if (!possible || new_gamma > threshold) continue;
 
-            mapped_q[u_curr] = (int)v_curr;
-            mapped_g[v_curr] = (int)u_curr;
+            size_t branch_mark = mark();
+            setMap(u_curr, (int)v_curr);
+            pushUsed(v_curr);
 
             SimSearchOnDemand(h + 1, state, new_gamma);
 
-            mapped_q[u_curr] = -1;
-            mapped_g[v_curr] = -1;
+            rollback(branch_mark);
+            assert(mark() == branch_mark);
 
             if (outputLimitReached()) break;
         }
@@ -887,8 +1103,8 @@ private:
                 return;
             }
 
-            bool exists = data_graph->hasEdge((ui)vu_int, (ui)vv_int);
-            stats.has_edge_calls++;
+            bool exists = anchorAdjacent(
+                edge.u, (ui)vu_int, edge.v, (ui)vv_int);
 
             if (seq.R.find(edge.id) != seq.R.end() && exists) {
                 stats.verify_time += t_verify.elapsed();

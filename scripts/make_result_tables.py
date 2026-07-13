@@ -5,7 +5,7 @@ Build an HTML comparison report from SSM-GED summary results.
 The repository's benchmark summaries are TSV files shaped like:
 
   dataset_group dataset query_group query threshold status expected_count
-  cde_edge_ie_count cde_edge_ie_run_ms ... treespan_count treespan_run_ms ...
+  algorithm_a_count algorithm_a_run_ms ... treespan_count treespan_run_ms ...
 
 This script detects algorithm columns, compares the selected algorithm against
 the best non-selected algorithm for a metric, and writes three HTML files by
@@ -54,7 +54,6 @@ KNOWN_ALGORITHM_SUFFIXES = (
 
 DEFAULT_DISPLAY_METRICS = ("count", "run_ms", "recursion_calls")
 RUNTIME_LOW_COLOR_THRESHOLD_MS = 200.0
-DEFAULT_OURS_ALGORITHM = "cde_edge_ie"
 SPEEDUP_BUCKET_EDGES = tuple(
     [i / 10.0 for i in range(1, 11)] + [float(i) for i in range(2, 11)]
 )
@@ -112,8 +111,8 @@ def parse_args() -> argparse.Namespace:
         "--ours",
         default=None,
         help=(
-            "primary algorithm name or prefix; default: first --algorithms item, "
-            f"or {DEFAULT_OURS_ALGORITHM} when --algorithms is not set"
+            "primary algorithm name or prefix; default: first --algorithms item "
+            "or first detected algorithm"
         ),
     )
     parser.add_argument(
@@ -1723,10 +1722,12 @@ def main() -> int:
         selected_algorithm_names = parse_algorithm_list(args.algorithms)
         if selected_algorithm_names is None:
             algorithms = detected_algorithms
-            ours_algorithm = resolve_algorithm(
-                args.ours or DEFAULT_OURS_ALGORITHM,
-                algorithms,
-            )
+            if not algorithms:
+                raise ValueError(f"No algorithm columns found for metric '{args.metric}'.")
+            if args.ours:
+                ours_algorithm = resolve_algorithm(args.ours, algorithms)
+            else:
+                ours_algorithm = algorithms[0]
         else:
             algorithms = resolve_algorithm_list(
                 selected_algorithm_names,

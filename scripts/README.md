@@ -1,9 +1,50 @@
 # HTML Result Report
 
+## Repeated DecQ comparison
+
+`benchmark_decq.py` runs each selected executable as a fresh process, rotates
+execution order, rejects resource-limited observations, verifies identical
+unique-result counts, and reports robust internal-algorithm time summaries plus
+DecQ phase and structural counters when present. Prefer `algorithm_ms_*` over
+`runner_run_ms_*`, which includes statistics-printing overhead.
+
+```bash
+python3 scripts/benchmark_decq.py \
+  --build-dir build_decq \
+  --data test/datasets/real_graphs/Lastfm/graph_g.txt \
+  --query test/datasets/real_graphs/Lastfm/query_graph/query_10_2.txt \
+  --thresholds 0 1 2 3 \
+  --algorithms decq,treespan \
+  --repetitions 7
+```
+
+See `docs/decq_reproduction.md` for the paper/output-semantics comparison and
+the clean-room fidelity limits.
+
+## Repeated SASUM comparison
+
+`benchmark_sasum.py` runs a selected query repeatedly in separate processes,
+rotates algorithm order, verifies identical result counts, and prints median,
+mean, minimum, and maximum `run_ms` values.
+
+```bash
+python3 scripts/benchmark_sasum.py \
+  --build-dir build \
+  --data test/datasets/real_graphs/Lastfm/graph_g.txt \
+  --query test/datasets/real_graphs/Lastfm/query_graph/query_10_2.txt \
+  --thresholds 1 2 3 \
+  --algorithms sasum,treespan \
+  --repetitions 7
+```
+
+See `docs/sasum_reproduction.md` for the fidelity and metric definitions.
+
+## HTML reports
+
 `make_result_tables.py` reads SSM-GED benchmark summaries and creates comparison
 tables for the selected primary algorithm against the best result from the other
-algorithms. The default primary algorithm is `cde_edge_ie`. It now writes one
-HTML report by default.
+algorithms. By default, the first detected algorithm is primary. It now writes
+one HTML report by default.
 
 ## Input
 
@@ -19,7 +60,6 @@ query
 threshold
 status
 cde_match_run_ms
-cde_edge_ie_run_ms
 treespan_run_ms
 ```
 
@@ -52,7 +92,7 @@ algorithm:
 
 ```bash
 python3 -B scripts/make_result_tables.py \
-  --algorithms cde_edge_ie,cde_match,treespan \
+  --algorithms cde_match,treespan \
   result/20260423_174256
 ```
 
@@ -62,7 +102,7 @@ selected set:
 
 ```bash
 python3 -B scripts/make_result_tables.py \
-  --algorithms cde_edge_ie,cde_match,treespan \
+  --algorithms cde_match,treespan \
   --ours cde_match \
   result/20260423_174256
 ```
@@ -88,14 +128,14 @@ algorithm running time, and the best non-primary-algorithm running time.
 For the default time metric, smaller is better:
 
 ```text
-speedup = best_other_run_ms / cde_edge_ie_run_ms
+speedup = best_other_run_ms / primary_run_ms
 ```
 
 Meaning:
 
 ```text
-speedup > 1   cde_edge_ie is faster, shown as green.
-speedup < 1   cde_edge_ie is slower, shown as red.
+speedup > 1   The primary algorithm is faster, shown as green.
+speedup < 1   The primary algorithm is slower, shown as red.
 speedup = 1   Tie, shown as white.
 ```
 

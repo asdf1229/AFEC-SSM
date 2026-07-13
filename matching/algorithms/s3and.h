@@ -5,13 +5,15 @@
 #include "matching/run_matching.h"
 #include "utility/utility.h"
 
+#include <random>
+
 using namespace std;
 
 class S3ANDSolver {
 public:
     S3ANDSolver()
         : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr),
-          threshold(0), qn(0), gn(0), branch_stamp(1), index_root(0)
+          threshold(0), qn(0), gn(0), rng(42)
     {}
 
     bool init(const Graph *q, const Graph *g, ui match_threshold)
@@ -33,7 +35,7 @@ public:
         buildGraphCaches();
 
         Timer t_index;
-        buildIndex();
+        constructIndexBalanced();
         stats.index_time = t_index.elapsed();
 
         Timer t_filter;
@@ -49,25 +51,9 @@ public:
         results_ptr = &results;
         results_ptr->clear();
 
-        ui root = query_plan.empty() ? selectInitialRoot() : query_plan[0];
-        for (ui v : candidates[root]) {
-            if (outputLimitReached()) break;
-            if (!candidateCanStillConnect(root, v)) {
-                stats.connectivity_prunes++;
-                continue;
-            }
-
-            mapped_q[root] = (int)v;
-            mapped_g[v] = (int)root;
-            if (partialFeasibilityCheck(0)) {
-                dfs(1, 0);
-            }
-            else {
-                stats.prune_calls++;
-            }
-            mapped_g[v] = -1;
-            mapped_q[root] = -1;
-        }
+        mapped_q.assign(qn, -1);
+        mapped_g.assign(gn, -1);
+        CCSandR(0, 0);
 
         stats.dfs_time = t_search.elapsed();
         stats.total_time = stats.init_time + stats.dfs_time;
@@ -79,15 +65,15 @@ public:
         long long filter_time = 0;
         long long index_time = 0;
         long long dfs_time = 0;
+        unsigned long long entry_node_visits = 0;
+        unsigned long long entry_node_prunes = 0;
+        unsigned long long vertex_visits = 0;
+        unsigned long long candidate_checks = 0;
         unsigned long long recursion_calls = 0;
         unsigned long long prune_calls = 0;
-        unsigned long long index_node_visits = 0;
-        unsigned long long index_node_prunes = 0;
-        unsigned long long candidate_checks = 0;
-        unsigned long long forced_lower_bound_prunes = 0;
-        unsigned long long connectivity_prunes = 0;
+        unsigned long long final_checks = 0;
         ui filter_candidate_count = 0;
-        ui index_node_count = 0;
+        ui index_entry_count = 0;
         size_t result_count = 0;
         bool output_limit_reached = false;
     } stats;
@@ -99,16 +85,16 @@ public:
         printf("Init Time:           %.4lf ms\n", stats.init_time / 1000.0);
         printf("Filter Time:         %.4lf ms\n", stats.filter_time / 1000.0);
         printf("Index Time:          %.4lf ms\n", stats.index_time / 1000.0);
-        printf("DFS Time:            %.4lf ms\n", stats.dfs_time / 1000.0);
-        printf("Index Nodes:         %u\n", stats.index_node_count);
-        printf("Index Node Visits:   %llu\n", stats.index_node_visits);
-        printf("Index Node Prunes:   %llu\n", stats.index_node_prunes);
+        printf("CCSandR Time:        %.4lf ms\n", stats.dfs_time / 1000.0);
+        printf("Index Entries:       %u\n", stats.index_entry_count);
+        printf("Entry Visits:        %llu\n", stats.entry_node_visits);
+        printf("Entry Prunes:        %llu\n", stats.entry_node_prunes);
+        printf("Leaf Vertex Visits:  %llu\n", stats.vertex_visits);
         printf("Candidate Checks:    %llu\n", stats.candidate_checks);
         printf("Candidates:          %u\n", stats.filter_candidate_count);
         printf("Recursion Calls:     %llu\n", stats.recursion_calls);
         printf("Prune Calls:         %llu\n", stats.prune_calls);
-        printf("LB Prunes:           %llu\n", stats.forced_lower_bound_prunes);
-        printf("Connectivity Prunes: %llu\n", stats.connectivity_prunes);
+        printf("Final Checks:        %llu\n", stats.final_checks);
         printf("Results Found:       %zu\n", stats.result_count);
         if (stats.output_limit_reached) {
             printf("Output Limit:        reached (%d)\n", MATCH_OUTPUT_LIMIT);
@@ -116,28 +102,31 @@ public:
     }
 
 private:
-    struct LabelCount {
-        LabelID label;
-        ui count;
+    struct AuxSynopsis {
+        vector<LabelID> labels;          // S3AND BV under exact one-label semantics.
+        vector<LabelID> neighbor_labels; // S3AND NBV under exact one-label semantics.
+        ui nk = 0;                       // Maximum incident-edge capacity in this entry.
     };
 
-    struct IndexNode {
+    struct IndexEntry {
         bool leaf = false;
-        ui max_degree = 0;
-        vector<ui> vertices;
+        ui vertex = 0;
+        ui level = 0;
         vector<ui> children;
-        vector<LabelID> labels;
-        vector<LabelCount> max_neighbor_label_counts;
+        vector<ui> query_vertices;       // The source-code Q list carried by an entry.
+        AuxSynopsis aux;
     };
 
     struct HeapEntry {
-        ui node;
-        ui key;
+        ui entry = 0;
+        ui key = 0;
+        ui level = 0;
 
         bool operator<(const HeapEntry &rhs) const
         {
+            if (level != rhs.level) return level > rhs.level;
             if (key != rhs.key) return key < rhs.key;
-            return node > rhs.node;
+            return entry > rhs.entry;
         }
     };
 
@@ -151,24 +140,18 @@ private:
     vector<vector<ui> > q_neighbors;
     vector<ui> q_degree;
     vector<ui> g_degree;
-    vector<vector<LabelCount> > Lq_counts;
-    vector<vector<LabelCount> > Lg_counts;
     vector<vector<ui> > candidates;
-    vector<vector<char> > candidate_marks;
-    vector<vector<char> > candidate_neighbor_marks;
-    vector<IndexNode> index_nodes;
-    vector<ui> query_plan;
-    vector<int> branch_seen_stamp;
-    vector<unsigned short> branch_hit_count;
-    vector<ui> branch_touched;
-    int branch_stamp;
+    vector<IndexEntry> index_entries;
+    vector<ui> root_entries;
+    vector<ui> order;
+    vector<ui> pivot_by_order;
     vector<int> mapped_q;
     vector<int> mapped_g;
-    ui index_root;
+    mt19937 rng;
 
     enum {
-        kIndexFanout = 16,
-        kIndexLeafSize = 512
+        kPartitionNumber = 16,
+        kCostModelIterations = 5
     };
 
     void resetState()
@@ -177,20 +160,14 @@ private:
         q_neighbors.clear();
         q_degree.clear();
         g_degree.clear();
-        Lq_counts.clear();
-        Lg_counts.clear();
         candidates.clear();
-        candidate_marks.clear();
-        candidate_neighbor_marks.clear();
-        index_nodes.clear();
-        query_plan.clear();
-        branch_seen_stamp.clear();
-        branch_hit_count.clear();
-        branch_touched.clear();
-        branch_stamp = 1;
+        index_entries.clear();
+        root_entries.clear();
+        order.clear();
+        pivot_by_order.clear();
         mapped_q.clear();
         mapped_g.clear();
-        index_root = 0;
+        rng.seed(42);
     }
 
     bool outputLimitReached() const
@@ -221,68 +198,50 @@ private:
         for (ui v = 0; v < gn; ++v) {
             g_degree[v] = data_graph->getVertexDegree(v);
         }
-
-        buildLabelCounts(query_graph, qn, Lq_counts);
-        buildLabelCounts(data_graph, gn, Lg_counts);
     }
 
-    void buildLabelCounts(const Graph *graph, ui n,
-        vector<vector<LabelCount> > &counts) const
+    static void appendAndUnique(vector<LabelID> &dst,
+        const vector<LabelID> &src)
     {
-        counts.assign(n, vector<LabelCount>());
-        vector<LabelID> labels;
-
-        for (ui u = 0; u < n; ++u) {
-            ui deg = 0;
-            const ui *nbrs = graph->getVertexNeighbors(u, deg);
-            labels.clear();
-            labels.reserve(deg);
-
-            for (ui i = 0; i < deg; ++i) {
-                labels.push_back(graph->getVertexLabel(nbrs[i]));
-            }
-            sort(labels.begin(), labels.end());
-
-            vector<LabelCount> &out = counts[u];
-            out.reserve(labels.size());
-            for (size_t i = 0; i < labels.size();) {
-                size_t j = i + 1;
-                while (j < labels.size() && labels[j] == labels[i]) ++j;
-                out.push_back({ labels[i], (ui)(j - i) });
-                i = j;
-            }
-        }
+        dst.insert(dst.end(), src.begin(), src.end());
+        sort(dst.begin(), dst.end());
+        dst.erase(unique(dst.begin(), dst.end()), dst.end());
     }
 
-    ui computeNeighborLabelDeficit(ui u, ui v) const
-    {
-        const vector<LabelCount> &qc = Lq_counts[u];
-        const vector<LabelCount> &gc = Lg_counts[v];
-        size_t gi = 0;
-        ui deficit = 0;
-
-        for (const auto &q_count : qc) {
-            while (gi < gc.size() && gc[gi].label < q_count.label) {
-                ++gi;
-            }
-
-            ui data_count = 0;
-            if (gi < gc.size() && gc[gi].label == q_count.label) {
-                data_count = gc[gi].count;
-            }
-
-            if (q_count.count > data_count) {
-                deficit += q_count.count - data_count;
-                if (deficit > threshold) return deficit;
-            }
-        }
-
-        return deficit;
-    }
-
-    bool hasLabel(const vector<LabelID> &labels, LabelID label) const
+    static bool hasLabel(const vector<LabelID> &labels, LabelID label)
     {
         return binary_search(labels.begin(), labels.end(), label);
+    }
+
+    AuxSynopsis makeVertexAux(ui v) const
+    {
+        AuxSynopsis aux;
+        aux.labels.push_back(data_graph->getVertexLabel(v));
+
+        ui deg = 0;
+        const ui *nbrs = data_graph->getVertexNeighbors(v, deg);
+        aux.neighbor_labels.reserve(deg);
+        for (ui i = 0; i < deg; ++i) {
+            aux.neighbor_labels.push_back(data_graph->getVertexLabel(nbrs[i]));
+        }
+        sort(aux.neighbor_labels.begin(), aux.neighbor_labels.end());
+        aux.neighbor_labels.erase(unique(aux.neighbor_labels.begin(),
+            aux.neighbor_labels.end()), aux.neighbor_labels.end());
+
+        aux.nk = deg;
+        return aux;
+    }
+
+    AuxSynopsis aggregateAux(const vector<ui> &children) const
+    {
+        AuxSynopsis aux;
+        for (ui child_id : children) {
+            const AuxSynopsis &child = index_entries[child_id].aux;
+            appendAndUnique(aux.labels, child.labels);
+            appendAndUnique(aux.neighbor_labels, child.neighbor_labels);
+            aux.nk = max(aux.nk, child.nk);
+        }
+        return aux;
     }
 
     bool nodeFeatureLess(ui lhs, ui rhs) const
@@ -294,181 +253,296 @@ private:
         ui dl = g_degree[lhs];
         ui dr = g_degree[rhs];
         if (dl != dr) return dl > dr;
-
-        const vector<LabelCount> &lc = Lg_counts[lhs];
-        const vector<LabelCount> &rc = Lg_counts[rhs];
-        size_t n = min(lc.size(), rc.size());
-        for (size_t i = 0; i < n; ++i) {
-            if (lc[i].label != rc[i].label) return lc[i].label < rc[i].label;
-            if (lc[i].count != rc[i].count) return lc[i].count > rc[i].count;
-        }
-        if (lc.size() != rc.size()) return lc.size() > rc.size();
         return lhs < rhs;
     }
 
-    void computeNodeAggregates(IndexNode &node, const vector<ui> &vertices)
+    ui labelDistance(LabelID lhs, LabelID rhs) const
     {
-        node.max_degree = 0;
-        node.labels.clear();
-        node.max_neighbor_label_counts.clear();
-
-        map<LabelID, ui> max_counts;
-        node.labels.reserve(vertices.size());
-
-        for (ui v : vertices) {
-            node.max_degree = max(node.max_degree, g_degree[v]);
-            node.labels.push_back(data_graph->getVertexLabel(v));
-
-            const vector<LabelCount> &counts = Lg_counts[v];
-            for (const auto &item : counts) {
-                ui &current = max_counts[item.label];
-                if (item.count > current) current = item.count;
-            }
-        }
-
-        sort(node.labels.begin(), node.labels.end());
-        node.labels.erase(unique(node.labels.begin(), node.labels.end()), node.labels.end());
-
-        node.max_neighbor_label_counts.reserve(max_counts.size());
-        for (const auto &item : max_counts) {
-            node.max_neighbor_label_counts.push_back({ item.first, item.second });
-        }
+        return lhs == rhs ? 0 : 2;
     }
 
-    ui buildIndexNode(const vector<ui> &vertices)
+    vector<vector<ui> > initializePartition(const vector<ui> &nodes,
+        ui partition_count)
     {
-        ui node_id = (ui)index_nodes.size();
-        index_nodes.push_back(IndexNode());
-        computeNodeAggregates(index_nodes[node_id], vertices);
+        vector<ui> shuffled = nodes;
+        shuffle(shuffled.begin(), shuffled.end(), rng);
 
-        if (vertices.size() <= (size_t)kIndexLeafSize) {
-            index_nodes[node_id].leaf = true;
-            index_nodes[node_id].vertices = vertices;
-            return node_id;
+        vector<ui> centers(shuffled.begin(), shuffled.begin() + partition_count);
+        vector<vector<ui> > partition(partition_count);
+        for (ui i = 0; i < partition_count; ++i) {
+            partition[i].push_back(centers[i]);
         }
 
-        vector<ui> ordered = vertices;
-        sort(ordered.begin(), ordered.end(),
-            [this](ui lhs, ui rhs) { return nodeFeatureLess(lhs, rhs); });
-
-        size_t part_count = min((size_t)kIndexFanout,
-            (ordered.size() + (size_t)kIndexLeafSize - 1) / (size_t)kIndexLeafSize);
-        if (part_count < 2) part_count = 2;
-
-        index_nodes[node_id].leaf = false;
-        index_nodes[node_id].children.reserve(part_count);
-        for (size_t p = 0; p < part_count; ++p) {
-            size_t begin = (ordered.size() * p) / part_count;
-            size_t end = (ordered.size() * (p + 1)) / part_count;
-            if (begin >= end) continue;
-
-            vector<ui> child_vertices(ordered.begin() + begin, ordered.begin() + end);
-            ui child_id = buildIndexNode(child_vertices);
-            index_nodes[node_id].children.push_back(child_id);
-        }
-
-        return node_id;
-    }
-
-    void buildIndex()
-    {
-        index_nodes.clear();
-        vector<ui> vertices;
-        vertices.reserve(gn);
-        for (ui v = 0; v < gn; ++v) {
-            vertices.push_back(v);
-        }
-
-        if (!vertices.empty()) {
-            index_root = buildIndexNode(vertices);
-        }
-        stats.index_node_count = (ui)index_nodes.size();
-    }
-
-    ui computeNodeNeighborLabelDeficit(ui u, const IndexNode &node) const
-    {
-        const vector<LabelCount> &qc = Lq_counts[u];
-        const vector<LabelCount> &nc = node.max_neighbor_label_counts;
-        size_t ni = 0;
-        ui deficit = 0;
-
-        for (const auto &q_count : qc) {
-            while (ni < nc.size() && nc[ni].label < q_count.label) {
-                ++ni;
-            }
-
-            ui node_count = 0;
-            if (ni < nc.size() && nc[ni].label == q_count.label) {
-                node_count = nc[ni].count;
-            }
-
-            if (q_count.count > node_count) {
-                deficit += q_count.count - node_count;
-                if (deficit > threshold) return deficit;
-            }
-        }
-
-        return deficit;
-    }
-
-    bool nodeMayContainCandidate(ui u, const IndexNode &node) const
-    {
-        if (!hasLabel(node.labels, query_graph->getVertexLabel(u))) return false;
-        if (q_degree[u] > node.max_degree + threshold) return false;
-        if (computeNodeNeighborLabelDeficit(u, node) > threshold) return false;
-        return true;
-    }
-
-    ui nodeTraversalKey(ui u, const IndexNode &node) const
-    {
-        ui deficit = computeNodeNeighborLabelDeficit(u, node);
-        ui coverage = q_degree[u] > deficit ? q_degree[u] - deficit : 0;
-        return coverage * 1000000u + node.max_degree;
-    }
-
-    void retrieveCandidatesFromIndex(ui u, vector<ui> &cand)
-    {
-        cand.clear();
-        if (index_nodes.empty()) return;
-
-        priority_queue<HeapEntry> heap;
-        const IndexNode &root = index_nodes[index_root];
-        if (nodeMayContainCandidate(u, root)) {
-            heap.push({ index_root, nodeTraversalKey(u, root) });
-        }
-        else {
-            stats.index_node_prunes++;
-        }
-
-        while (!heap.empty()) {
-            HeapEntry entry = heap.top();
-            heap.pop();
-            stats.index_node_visits++;
-
-            const IndexNode &node = index_nodes[entry.node];
-            if (!nodeMayContainCandidate(u, node)) {
-                stats.index_node_prunes++;
+        ui soft_cap = (ui)((nodes.size() + partition_count - 1) / partition_count);
+        for (ui node : shuffled) {
+            if (find(centers.begin(), centers.end(), node) != centers.end()) {
                 continue;
             }
 
-            if (node.leaf) {
-                for (ui v : node.vertices) {
-                    stats.candidate_checks++;
-                    if (query_graph->getVertexLabel(u) != data_graph->getVertexLabel(v)) continue;
-                    if (q_degree[u] > g_degree[v] + threshold) continue;
-                    if (computeNeighborLabelDeficit(u, v) > threshold) continue;
-                    cand.push_back(v);
+            ui best = partition_count;
+            ui best_distance = numeric_limits<ui>::max();
+            for (ui i = 0; i < partition_count; ++i) {
+                if (partition[i].size() >= soft_cap) continue;
+                ui dist = labelDistance(data_graph->getVertexLabel(node),
+                    data_graph->getVertexLabel(centers[i]));
+                dist = dist * 1000000u +
+                    (g_degree[node] > g_degree[centers[i]]
+                        ? g_degree[node] - g_degree[centers[i]]
+                        : g_degree[centers[i]] - g_degree[node]);
+                if (dist < best_distance ||
+                    (dist == best_distance && partition[i].size() < partition[best].size())) {
+                    best = i;
+                    best_distance = dist;
                 }
             }
+
+            if (best == partition_count) {
+                best = 0;
+                for (ui i = 1; i < partition_count; ++i) {
+                    if (partition[i].size() < partition[best].size()) best = i;
+                }
+            }
+            partition[best].push_back(node);
+        }
+
+        return partition;
+    }
+
+    LabelID partitionCenterLabel(const vector<ui> &part) const
+    {
+        vector<LabelID> labels;
+        labels.reserve(part.size());
+        for (ui v : part) labels.push_back(data_graph->getVertexLabel(v));
+        sort(labels.begin(), labels.end());
+
+        LabelID best_label = labels[0];
+        ui best_count = 0;
+        for (size_t i = 0; i < labels.size();) {
+            size_t j = i + 1;
+            while (j < labels.size() && labels[j] == labels[i]) ++j;
+            ui count = (ui)(j - i);
+            if (count > best_count) {
+                best_label = labels[i];
+                best_count = count;
+            }
+            i = j;
+        }
+        return best_label;
+    }
+
+    unsigned long long partitionCost(const vector<vector<ui> > &partition,
+        const vector<LabelID> &centers) const
+    {
+        unsigned long long cost = 0;
+        for (ui i = 0; i < partition.size(); ++i) {
+            for (ui v : partition[i]) {
+                cost += labelDistance(data_graph->getVertexLabel(v), centers[i]);
+            }
+        }
+        return cost;
+    }
+
+    vector<vector<ui> > costModel(vector<vector<ui> > partition,
+        const vector<ui> &nodes, ui partition_count)
+    {
+        ui soft_cap = (ui)((nodes.size() + partition_count - 1) / partition_count);
+        vector<LabelID> centers(partition_count, 0);
+        for (ui i = 0; i < partition_count; ++i) {
+            centers[i] = partitionCenterLabel(partition[i]);
+        }
+        unsigned long long best_cost = partitionCost(partition, centers);
+
+        vector<ui> ordered = nodes;
+        sort(ordered.begin(), ordered.end(),
+            [this](ui lhs, ui rhs) { return nodeFeatureLess(lhs, rhs); });
+
+        for (ui iter = 0; iter < kCostModelIterations; ++iter) {
+            vector<vector<ui> > next(partition_count);
+            for (ui v : ordered) {
+                ui best = partition_count;
+                ui best_distance = numeric_limits<ui>::max();
+                for (ui i = 0; i < partition_count; ++i) {
+                    if (next[i].size() >= soft_cap) continue;
+                    ui dist = labelDistance(data_graph->getVertexLabel(v), centers[i]);
+                    if (dist < best_distance ||
+                        (dist == best_distance &&
+                         (best == partition_count ||
+                          next[i].size() < next[best].size()))) {
+                        best = i;
+                        best_distance = dist;
+                    }
+                }
+
+                if (best == partition_count) {
+                    best = 0;
+                    for (ui i = 1; i < partition_count; ++i) {
+                        if (next[i].size() < next[best].size()) best = i;
+                    }
+                }
+                next[best].push_back(v);
+            }
+
+            bool has_empty = false;
+            for (const auto &part : next) {
+                if (part.empty()) {
+                    has_empty = true;
+                    break;
+                }
+            }
+            if (has_empty) break;
+
+            vector<LabelID> next_centers(partition_count, 0);
+            for (ui i = 0; i < partition_count; ++i) {
+                next_centers[i] = partitionCenterLabel(next[i]);
+            }
+
+            unsigned long long next_cost = partitionCost(next, next_centers);
+            if (next_cost > best_cost && iter > 0) break;
+            if (next == partition) break;
+
+            partition.swap(next);
+            centers.swap(next_centers);
+            best_cost = next_cost;
+        }
+
+        return partition;
+    }
+
+    vector<ui> rootTree(const vector<ui> &nodes, ui level)
+    {
+        if (nodes.size() <= (size_t)kPartitionNumber) {
+            vector<ui> leaves;
+            leaves.reserve(nodes.size());
+            for (ui v : nodes) {
+                ui entry_id = (ui)index_entries.size();
+                index_entries.push_back(IndexEntry());
+                IndexEntry &entry = index_entries.back();
+                entry.leaf = true;
+                entry.vertex = v;
+                entry.level = level;
+                entry.aux = makeVertexAux(v);
+                leaves.push_back(entry_id);
+            }
+            return leaves;
+        }
+
+        ui partition_count = min((ui)kPartitionNumber, (ui)nodes.size());
+        vector<vector<ui> > partition = initializePartition(nodes, partition_count);
+        partition = costModel(partition, nodes, partition_count);
+
+        vector<ui> entries;
+        entries.reserve(partition.size());
+        for (const auto &part : partition) {
+            if (part.empty()) continue;
+
+            vector<ui> child_entries = rootTree(part, level + 1);
+            ui entry_id = (ui)index_entries.size();
+            index_entries.push_back(IndexEntry());
+            IndexEntry &entry = index_entries.back();
+            entry.leaf = false;
+            entry.level = level;
+            entry.children.swap(child_entries);
+            entry.aux = aggregateAux(entry.children);
+            entries.push_back(entry_id);
+        }
+
+        return entries;
+    }
+
+    void constructIndexBalanced()
+    {
+        vector<ui> vertices;
+        vertices.reserve(gn);
+        for (ui v = 0; v < gn; ++v) vertices.push_back(v);
+        root_entries = rootTree(vertices, 0);
+        stats.index_entry_count = (ui)index_entries.size();
+    }
+
+    bool pruningKeywordSet(const IndexEntry &entry, ui q) const
+    {
+        return hasLabel(entry.aux.labels, query_graph->getVertexLabel(q));
+    }
+
+    bool pruningLBNDPhase1(const IndexEntry &entry, ui q) const
+    {
+        ui lb_nd = q_degree[q] > entry.aux.nk ? q_degree[q] - entry.aux.nk : 0;
+        return lb_nd <= threshold;
+    }
+
+    bool pruningLBNDPhase2(const IndexEntry &entry, ui q) const
+    {
+        ui lb_nd = q_degree[q];
+        for (ui q_nbr : q_neighbors[q]) {
+            if (hasLabel(entry.aux.neighbor_labels,
+                    query_graph->getVertexLabel(q_nbr))) {
+                --lb_nd;
+            }
+        }
+        return lb_nd <= threshold;
+    }
+
+    bool entryMayMatchQueryVertex(const IndexEntry &entry, ui q) const
+    {
+        return pruningKeywordSet(entry, q) &&
+            pruningLBNDPhase1(entry, q) &&
+            pruningLBNDPhase2(entry, q);
+    }
+
+    void retrieveCandidatesFromIndex()
+    {
+        candidates.assign(qn, vector<ui>());
+        priority_queue<HeapEntry> heap;
+
+        for (ui entry_id : root_entries) {
+            IndexEntry &entry = index_entries[entry_id];
+            entry.query_vertices.clear();
+            for (ui q = 0; q < qn; ++q) {
+                if (entryMayMatchQueryVertex(entry, q)) {
+                    entry.query_vertices.push_back(q);
+                }
+            }
+            if (entry.query_vertices.empty()) {
+                stats.entry_node_prunes++;
+            }
             else {
-                for (ui child_id : node.children) {
-                    const IndexNode &child = index_nodes[child_id];
-                    if (nodeMayContainCandidate(u, child)) {
-                        heap.push({ child_id, nodeTraversalKey(u, child) });
+                heap.push({ entry_id, entry.aux.nk, entry.level });
+            }
+        }
+
+        while (!heap.empty()) {
+            HeapEntry heap_entry = heap.top();
+            heap.pop();
+
+            IndexEntry &entry = index_entries[heap_entry.entry];
+            stats.entry_node_visits++;
+
+            if (entry.leaf) {
+                stats.vertex_visits++;
+                for (ui q : entry.query_vertices) {
+                    stats.candidate_checks++;
+                    if (query_graph->getVertexLabel(q) !=
+                        data_graph->getVertexLabel(entry.vertex)) {
+                        continue;
                     }
-                    else {
-                        stats.index_node_prunes++;
+                    if (!entryMayMatchQueryVertex(entry, q)) continue;
+                    candidates[q].push_back(entry.vertex);
+                }
+                continue;
+            }
+
+            for (ui child_id : entry.children) {
+                IndexEntry &child = index_entries[child_id];
+                child.query_vertices.clear();
+                for (ui q : entry.query_vertices) {
+                    if (entryMayMatchQueryVertex(child, q)) {
+                        child.query_vertices.push_back(q);
                     }
+                }
+                if (child.query_vertices.empty()) {
+                    stats.entry_node_prunes++;
+                }
+                else {
+                    heap.push({ child_id, child.aux.nk, child.level });
                 }
             }
         }
@@ -476,176 +550,84 @@ private:
 
     bool buildCandidates()
     {
-        candidates.assign(qn, vector<ui>());
-        candidate_marks.assign(qn, vector<char>(gn, 0));
+        retrieveCandidatesFromIndex();
         stats.filter_candidate_count = 0;
 
-        for (ui u = 0; u < qn; ++u) {
-            vector<ui> &cand = candidates[u];
-            retrieveCandidatesFromIndex(u, cand);
+        for (ui q = 0; q < qn; ++q) {
+            vector<ui> &cand = candidates[q];
             sort(cand.begin(), cand.end());
             cand.erase(unique(cand.begin(), cand.end()), cand.end());
-
-            if (cand.empty()) {
-                return false;
-            }
-            for (ui v : cand) {
-                candidate_marks[u][v] = 1;
-            }
+            if (cand.empty()) return false;
             stats.filter_candidate_count += (ui)cand.size();
         }
 
-        buildQueryPlan();
-        buildCandidateNeighborMarks();
-        branch_seen_stamp.assign(gn, 0);
-        branch_hit_count.assign(gn, 0);
-        branch_touched.clear();
-        branch_touched.reserve(data_graph->getMaxDegree());
-        branch_stamp = 1;
-        mapped_q.assign(qn, -1);
-        mapped_g.assign(gn, -1);
+        selectQueryOrderWithPivot();
         return true;
     }
 
-    void buildCandidateNeighborMarks()
+    ui betterOrderVertex(ui lhs, ui rhs) const
     {
-        candidate_neighbor_marks.assign(qn, vector<char>(gn, 0));
-        for (ui u = 0; u < qn; ++u) {
-            for (ui v : candidates[u]) {
-                ui deg = 0;
-                const ui *nbrs = data_graph->getVertexNeighbors(v, deg);
-                for (ui i = 0; i < deg; ++i) {
-                    candidate_neighbor_marks[u][nbrs[i]] = 1;
-                }
-            }
+        if (rhs == qn) return lhs;
+        if (candidates[lhs].size() != candidates[rhs].size()) {
+            return candidates[lhs].size() < candidates[rhs].size() ? lhs : rhs;
         }
+        if (q_degree[lhs] != q_degree[rhs]) {
+            return q_degree[lhs] > q_degree[rhs] ? lhs : rhs;
+        }
+        return lhs < rhs ? lhs : rhs;
     }
 
-    ui selectInitialRoot() const
+    void selectQueryOrderWithPivot()
     {
-        ui best_u = 0;
-        for (ui u = 1; u < qn; ++u) {
-            if (candidates[u].size() < candidates[best_u].size() ||
-                (candidates[u].size() == candidates[best_u].size() &&
-                 q_degree[u] > q_degree[best_u])) {
-                best_u = u;
-            }
+        order.clear();
+        pivot_by_order.clear();
+        vector<char> processed(qn, 0);
+
+        ui start = 0;
+        for (ui q = 1; q < qn; ++q) {
+            start = betterOrderVertex(q, start);
         }
-        return best_u;
-    }
+        order.push_back(start);
+        pivot_by_order.push_back(qn);
+        processed[start] = 1;
 
-    void buildQueryPlan()
-    {
-        query_plan.clear();
-        if (qn == 0) return;
+        while (order.size() < qn) {
+            ui next = qn;
+            ui pivot = qn;
 
-        vector<char> used(qn, 0);
-        ui root = selectInitialRoot();
-        query_plan.push_back(root);
-        used[root] = 1;
-
-        while (query_plan.size() < qn) {
-            ui best_u = qn;
-            for (ui planned_u : query_plan) {
-                for (ui nbr : q_neighbors[planned_u]) {
-                    if (used[nbr]) continue;
-                    if (best_u == qn ||
-                        candidates[nbr].size() < candidates[best_u].size() ||
-                        (candidates[nbr].size() == candidates[best_u].size() &&
-                         (q_degree[nbr] > q_degree[best_u] ||
-                          (q_degree[nbr] == q_degree[best_u] && nbr < best_u)))) {
-                        best_u = nbr;
+            for (ui prev : order) {
+                for (ui nbr : q_neighbors[prev]) {
+                    if (processed[nbr]) continue;
+                    ui old_next = next;
+                    ui chosen = betterOrderVertex(nbr, next);
+                    if (chosen == nbr && old_next != nbr) {
+                        next = nbr;
+                        pivot = prev;
                     }
                 }
             }
 
-            if (best_u == qn) {
-                for (ui u = 0; u < qn; ++u) {
-                    if (used[u]) continue;
-                    if (best_u == qn ||
-                        candidates[u].size() < candidates[best_u].size() ||
-                        (candidates[u].size() == candidates[best_u].size() &&
-                         (q_degree[u] > q_degree[best_u] ||
-                          (q_degree[u] == q_degree[best_u] && u < best_u)))) {
-                        best_u = u;
-                    }
+            if (next == qn) {
+                for (ui q = 0; q < qn; ++q) {
+                    if (processed[q]) continue;
+                    ui old_next = next;
+                    next = betterOrderVertex(q, next);
+                    if (next == q && old_next != q) pivot = qn;
                 }
             }
 
-            assert(best_u != qn);
-            used[best_u] = 1;
-            query_plan.push_back(best_u);
+            assert(next != qn);
+            order.push_back(next);
+            pivot_by_order.push_back(pivot);
+            processed[next] = 1;
         }
-    }
-
-    ui queryPlanRank(ui u) const
-    {
-        for (ui i = 0; i < query_plan.size(); ++i) {
-            if (query_plan[i] == u) return i;
-        }
-        return qn + u;
-    }
-
-    ui countMappedQueryNeighbors(ui u) const
-    {
-        ui count = 0;
-        for (ui nbr : q_neighbors[u]) {
-            if (mapped_q[nbr] != -1) ++count;
-        }
-        return count;
-    }
-
-    ui selectNextQueryVertex(ui)
-    {
-        ui best_u = qn;
-        ui best_live = 0;
-
-        for (ui u = 0; u < qn; ++u) {
-            if (mapped_q[u] != -1) continue;
-
-            ui live = countMappedQueryNeighbors(u);
-            if (best_u == qn) {
-                best_u = u;
-                best_live = live;
-                continue;
-            }
-
-            bool best_connected = best_live > 0;
-            bool curr_connected = live > 0;
-            if (curr_connected != best_connected) {
-                if (curr_connected) {
-                    best_u = u;
-                    best_live = live;
-                }
-                continue;
-            }
-
-            if (curr_connected && live != best_live) {
-                if (live > best_live) {
-                    best_u = u;
-                    best_live = live;
-                }
-                continue;
-            }
-
-            if (candidates[u].size() < candidates[best_u].size() ||
-                (candidates[u].size() == candidates[best_u].size() &&
-                 (q_degree[u] > q_degree[best_u] ||
-                  (q_degree[u] == q_degree[best_u] &&
-                   queryPlanRank(u) < queryPlanRank(best_u))))) {
-                best_u = u;
-                best_live = live;
-            }
-        }
-
-        return best_u;
     }
 
     ui missingEdgesToMappedNeighbors(ui u, ui v, ui limit) const
     {
         ui missing = 0;
-        for (ui nbr : q_neighbors[u]) {
-            int mapped_v = mapped_q[nbr];
+        for (ui u_nbr : q_neighbors[u]) {
+            int mapped_v = mapped_q[u_nbr];
             if (mapped_v == -1) continue;
 
             if (!data_graph->hasEdge(v, (ui)mapped_v)) {
@@ -656,70 +638,50 @@ private:
         return missing;
     }
 
-    bool existsUnusedCandidateAdjacent(ui u, ui data_v) const
+    bool candidateCanStillInduceConnected(ui v, ui depth) const
     {
-        if (u >= qn) return false;
-        if (!candidate_neighbor_marks.empty() &&
-            !candidate_neighbor_marks[u][data_v]) {
-            return false;
+        if (qn <= 1) return true;
+
+        for (ui u = 0; u < qn; ++u) {
+            if (mapped_q[u] == -1) continue;
+            if (data_graph->hasEdge(v, (ui)mapped_q[u])) return true;
         }
 
-        ui deg = 0;
-        const ui *nbrs = data_graph->getVertexNeighbors(data_v, deg);
-        if (deg <= candidates[u].size()) {
-            for (ui i = 0; i < deg; ++i) {
-                ui v = nbrs[i];
-                if (mapped_g[v] == -1 && candidate_marks[u][v]) return true;
+        for (ui pos = depth + 1; pos < order.size(); ++pos) {
+            ui future_u = order[pos];
+            for (ui future_v : candidates[future_u]) {
+                if (future_v == v || mapped_g[future_v] != -1) continue;
+                if (data_graph->hasEdge(v, future_v)) return true;
             }
-            return false;
         }
 
-        for (ui v : candidates[u]) {
-            if (mapped_g[v] != -1) continue;
-            if (data_graph->hasEdge(data_v, v)) return true;
-        }
         return false;
     }
 
-    ui minMissingToMappedNeighbors(ui u)
+    ui countMappedQueryNeighbors(ui u) const
     {
-        ui live = 0;
-        for (ui nbr : q_neighbors[u]) {
-            if (mapped_q[nbr] != -1) {
-                ++live;
-            }
+        ui count = 0;
+        for (ui u_nbr : q_neighbors[u]) {
+            if (mapped_q[u_nbr] != -1) ++count;
         }
-        if (live == 0) return 0;
-
-        advanceBranchStamp();
-        ui best_hits = 0;
-
-        for (ui nbr : q_neighbors[u]) {
-            if (mapped_q[nbr] == -1) continue;
-
-            ui anchor_v = (ui)mapped_q[nbr];
-            ui deg = 0;
-            const ui *nbrs = data_graph->getVertexNeighbors(anchor_v, deg);
-            for (ui i = 0; i < deg; ++i) {
-                ui v = nbrs[i];
-                if (mapped_g[v] != -1 || !candidate_marks[u][v]) continue;
-
-                if (branch_seen_stamp[v] != branch_stamp) {
-                    branch_seen_stamp[v] = branch_stamp;
-                    branch_hit_count[v] = 0;
-                }
-                ++branch_hit_count[v];
-                if ((ui)branch_hit_count[v] > best_hits) {
-                    best_hits = (ui)branch_hit_count[v];
-                    if (best_hits == live) return 0;
-                }
-            }
-        }
-
-        return live - best_hits;
+        return count;
     }
 
-    ui boundaryMissingLowerBound(ui cost, ui limit)
+    ui minMissingToMappedNeighbors(ui u, ui limit) const
+    {
+        ui best = limit + 1;
+        for (ui v : candidates[u]) {
+            if (mapped_g[v] != -1) continue;
+            ui missing = missingEdgesToMappedNeighbors(u, v, best == 0 ? 0 : best - 1);
+            if (missing < best) {
+                best = missing;
+                if (best == 0) return 0;
+            }
+        }
+        return best;
+    }
+
+    ui boundaryMissingLowerBound(ui cost, ui limit) const
     {
         ui lower_bound = 0;
         for (ui u = 0; u < qn; ++u) {
@@ -727,7 +689,7 @@ private:
             if (countMappedQueryNeighbors(u) == 0) continue;
 
             ui remaining = limit >= lower_bound ? limit - lower_bound : 0;
-            ui min_missing = minMissingToMappedNeighbors(u);
+            ui min_missing = minMissingToMappedNeighbors(u, remaining);
             if (min_missing > remaining) return limit + 1;
             lower_bound += min_missing;
             if (lower_bound > limit || cost + lower_bound > threshold) {
@@ -737,179 +699,64 @@ private:
         return lower_bound;
     }
 
-    bool candidateCanStillConnect(ui u, ui v) const
-    {
-        if (qn <= 1) return true;
-
-        for (ui nbr : q_neighbors[u]) {
-            int mapped_v = mapped_q[nbr];
-            if (mapped_v != -1) {
-                if (data_graph->hasEdge(v, (ui)mapped_v)) return true;
-            }
-            else if (existsUnusedCandidateAdjacent(nbr, v)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    bool retainedComponentsCanStillConnect() const
-    {
-        if (qn <= 1) return true;
-
-        ui mapped_count = 0;
-        for (ui u = 0; u < qn; ++u) {
-            if (mapped_q[u] != -1) ++mapped_count;
-        }
-        if (mapped_count == 0) return true;
-
-        vector<int> component(qn, -1);
-        ui component_count = 0;
-        for (ui start = 0; start < qn; ++start) {
-            if (mapped_q[start] == -1 || component[start] != -1) continue;
-
-            queue<ui> q;
-            q.push(start);
-            component[start] = (int)component_count;
-
-            while (!q.empty()) {
-                ui u = q.front();
-                q.pop();
-                for (ui nbr : q_neighbors[u]) {
-                    if (mapped_q[nbr] == -1 || component[nbr] != -1) continue;
-                    if (!data_graph->hasEdge((ui)mapped_q[u], (ui)mapped_q[nbr])) continue;
-                    component[nbr] = (int)component_count;
-                    q.push(nbr);
-                }
-            }
-
-            ++component_count;
-        }
-
-        if (mapped_count == qn) return component_count == 1;
-
-        vector<char> has_future_bridge(component_count, 0);
-        for (ui u = 0; u < qn; ++u) {
-            if (mapped_q[u] == -1) continue;
-            int comp = component[u];
-            if (comp < 0) continue;
-
-            for (ui nbr : q_neighbors[u]) {
-                if (mapped_q[nbr] != -1) continue;
-                if (existsUnusedCandidateAdjacent(nbr, (ui)mapped_q[u])) {
-                    has_future_bridge[(ui)comp] = 1;
-                    break;
-                }
-            }
-        }
-
-        for (ui c = 0; c < component_count; ++c) {
-            if (!has_future_bridge[c]) return false;
-        }
-        return true;
-    }
-
-    bool partialFeasibilityCheck(ui cost)
+    bool partialFeasibilityCheck(ui cost) const
     {
         if (cost > threshold) return false;
-
         ui remaining_budget = threshold - cost;
-        ui boundary_lb = boundaryMissingLowerBound(cost, remaining_budget);
-        if (boundary_lb > remaining_budget || cost + boundary_lb > threshold) {
-            stats.forced_lower_bound_prunes++;
-            return false;
-        }
-
-        if (!retainedComponentsCanStillConnect()) {
-            stats.connectivity_prunes++;
-            return false;
-        }
-
-        return true;
+        ui lower_bound = boundaryMissingLowerBound(cost, remaining_budget);
+        return lower_bound <= remaining_budget && cost + lower_bound <= threshold;
     }
 
-    void advanceBranchStamp()
+    ui missingEdgesInMappedQuery(ui limit) const
     {
-        ++branch_stamp;
-        if (branch_stamp == numeric_limits<int>::max()) {
-            fill(branch_seen_stamp.begin(), branch_seen_stamp.end(), 0);
-            branch_stamp = 1;
-        }
-    }
-
-    const vector<ui> *collectBranchCandidates(ui u, ui remaining_budget, vector<ui> &out)
-    {
-        out.clear();
-
-        ui live = 0;
-        for (ui nbr : q_neighbors[u]) {
-            if (mapped_q[nbr] != -1) {
-                ++live;
-            }
-        }
-
-        if (live == 0 || live <= remaining_budget) {
-            return &candidates[u];
-        }
-
-        ui required_hits = live - remaining_budget;
-        branch_touched.clear();
-        advanceBranchStamp();
-
-        for (ui nbr : q_neighbors[u]) {
-            if (mapped_q[nbr] == -1) continue;
-
-            ui anchor_v = (ui)mapped_q[nbr];
-            ui deg = 0;
-            const ui *nbrs = data_graph->getVertexNeighbors(anchor_v, deg);
-            for (ui i = 0; i < deg; ++i) {
-                ui v = nbrs[i];
-                if (mapped_g[v] != -1 || !candidate_marks[u][v]) continue;
-
-                if (branch_seen_stamp[v] != branch_stamp) {
-                    branch_seen_stamp[v] = branch_stamp;
-                    branch_hit_count[v] = 0;
-                    branch_touched.push_back(v);
+        ui missing = 0;
+        for (ui u = 0; u < qn; ++u) {
+            for (ui nbr : q_neighbors[u]) {
+                if (u >= nbr) continue;
+                assert(mapped_q[u] != -1 && mapped_q[nbr] != -1);
+                if (!data_graph->hasEdge((ui)mapped_q[u], (ui)mapped_q[nbr])) {
+                    ++missing;
+                    if (missing > limit) return missing;
                 }
-                ++branch_hit_count[v];
             }
         }
-
-        out.reserve(branch_touched.size());
-        for (ui v : branch_touched) {
-            if ((ui)branch_hit_count[v] >= required_hits) {
-                out.push_back(v);
-            }
-        }
-        return &out;
+        return missing;
     }
 
-    bool mappedImageIsConnected() const
+    bool mappedInducedSubgraphIsConnected() const
     {
+        if (qn <= 1) return true;
+
         vector<char> visited(qn, 0);
-        queue<ui> q;
-        q.push(0);
+        queue<ui> bfs;
+        bfs.push(0);
         ui visited_count = 0;
 
-        while (!q.empty()) {
-            ui u = q.front();
-            q.pop();
+        while (!bfs.empty()) {
+            ui u = bfs.front();
+            bfs.pop();
             if (visited[u]) continue;
 
             visited[u] = 1;
             ++visited_count;
 
-            for (ui nbr : q_neighbors[u]) {
-                if (visited[nbr]) continue;
-                assert(mapped_q[u] != -1 && mapped_q[nbr] != -1);
-                if (data_graph->hasEdge((ui)mapped_q[u], (ui)mapped_q[nbr])) {
-                    q.push(nbr);
+            for (ui other = 0; other < qn; ++other) {
+                if (visited[other] || other == u) continue;
+                assert(mapped_q[u] != -1 && mapped_q[other] != -1);
+                if (data_graph->hasEdge((ui)mapped_q[u], (ui)mapped_q[other])) {
+                    bfs.push(other);
                 }
             }
         }
 
         return visited_count == qn;
+    }
+
+    bool ANDConstraintSUM()
+    {
+        stats.final_checks++;
+        if (missingEdgesInMappedQuery(threshold) > threshold) return false;
+        return mappedInducedSubgraphIsConnected();
     }
 
     void emitResult()
@@ -918,26 +765,26 @@ private:
 #ifndef NDEBUG
         vector<pair<ui, ui> > result;
         result.reserve(qn);
-        for (ui u = 0; u < qn; ++u) {
-            result.push_back({ u, (ui)mapped_q[u] });
+        for (ui q = 0; q < qn; ++q) {
+            result.push_back({ q, (ui)mapped_q[q] });
         }
         results_ptr->push_back(result);
 #endif
         noteOutputLimitIfReached();
     }
 
-    void dfs(ui depth, ui cost)
+    void CCSandR(ui depth, ui cost)
     {
         if (outputLimitReached()) return;
+        stats.recursion_calls++;
+
         if (cost > threshold) {
             stats.prune_calls++;
             return;
         }
 
-        stats.recursion_calls++;
-
         if (depth == qn) {
-            if (mappedImageIsConnected()) {
+            if (ANDConstraintSUM()) {
                 emitResult();
             }
             else {
@@ -946,34 +793,22 @@ private:
             return;
         }
 
-        ui remaining_budget = threshold - cost;
-        ui u = selectNextQueryVertex(remaining_budget);
-        if (u == qn) {
-            stats.prune_calls++;
-            return;
-        }
-
-        bool took_branch = false;
-        vector<ui> branch_candidates;
-        const vector<ui> *branch_source =
-            collectBranchCandidates(u, remaining_budget, branch_candidates);
-
-        for (ui v : *branch_source) {
+        ui u = order[depth];
+        bool branched = false;
+        for (ui v : candidates[u]) {
             if (mapped_g[v] != -1) continue;
-            if (!candidateCanStillConnect(u, v)) {
-                stats.connectivity_prunes++;
-                continue;
-            }
+            if (!candidateCanStillInduceConnected(v, depth)) continue;
 
+            ui remaining_budget = threshold - cost;
             ui delta = missingEdgesToMappedNeighbors(u, v, remaining_budget);
             if (delta > remaining_budget) continue;
 
-            took_branch = true;
+            branched = true;
             mapped_q[u] = (int)v;
             mapped_g[v] = (int)u;
 
             if (partialFeasibilityCheck(cost + delta)) {
-                dfs(depth + 1, cost + delta);
+                CCSandR(depth + 1, cost + delta);
             }
             else {
                 stats.prune_calls++;
@@ -985,7 +820,7 @@ private:
             if (outputLimitReached()) break;
         }
 
-        if (!took_branch) {
+        if (!branched) {
             stats.prune_calls++;
         }
     }
