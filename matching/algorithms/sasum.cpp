@@ -247,9 +247,6 @@ struct SASUMSolver::Impl {
         std::printf("Peak Live Match Rows:   %zu\n", stats.peak_live_match_rows);
         std::printf("Cross-Pattern Dups:     %zu\n", stats.duplicate_outputs);
         std::printf("Results Found:          %zu\n", stats.result_count);
-        std::printf("Result Digest:          %016llx:%016llx\n",
-            static_cast<unsigned long long>(stats.result_digest_sum),
-            static_cast<unsigned long long>(stats.result_digest_xor));
 #if MATCH_OUTPUT_LIMIT > 0
         std::printf("Output Limit:           %zu%s\n",
             static_cast<size_t>(MATCH_OUTPUT_LIMIT),
@@ -902,19 +899,6 @@ struct SASUMSolver::Impl {
             mapping.size() * sizeof(mapping[0]));
     }
 
-    uint64_t mappingDigest(const Mapping &mapping) const
-    {
-        uint64_t hash = UINT64_C(14695981039346656037);
-        for (size_t i = 0; i < mapping.size(); ++i) {
-            uint32_t value = static_cast<uint32_t>(mapping[i]);
-            for (unsigned int byte = 0; byte < 4; ++byte) {
-                hash ^= static_cast<uint8_t>((value >> (byte * 8)) & 0xffu);
-                hash *= UINT64_C(1099511628211);
-            }
-        }
-        return hash;
-    }
-
     bool outputLimitReached() const
     {
 #if MATCH_OUTPUT_LIMIT > 0
@@ -953,9 +937,6 @@ struct SASUMSolver::Impl {
             results_ptr->push_back(result);
 #endif
 
-            uint64_t digest = mappingDigest(mapping);
-            stats.result_digest_sum += digest;
-            stats.result_digest_xor ^= digest;
             stats.result_count++;
 
 #if MATCH_OUTPUT_LIMIT > 0
@@ -995,6 +976,12 @@ void Approximate_SASUM(const Graph *query_graph, const Graph *data_graph,
     if (solver.init(query_graph, data_graph, threshold)) {
         solver.match(results);
     }
+    long long preprocessing_time = solver.stats.data_index_time +
+        solver.stats.lattice_time + solver.stats.base_generation_time +
+        solver.stats.seed_selection_time;
+    long long search_time = solver.stats.total_time > preprocessing_time
+        ? solver.stats.total_time - preprocessing_time : 0;
+    set_reported_phase_times(preprocessing_time, search_time);
     solver.printStats();
     set_reported_result_count(solver.stats.result_count);
 }

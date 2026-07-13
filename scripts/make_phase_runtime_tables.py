@@ -12,7 +12,7 @@ By default it writes one HTML file:
 
 The report has two chart sections:
 
-  - preprocessing time, default metric: init_ms
+  - preprocessing time, default metric: preprocessing_ms
   - search time, default metric: search_ms
 """
 
@@ -57,9 +57,10 @@ from make_result_tables import (
 
 
 DEFAULT_OUTPUT_NAME = "phase_runtime_by_t.html"
-DEFAULT_PREPROCESS_METRIC = "init_ms"
+DEFAULT_PREPROCESS_METRIC = "preprocessing_ms"
 DEFAULT_SEARCH_METRIC = "search_ms"
 SUMMARY_PREFIX = "SSM_GED_SUMMARY "
+PHASE_PREFIX = "SSM_GED_PHASES "
 MISSING_OUTPUT_VALUES = {"", "NA", "N/A", "NULL", "NONE"}
 TIME_VALUE_RE = r"([-+]?\d+(?:\.\d+)?)"
 OUTPUT_TIME_PATTERNS = (
@@ -226,7 +227,7 @@ def detect_phase_algorithms(
 
 
 def parse_summary_metrics(line: str) -> Dict[str, float]:
-    if not line.startswith(SUMMARY_PREFIX):
+    if not line.startswith((SUMMARY_PREFIX, PHASE_PREFIX)):
         return {}
 
     metrics: Dict[str, float] = {}

@@ -33,6 +33,7 @@ fi
 echo "========================================"
 echo "Build Configuration:"
 echo "  Directory : $BUILD_DIR"
+echo "  Build type: Release"
 if [ -n "$GENERATOR" ]; then
     echo "  Generator : $GENERATOR"
 else
@@ -56,9 +57,9 @@ cd "$BUILD_PATH" || exit 1
 
 echo "Running CMake..."
 if [ -n "$GENERATOR" ]; then
-    cmake -G "$GENERATOR" "$SOURCE_DIR" || exit 1
+    cmake -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release "$SOURCE_DIR" || exit 1
 else
-    cmake "$SOURCE_DIR" || exit 1
+    cmake -DCMAKE_BUILD_TYPE=Release "$SOURCE_DIR" || exit 1
 fi
 
 echo "Compiling..."

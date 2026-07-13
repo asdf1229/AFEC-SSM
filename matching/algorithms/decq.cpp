@@ -1089,21 +1089,6 @@ struct DecQSolver::Impl {
             mapping.size() * sizeof(int));
     }
 
-    static uint64_t mappingHash(const Mapping &mapping)
-    {
-        uint64_t value = UINT64_C(14695981039346656037);
-        for (int mapped_vertex : mapping) {
-            uint32_t encoded = static_cast<uint32_t>(mapped_vertex);
-            for (unsigned int byte_index = 0; byte_index < 4; ++byte_index) {
-                unsigned char byte = static_cast<unsigned char>(
-                    (encoded >> (byte_index * 8)) & 0xffU);
-                value ^= byte;
-                value *= UINT64_C(1099511628211);
-            }
-        }
-        return value;
-    }
-
     bool emitCanonicalMapping(const Mapping &mapping)
     {
         std::string key = mappingKey(mapping);
@@ -1117,9 +1102,6 @@ struct DecQSolver::Impl {
             return false;
         }
 #endif
-        uint64_t hash = mappingHash(mapping);
-        stats.result_digest_sum += hash;
-        stats.result_digest_xor ^= hash;
         stats.result_count++;
 #ifndef NDEBUG
         std::vector<std::pair<ui, ui> > result;
@@ -1374,9 +1356,6 @@ void DecQSolver::printStats() const
     std::printf("Duplicate Canonical Mappings: %zu\n", stats.duplicate_canonical_mappings);
     std::printf("Invalid Global Rows:        %zu\n", stats.invalid_global_rows);
     std::printf("Unique Results:             %zu\n", stats.result_count);
-    std::printf("Result Digest:              %016llx:%016llx\n",
-        static_cast<unsigned long long>(stats.result_digest_sum),
-        static_cast<unsigned long long>(stats.result_digest_xor));
     std::printf("Edge Selectivity (min/avg/max): %.6g / %.6g / %.6g\n",
         stats.minimum_edge_selectivity, stats.average_edge_selectivity,
         stats.maximum_edge_selectivity);
@@ -1402,6 +1381,12 @@ void Approximate_DecQ(const Graph *query_graph, const Graph *data_graph,
     if (solver.init(query_graph, data_graph, threshold)) {
         solver.match(results);
     }
+    long long preprocessing_time = solver.stats.data_index_time +
+        solver.stats.decomposition_time + solver.stats.local_pattern_time +
+        solver.stats.lattice_time;
+    long long search_time = solver.stats.total_time > preprocessing_time
+        ? solver.stats.total_time - preprocessing_time : 0;
+    set_reported_phase_times(preprocessing_time, search_time);
     set_reported_result_count(solver.stats.result_count);
     solver.printStats();
 }

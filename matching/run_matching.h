@@ -18,6 +18,16 @@ namespace ssm_ged {
     void set_reported_result_count(size_t count);
     size_t get_reported_result_count(const MatchResults &results);
 
+    struct AlgorithmPhaseTimes {
+        long long preprocessing_us = 0;
+        long long search_us = 0;
+        bool available = false;
+    };
+
+    void clear_reported_phase_times();
+    void set_reported_phase_times(long long preprocessing_us, long long search_us);
+    AlgorithmPhaseTimes get_reported_phase_times();
+
     const AlgorithmDefinition &create_algorithm_definition();
     int run_algorithm_main(int argc, char *argv[], const AlgorithmDefinition &algorithm);
 

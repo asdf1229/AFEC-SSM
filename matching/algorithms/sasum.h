@@ -5,7 +5,6 @@
 #include "matching/run_matching.h"
 #include "utility/utility.h"
 
-#include <cstdint>
 #include <memory>
 
 namespace ssm_ged {
@@ -32,8 +31,6 @@ public:
         size_t duplicate_outputs = 0;
         size_t result_count = 0;
         size_t peak_live_match_rows = 0;
-        uint64_t result_digest_sum = 0;
-        uint64_t result_digest_xor = 0;
         bool output_limit_reached = false;
         bool intermediate_limit_reached = false;
     } stats;

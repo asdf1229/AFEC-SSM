@@ -1180,6 +1180,8 @@ void Approximate_TreeSpan(const Graph *query_graph, const Graph *data_graph,
     }
 
     solver.stats.total_time = t_total.elapsed();
+    ssm_ged::set_reported_phase_times(solver.stats.init_time,
+        solver.stats.search_time);
     solver.printStats();
     ssm_ged::set_reported_result_count(solver.stats.result_count);
 }

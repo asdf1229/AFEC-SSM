@@ -5,11 +5,10 @@
 #include "matching/run_matching.h"
 #include "utility/utility.h"
 
-#include <cstdint>
 #include <memory>
 
 #ifndef DECQ_INTERMEDIATE_MATCH_LIMIT
-#define DECQ_INTERMEDIATE_MATCH_LIMIT 1000000
+#define DECQ_INTERMEDIATE_MATCH_LIMIT 0
 #endif
 
 #if DECQ_INTERMEDIATE_MATCH_LIMIT < 0
@@ -76,8 +75,6 @@ public:
         double unsplit_estimated_cost = 0.0;
         double decomposition_estimated_cost = 0.0;
 
-        uint64_t result_digest_sum = 0;
-        uint64_t result_digest_xor = 0;
         bool output_limit_reached = false;
         bool intermediate_limit_reached = false;
     } stats;

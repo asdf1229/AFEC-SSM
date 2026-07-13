@@ -1,44 +1,5 @@
 # HTML Result Report
 
-## Repeated DecQ comparison
-
-`benchmark_decq.py` runs each selected executable as a fresh process, rotates
-execution order, rejects resource-limited observations, verifies identical
-unique-result counts, and reports robust internal-algorithm time summaries plus
-DecQ phase and structural counters when present. Prefer `algorithm_ms_*` over
-`runner_run_ms_*`, which includes statistics-printing overhead.
-
-```bash
-python3 scripts/benchmark_decq.py \
-  --build-dir build_decq \
-  --data test/datasets/real_graphs/Lastfm/graph_g.txt \
-  --query test/datasets/real_graphs/Lastfm/query_graph/query_10_2.txt \
-  --thresholds 0 1 2 3 \
-  --algorithms decq,treespan \
-  --repetitions 7
-```
-
-See `docs/decq_reproduction.md` for the paper/output-semantics comparison and
-the clean-room fidelity limits.
-
-## Repeated SASUM comparison
-
-`benchmark_sasum.py` runs a selected query repeatedly in separate processes,
-rotates algorithm order, verifies identical result counts, and prints median,
-mean, minimum, and maximum `run_ms` values.
-
-```bash
-python3 scripts/benchmark_sasum.py \
-  --build-dir build \
-  --data test/datasets/real_graphs/Lastfm/graph_g.txt \
-  --query test/datasets/real_graphs/Lastfm/query_graph/query_10_2.txt \
-  --thresholds 1 2 3 \
-  --algorithms sasum,treespan \
-  --repetitions 7
-```
-
-See `docs/sasum_reproduction.md` for the fidelity and metric definitions.
-
 ## HTML reports
 
 `make_result_tables.py` reads SSM-GED benchmark summaries and creates comparison
@@ -168,16 +129,15 @@ one for preprocessing time and one for search time. It writes
 python3 -B scripts/make_phase_runtime_tables.py result/20260423_174256
 ```
 
-The default preprocessing metric is `init_ms`, parsed from `Init Time:` in each
-algorithm output file. The default search metric is `search_ms`, parsed from
-`Search Time:`. These are the algorithm-internal phase timings, not graph
-loading time.
+The default metrics are `preprocessing_ms` and `search_ms`, parsed from the
+common `SSM_GED_PHASES` line. These are algorithm-internal phase timings, not
+graph loading time.
 
 To use different stage metrics:
 
 ```bash
 python3 -B scripts/make_phase_runtime_tables.py \
-  --preprocess-metric init_ms \
+  --preprocess-metric preprocessing_ms \
   --search-metric search_ms \
   result/20260423_174256
 ```

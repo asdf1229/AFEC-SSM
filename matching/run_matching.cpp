@@ -9,6 +9,7 @@ namespace {
 
     bool reported_result_count_set = false;
     size_t reported_result_count = 0;
+    ssm_ged::AlgorithmPhaseTimes reported_phase_times;
 
     LabelID label2int(const string str, map<string, LabelID> &M)
     {
@@ -212,7 +213,7 @@ namespace {
             }
 
             if (vis_count < qn) {
-                printf("Result %zu Error: Disconnected mapping in data graph image (visited %u / %u)\n",
+                printf("Result %zu Error: Disconnected preserved-query-edge graph (visited %u / %u)\n",
                     i, vis_count, qn);
                 invalid_count++;
                 continue;
@@ -316,6 +317,23 @@ namespace ssm_ged {
         return reported_result_count_set ? reported_result_count : results.size();
     }
 
+    void clear_reported_phase_times()
+    {
+        reported_phase_times = AlgorithmPhaseTimes();
+    }
+
+    void set_reported_phase_times(long long preprocessing_us, long long search_us)
+    {
+        reported_phase_times.preprocessing_us = std::max(0LL, preprocessing_us);
+        reported_phase_times.search_us = std::max(0LL, search_us);
+        reported_phase_times.available = true;
+    }
+
+    AlgorithmPhaseTimes get_reported_phase_times()
+    {
+        return reported_phase_times;
+    }
+
     int run_algorithm_main(int argc, char *argv[], const AlgorithmDefinition &algorithm)
     {
 #ifndef NDEBUG
@@ -383,9 +401,14 @@ namespace ssm_ged {
 
         t.restart();
         clear_reported_result_count();
+        clear_reported_phase_times();
         algorithm.entry(query_graph, data_graph, results, threshold);
         run_time = t.elapsed();
         size_t result_count = get_reported_result_count(results);
+        AlgorithmPhaseTimes phase_times = get_reported_phase_times();
+        if (!phase_times.available) {
+            phase_times.search_us = run_time;
+        }
 
         printf("%s Results:\n", algorithm.display_name.c_str());
         printf("  Result count: %zu\n", result_count);
@@ -394,6 +417,11 @@ namespace ssm_ged {
         printf("  Total Time: %.4lf ms\n", to_ms(load_time + run_time));
         printf("SSM_GED_SUMMARY algorithm=%s count=%zu load_ms=%.4lf run_ms=%.4lf total_ms=%.4lf\n",
             algorithm.key.c_str(), result_count, to_ms(load_time), to_ms(run_time), to_ms(load_time + run_time));
+        printf("SSM_GED_PHASES algorithm=%s preprocessing_ms=%.4lf search_ms=%.4lf "
+               "run_ms=%.4lf end_to_end_ms=%.4lf\n",
+            algorithm.key.c_str(), to_ms(phase_times.preprocessing_us),
+            to_ms(phase_times.search_us), to_ms(run_time),
+            to_ms(load_time + run_time));
 
 #ifndef NDEBUG
         if (!results.empty()) {

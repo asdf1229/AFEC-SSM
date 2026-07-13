@@ -1,6 +1,10 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.16)
 
 project(SSM_GED LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_compile_options(-O3 -g -Wall)
 
@@ -14,7 +18,10 @@ include_directories(
 )
 
 find_package(Threads REQUIRED)
-find_package(absl REQUIRED)
+find_package(absl REQUIRED CONFIG)
+
+message(STATUS "C++ compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+message(STATUS "Abseil package: ${absl_DIR}")
 
 set(SSM_GED_COMMON_SOURCES
     ${PROJECT_SOURCE_DIR}/graph/graph.cpp
@@ -116,6 +123,12 @@ foreach(ALGO_SOURCE ${SSM_GED_ALGORITHM_SOURCES})
                 set_cde_black_white_identity("${TARGET_NAME}" "${CONFIG_NAME}")
             endforeach()
         endif()
+    elseif(ALGO_NAME STREQUAL "s3and")
+        add_ssm_ged_executable(
+            "ssm_ged_s3and_ssm"
+            "${ALGO_SOURCE}"
+            ""
+        )
     else()
         add_ssm_ged_executable(
             "ssm_ged_${ALGO_NAME}"

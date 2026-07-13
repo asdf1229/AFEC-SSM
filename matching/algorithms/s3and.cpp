@@ -701,28 +701,27 @@ struct S3ANDSolver::Impl {
         return missing;
     }
 
-    bool mappedInducedSubgraphIsConnected() const
+    bool mappedPreservedQueryGraphIsConnected() const
     {
         if (qn <= 1) return true;
 
         vector<char> visited(qn, 0);
         queue<ui> bfs;
         bfs.push(0);
+        visited[0] = 1;
         ui visited_count = 0;
 
         while (!bfs.empty()) {
             ui u = bfs.front();
             bfs.pop();
-            if (visited[u]) continue;
-
-            visited[u] = 1;
             ++visited_count;
 
-            for (ui other = 0; other < qn; ++other) {
-                if (visited[other] || other == u) continue;
-                assert(mapped_q[u] != -1 && mapped_q[other] != -1);
-                if (data_graph->hasEdge((ui)mapped_q[u], (ui)mapped_q[other])) {
-                    bfs.push(other);
+            for (ui nbr : q_neighbors[u]) {
+                if (visited[nbr]) continue;
+                assert(mapped_q[u] != -1 && mapped_q[nbr] != -1);
+                if (data_graph->hasEdge((ui)mapped_q[u], (ui)mapped_q[nbr])) {
+                    visited[nbr] = 1;
+                    bfs.push(nbr);
                 }
             }
         }
@@ -734,7 +733,7 @@ struct S3ANDSolver::Impl {
     {
         stats.final_checks++;
         if (missingEdgesInMappedQuery(threshold) > threshold) return false;
-        return mappedInducedSubgraphIsConnected();
+        return mappedPreservedQueryGraphIsConnected();
     }
 
     void emitResult()
@@ -834,6 +833,8 @@ void Approximate_S3AND(const Graph *query_graph, const Graph *data_graph,
     }
 
     solver.stats.total_time = t_total.elapsed();
+    ssm_ged::set_reported_phase_times(solver.stats.init_time,
+        solver.stats.dfs_time);
     solver.printStats();
     ssm_ged::set_reported_result_count(solver.stats.result_count);
 }
@@ -853,8 +854,8 @@ void run_s3and(const Graph *query_graph, const Graph *data_graph,
 const AlgorithmDefinition &create_algorithm_definition()
 {
     static const AlgorithmDefinition definition = {
-        "s3and",
-        "S3AND",
+        "s3and_ssm",
+        "S3AND-SSM",
         &run_s3and
     };
     return definition;
