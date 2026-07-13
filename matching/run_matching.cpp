@@ -9,7 +9,7 @@ namespace {
 
     bool reported_result_count_set = false;
     size_t reported_result_count = 0;
-    ssm_ged::AlgorithmPhaseTimes reported_phase_times;
+    ssm::AlgorithmPhaseTimes reported_phase_times;
 
     LabelID label2int(const string str, map<string, LabelID> &M)
     {
@@ -298,7 +298,7 @@ namespace {
 
 } // namespace
 
-namespace ssm_ged {
+namespace ssm {
 
     void clear_reported_result_count()
     {
@@ -415,9 +415,9 @@ namespace ssm_ged {
         printf("  Load Graphs Time: %.4lf ms\n", to_ms(load_time));
         printf("  Run Time: %.4lf ms\n", to_ms(run_time));
         printf("  Total Time: %.4lf ms\n", to_ms(load_time + run_time));
-        printf("SSM_GED_SUMMARY algorithm=%s count=%zu load_ms=%.4lf run_ms=%.4lf total_ms=%.4lf\n",
+        printf("SSM_SUMMARY algorithm=%s count=%zu load_ms=%.4lf run_ms=%.4lf total_ms=%.4lf\n",
             algorithm.key.c_str(), result_count, to_ms(load_time), to_ms(run_time), to_ms(load_time + run_time));
-        printf("SSM_GED_PHASES algorithm=%s preprocessing_ms=%.4lf search_ms=%.4lf "
+        printf("SSM_PHASES algorithm=%s preprocessing_ms=%.4lf search_ms=%.4lf "
                "run_ms=%.4lf end_to_end_ms=%.4lf\n",
             algorithm.key.c_str(), to_ms(phase_times.preprocessing_us),
             to_ms(phase_times.search_us), to_ms(run_time),
@@ -435,4 +435,4 @@ namespace ssm_ged {
         return 0;
     }
 
-} // namespace ssm_ged
+} // namespace ssm

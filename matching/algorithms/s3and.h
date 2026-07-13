@@ -32,7 +32,7 @@ public:
     ~S3ANDSolver();
 
     bool init(const Graph *query_graph, const Graph *data_graph, ui threshold);
-    void match(ssm_ged::MatchResults &results);
+    void match(ssm::MatchResults &results);
     void printStats() const;
 
 private:
@@ -44,6 +44,6 @@ private:
 };
 
 void Approximate_S3AND(const Graph *query_graph, const Graph *data_graph,
-    ssm_ged::MatchResults &results, ui threshold);
+    ssm::MatchResults &results, ui threshold);
 
 #endif // MATCHING_ALGORITHMS_S3AND_H_

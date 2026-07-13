@@ -15,7 +15,7 @@
 #error "DECQ_INTERMEDIATE_MATCH_LIMIT must be non-negative."
 #endif
 
-namespace ssm_ged {
+namespace ssm {
 
 // A clean-room implementation of the DecQ execution plan described in
 // "Efficient Subgraph Similarity All-Matching" (DASFAA 2012).  The public
@@ -97,6 +97,6 @@ private:
 void Approximate_DecQ(const Graph *query_graph, const Graph *data_graph,
     MatchResults &results, ui threshold);
 
-} // namespace ssm_ged
+} // namespace ssm
 
 #endif // MATCHING_ALGORITHMS_DECQ_H_

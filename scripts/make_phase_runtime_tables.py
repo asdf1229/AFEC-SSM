@@ -59,8 +59,8 @@ from make_result_tables import (
 DEFAULT_OUTPUT_NAME = "phase_runtime_by_t.html"
 DEFAULT_PREPROCESS_METRIC = "preprocessing_ms"
 DEFAULT_SEARCH_METRIC = "search_ms"
-SUMMARY_PREFIX = "SSM_GED_SUMMARY "
-PHASE_PREFIX = "SSM_GED_PHASES "
+SUMMARY_PREFIX = "SSM_SUMMARY "
+PHASE_PREFIX = "SSM_PHASES "
 MISSING_OUTPUT_VALUES = {"", "NA", "N/A", "NULL", "NONE"}
 TIME_VALUE_RE = r"([-+]?\d+(?:\.\d+)?)"
 OUTPUT_TIME_PATTERNS = (

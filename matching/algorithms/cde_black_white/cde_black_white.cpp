@@ -252,10 +252,10 @@ void Approximate_CDE_BlackWhite(const Graph *query_graph, const Graph *data_grap
 
     solver.stats.total_time = t_total.elapsed();
     solver.printStats();
-    ssm_ged::set_reported_result_count(solver.stats.result_count);
+    ssm::set_reported_result_count(solver.stats.result_count);
 }
 
-namespace ssm_ged {
+namespace ssm {
 
     namespace {
 
@@ -276,4 +276,4 @@ namespace ssm_ged {
         return definition;
     }
 
-} // namespace ssm_ged
+} // namespace ssm

@@ -145,7 +145,7 @@ fi
 discover_algorithms() {
     local build_dir="$1"
     shopt -s nullglob
-    local candidates=("${build_dir}"/ssm_ged_*)
+    local candidates=("${build_dir}"/ssm_*)
     local resolved=()
 
     for exe in "${candidates[@]}"; do
@@ -160,7 +160,7 @@ discover_algorithms() {
 normalize_algo_key() {
     local name
     name="$(basename "$1")"
-    name="${name#ssm_ged_}"
+    name="${name#ssm_}"
     name="${name%.exe}"
     printf '%s\n' "$name"
 }
@@ -183,10 +183,10 @@ resolve_selected_algorithms() {
     local resolved=()
     local raw key candidate found
     for raw in "${SELECTED_ALGOS[@]}"; do
-        key="${raw#ssm_ged_}"
+        key="${raw#ssm_}"
         key="${key%.exe}"
         found=false
-        for candidate in "${build_dir}/ssm_ged_${key}" "${build_dir}/ssm_ged_${key}.exe"; do
+        for candidate in "${build_dir}/ssm_${key}" "${build_dir}/ssm_${key}.exe"; do
             if [ -f "$candidate" ]; then
                 resolved+=("$candidate")
                 found=true
@@ -441,7 +441,7 @@ run_task() {
         return 0
     fi
 
-    summary_line=$(grep '^SSM_GED_SUMMARY ' "$out" | tail -n 1 || true)
+    summary_line=$(grep '^SSM_SUMMARY ' "$out" | tail -n 1 || true)
     if parse_summary_line "$summary_line"; then
         count="$SUMMARY_COUNT"
         run_value="$SUMMARY_RUN_MS"

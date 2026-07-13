@@ -67,7 +67,7 @@ cmake --build . --parallel || exit 1
 
 shopt -s nullglob
 executables=()
-for candidate in ssm_ged_*; do
+for candidate in ssm_*; do
     if [ -f "$candidate" ]; then
         executables+=("$candidate")
     fi

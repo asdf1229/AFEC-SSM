@@ -2,5 +2,5 @@
 
 int main(int argc, char *argv[])
 {
-    return ssm_ged::run_algorithm_main(argc, argv, ssm_ged::create_algorithm_definition());
+    return ssm::run_algorithm_main(argc, argv, ssm::create_algorithm_definition());
 }

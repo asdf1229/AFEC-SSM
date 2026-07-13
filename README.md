@@ -5,7 +5,7 @@ missing-query-edge, preserved-query-connectivity result semantics.
 
 ## TreeSpan baseline
 
-`ssm_ged_treespan` is a deterministic clean-room TreeSpan implementation with
+`ssm_treespan` is a deterministic clean-room TreeSpan implementation with
 initial/replacement spanning trees, exclusion sets, QISequences, prefix-shared
 search, and unique-result validation.
 
@@ -14,7 +14,7 @@ algorithm mapping, deterministic implementation choices, and fidelity limits.
 
 ## S3AND-SSM baseline
 
-`ssm_ged_s3and_ssm` adapts S3AND to SSM-GED's single exact label, total missing
+`ssm_s3and_ssm` adapts S3AND to SSM-GED's single exact label, total missing
 query-edge distance, and preserved-query-edge connectivity. It must be named
 **S3AND-SSM**, not an unqualified S3AND reproduction.
 
@@ -23,7 +23,7 @@ differences, fixed parameters, timing scope, and fidelity limits.
 
 ## DecQ baseline
 
-`ssm_ged_decq` is a clean-room reproduction of Zhu et al.'s DASFAA 2012
+`ssm_decq` is a clean-room reproduction of Zhu et al.'s DASFAA 2012
 algorithm from “Efficient Subgraph Similarity All-Matching.” It preserves the
 paper's per-pattern work counters while adapting its output to this repository's
 one-maximal-result-per-vertex-mapping convention.
@@ -35,7 +35,7 @@ comparison, fidelity limits, and repeated benchmark commands.
 
 This repository includes a clean-room reproduction of the 2013 SASUM
 sharing-based approximate subgraph matcher.  It builds as
-`build/ssm_ged_sasum` and uses the same graph format and `-d/-q/-t` interface as
+`build/ssm_sasum` and uses the same graph format and `-d/-q/-t` interface as
 the other algorithms.
 
 See [docs/sasum_reproduction.md](docs/sasum_reproduction.md) for the problem
@@ -59,7 +59,7 @@ The project requires C++17. For a local Release build:
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build \
-  --target ssm_ged_treespan ssm_ged_s3and_ssm ssm_ged_sasum ssm_ged_decq \
+  --target ssm_treespan ssm_s3and_ssm ssm_sasum ssm_decq \
   --parallel
 ```
 

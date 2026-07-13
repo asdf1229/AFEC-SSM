@@ -5,7 +5,7 @@
 #include <functional>
 #include <unordered_map>
 
-namespace ssm_ged {
+namespace ssm {
 
 struct SASUMSolver::Impl {
     SASUMStats &stats;
@@ -1006,4 +1006,4 @@ const AlgorithmDefinition &create_algorithm_definition()
     return definition;
 }
 
-} // namespace ssm_ged
+} // namespace ssm

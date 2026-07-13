@@ -1,9 +1,9 @@
-#ifndef SSM_GED_MATCHING_RUN_MATCHING_H_
-#define SSM_GED_MATCHING_RUN_MATCHING_H_
+#ifndef SSM_MATCHING_RUN_MATCHING_H_
+#define SSM_MATCHING_RUN_MATCHING_H_
 
 #include "graph/graph.h"
 
-namespace ssm_ged {
+namespace ssm {
 
     using MatchResults = std::vector<std::vector<std::pair<ui, ui> > >;
     using AlgorithmEntry = void (*)(const Graph *, const Graph *, MatchResults &, ui);
@@ -31,6 +31,6 @@ namespace ssm_ged {
     const AlgorithmDefinition &create_algorithm_definition();
     int run_algorithm_main(int argc, char *argv[], const AlgorithmDefinition &algorithm);
 
-} // namespace ssm_ged
+} // namespace ssm
 
 #endif

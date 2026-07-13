@@ -130,7 +130,7 @@ python3 -B scripts/make_phase_runtime_tables.py result/20260423_174256
 ```
 
 The default metrics are `preprocessing_ms` and `search_ms`, parsed from the
-common `SSM_GED_PHASES` line. These are algorithm-internal phase timings, not
+common `SSM_PHASES` line. These are algorithm-internal phase timings, not
 graph loading time.
 
 To use different stage metrics:
@@ -143,7 +143,7 @@ python3 -B scripts/make_phase_runtime_tables.py \
 ```
 
 You can still request `load_ms` and `run_ms` explicitly to plot the broader
-load-graphs and total-run timings from `SSM_GED_SUMMARY`.
+load-graphs and total-run timings from `SSM_SUMMARY`.
 
 ## Filter Candidate Charts
 

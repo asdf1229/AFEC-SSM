@@ -1158,7 +1158,7 @@ bool TreeSpanSolver::init(const Graph *query_graph, const Graph *data_graph,
     return impl_->init(query_graph, data_graph, threshold);
 }
 
-void TreeSpanSolver::match(ssm_ged::MatchResults &results)
+void TreeSpanSolver::match(ssm::MatchResults &results)
 {
     impl_->match(results);
 }
@@ -1169,7 +1169,7 @@ void TreeSpanSolver::printStats() const
 }
 
 void Approximate_TreeSpan(const Graph *query_graph, const Graph *data_graph,
-    ssm_ged::MatchResults &results, ui threshold)
+    ssm::MatchResults &results, ui threshold)
 {
     Timer t_total;
     t_total.restart();
@@ -1180,13 +1180,13 @@ void Approximate_TreeSpan(const Graph *query_graph, const Graph *data_graph,
     }
 
     solver.stats.total_time = t_total.elapsed();
-    ssm_ged::set_reported_phase_times(solver.stats.init_time,
+    ssm::set_reported_phase_times(solver.stats.init_time,
         solver.stats.search_time);
     solver.printStats();
-    ssm_ged::set_reported_result_count(solver.stats.result_count);
+    ssm::set_reported_result_count(solver.stats.result_count);
 }
 
-namespace ssm_ged {
+namespace ssm {
 
 namespace {
 
@@ -1208,4 +1208,4 @@ const AlgorithmDefinition &create_algorithm_definition()
     return definition;
 }
 
-} // namespace ssm_ged
+} // namespace ssm

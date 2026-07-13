@@ -7,7 +7,7 @@
 
 #include <memory>
 
-namespace ssm_ged {
+namespace ssm {
 
 class SASUMSolver {
 public:
@@ -53,6 +53,6 @@ private:
 void Approximate_SASUM(const Graph *query_graph, const Graph *data_graph,
     MatchResults &results, ui threshold);
 
-} // namespace ssm_ged
+} // namespace ssm
 
 #endif // MATCHING_ALGORITHMS_SASUM_H_

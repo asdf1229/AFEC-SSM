@@ -813,7 +813,7 @@ bool S3ANDSolver::init(const Graph *query_graph, const Graph *data_graph,
     return impl_->init(query_graph, data_graph, threshold);
 }
 
-void S3ANDSolver::match(ssm_ged::MatchResults &results)
+void S3ANDSolver::match(ssm::MatchResults &results)
 {
     impl_->match(results);
 }
@@ -824,7 +824,7 @@ void S3ANDSolver::printStats() const
 }
 
 void Approximate_S3AND(const Graph *query_graph, const Graph *data_graph,
-    ssm_ged::MatchResults &results, ui threshold)
+    ssm::MatchResults &results, ui threshold)
 {
     Timer t_total;
     S3ANDSolver solver;
@@ -833,13 +833,13 @@ void Approximate_S3AND(const Graph *query_graph, const Graph *data_graph,
     }
 
     solver.stats.total_time = t_total.elapsed();
-    ssm_ged::set_reported_phase_times(solver.stats.init_time,
+    ssm::set_reported_phase_times(solver.stats.init_time,
         solver.stats.dfs_time);
     solver.printStats();
-    ssm_ged::set_reported_result_count(solver.stats.result_count);
+    ssm::set_reported_result_count(solver.stats.result_count);
 }
 
-namespace ssm_ged {
+namespace ssm {
 
 namespace {
 
@@ -861,4 +861,4 @@ const AlgorithmDefinition &create_algorithm_definition()
     return definition;
 }
 
-} // namespace ssm_ged
+} // namespace ssm

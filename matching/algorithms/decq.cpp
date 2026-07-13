@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace ssm_ged {
+namespace ssm {
 
 struct DecQSolver::Impl {
     typedef std::vector<int> Mapping;
@@ -1411,4 +1411,4 @@ const AlgorithmDefinition &create_algorithm_definition()
     return definition;
 }
 
-} // namespace ssm_ged
+} // namespace ssm
