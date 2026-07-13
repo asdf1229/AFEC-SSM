@@ -6,6 +6,16 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# CMake adds -DNDEBUG to its non-Debug build-type flags by default.  NDEBUG is
+# intentionally owned by configuration/config.h in this project, so remove it
+# from every built-in optimization configuration.
+foreach(SSM_GED_BUILD_TYPE RELEASE RELWITHDEBINFO MINSIZEREL)
+    string(REPLACE "-DNDEBUG" "" SSM_GED_CXX_FLAGS
+        "${CMAKE_CXX_FLAGS_${SSM_GED_BUILD_TYPE}}")
+    set(CMAKE_CXX_FLAGS_${SSM_GED_BUILD_TYPE} "${SSM_GED_CXX_FLAGS}" CACHE STRING
+        "Flags used by the C++ compiler during ${SSM_GED_BUILD_TYPE} builds." FORCE)
+endforeach()
+
 add_compile_options(-O3 -g -Wall)
 
 set(SSM_GED_COMPILE_DEFINITIONS "" CACHE STRING
