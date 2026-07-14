@@ -48,8 +48,6 @@ private:
     vector<vector<char>> q_bridge_matrix;
 
     vector<MyBitset> candidates;
-    ui static_root = 0;
-    vector<VertexColor> static_color;
     vector<ui> static_candidate_count;
     vector<vector<unsigned long long>> static_edge_support;
 #if CDE_BLACK_WHITE_FIXED_ORDER
@@ -91,7 +89,6 @@ private:
     void resetState();
     void resetBuffers();
     ui chooseRoot();
-    void initColors();
     void initQueryBridge();
     void tarjan(ui u, ui parent, vector<int> &dfn, vector<int> &low, int &tim);
     bool isQueryBridgeEdge(ui u, ui v) const;
@@ -201,6 +198,12 @@ private:
         const ContinueBranch &continue_branch);
     void continueAfterSplit(SearchState &state, ui cost);
 #endif
+    bool colorAllBlack(const SearchState &state, ui u,
+        const vector<pair<ui, ui>> &anchor_candidates) const;
+    bool colorAllWhite(const SearchState &state, ui u,
+        const vector<pair<ui, ui>> &anchor_candidates) const;
+    bool color1(const SearchState &state, ui u,
+        const vector<pair<ui, ui>> &anchor_candidates) const;
     bool shouldExpandAsWhite(const SearchState &state, ui u,
         const vector<pair<ui, ui>> &anchor_candidates) const;
     void branchWhite(SearchState &state, ui cost, ui u);

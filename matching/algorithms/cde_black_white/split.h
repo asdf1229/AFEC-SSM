@@ -50,7 +50,10 @@ inline bool MatchingSolver::chooseSplitWhite(const SearchState &state, ui cost,
 
         if (feasible_count == 0) return false;
 
-        bool white_needs_split = branch_count > 1 || min_delta > 0;
+        // A singleton cost bucket has no deferred choice left, so materialize
+        // it immediately as black instead of carrying it as a white vertex.
+        bool white_needs_split = feasible_count == 1 ||
+            branch_count > 1 || min_delta > 0;
         if (!white_needs_split) continue;
 
         bool better = !needs_split ||
@@ -105,13 +108,22 @@ inline void MatchingSolver::branchSplitWhite(SearchState &state, ui cost,
         const vector<ui> &bucket = buckets[delta];
         if (bucket.empty()) continue;
 
-        vector<ui> zero_deltas(bucket.size(), 0);
-
         size_t undo_mark = mark();
-        replaceBucket(state, white_u, bucket, zero_deltas);
         stats.split_branches++;
 
-        branchSplitWhites(state, cost + delta, continue_branch);
+        if (bucket.size() == 1) {
+            ui next_cost = cost;
+            if (tryMapWhite(state, cost, white_u, bucket.front(), delta,
+                    next_cost)) {
+                assert(next_cost == cost + delta);
+                branchSplitWhites(state, next_cost, continue_branch);
+            }
+        }
+        else {
+            vector<ui> zero_deltas(bucket.size(), 0);
+            replaceBucket(state, white_u, bucket, zero_deltas);
+            branchSplitWhites(state, cost + delta, continue_branch);
+        }
 
         rollback(state, undo_mark);
         if (outputLimitReached()) return;

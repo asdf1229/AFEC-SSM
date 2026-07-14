@@ -163,18 +163,54 @@ void MatchingSolver::branchMatWhites(SearchState &state, ui cost,
         });
 }
 
-bool MatchingSolver::shouldExpandAsWhite(const SearchState &state, ui u,
+bool MatchingSolver::colorAllBlack(const SearchState &state, ui u,
     const vector<pair<ui, ui>> &anchor_candidates) const
 {
     (void)state;
+    (void)u;
     (void)anchor_candidates;
-#if CDE_BLACK_WHITE_STATIC_COLOR
-    assert(u < static_color.size());
-    assert(static_color[u] == COLOR_WHITE || static_color[u] == COLOR_BLACK);
-    return static_color[u] == COLOR_WHITE;
-#else
-    // TODO
+    return false;
+}
+
+bool MatchingSolver::colorAllWhite(const SearchState &state, ui u,
+    const vector<pair<ui, ui>> &anchor_candidates) const
+{
+    (void)state;
+    (void)u;
+    (void)anchor_candidates;
     return true;
+}
+
+bool MatchingSolver::color1(const SearchState &state, ui u,
+    const vector<pair<ui, ui>> &anchor_candidates) const
+{
+    (void)anchor_candidates;
+    assert(u < qn);
+    assert(state.color[u] == COLOR_UNSELECTED);
+
+    for (ui anchor : q_neighbors[u]) {
+        if (!isSelected(state, anchor)) continue;
+        if (getEdge(state, u, anchor) != EDGE_UNDECIDED) continue;
+
+        if (isWhite(state, anchor)) return false;
+        assert(isBlack(state, anchor));
+    }
+    return true;
+}
+
+bool MatchingSolver::shouldExpandAsWhite(const SearchState &state, ui u,
+    const vector<pair<ui, ui>> &anchor_candidates) const
+{
+#if CDE_BLACK_WHITE_COLOR_ALL_BLACK
+    return colorAllBlack(state, u, anchor_candidates);
+#elif CDE_BLACK_WHITE_COLOR_ALL_WHITE
+    return colorAllWhite(state, u, anchor_candidates);
+#elif CDE_BLACK_WHITE_COLOR1
+    return color1(state, u, anchor_candidates);
+#else
+    // Keep the default behavior behind the same dynamic policy interface so
+    // future coloring ablations can be selected here without precoloring q.
+    return colorAllWhite(state, u, anchor_candidates);
 #endif
 }
 

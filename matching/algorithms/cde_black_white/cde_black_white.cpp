@@ -40,21 +40,6 @@ ui MatchingSolver::chooseRoot()
     return root;
 }
 
-void MatchingSolver::initColors()
-{
-    static_root = chooseRoot();
-#if CDE_BLACK_WHITE_STATIC_COLOR_ALL_BLACK
-    static_color.assign(qn, COLOR_BLACK);
-#elif CDE_BLACK_WHITE_STATIC_COLOR_ALL_WHITE
-    static_color.assign(qn, COLOR_WHITE);
-    static_color[static_root] = COLOR_BLACK;
-#else
-    static_color.assign(qn, COLOR_WHITE);
-    static_color[static_root] = COLOR_BLACK;
-    // TODO
-#endif
-}
-
 void MatchingSolver::tarjan(ui u, ui parent, vector<int> &dfn, vector<int> &low, int &tim)
 {
     dfn[u] = low[u] = ++tim;
@@ -129,10 +114,6 @@ bool MatchingSolver::init(const Graph *q, const Graph *g, ui match_threshold)
 
     buildAdjIndex();
 
-#if CDE_BLACK_WHITE_STATIC_COLOR
-    initColors();
-#endif
-
 #if CDE_BLACK_WHITE_FIXED_ORDER
     initFixedEdgePriorities();
 #elif !CDE_BLACK_WHITE_RANDOM_ORDER
@@ -151,7 +132,7 @@ void MatchingSolver::match(vector<vector<pair<ui, ui>>> &results)
     results_ptr = &results;
     results_ptr->clear();
 
-    ui root = static_root;
+    ui root = chooseRoot();
     SearchState state;
     initState(state);
     size_t root_mark = mark();
@@ -244,8 +225,6 @@ void MatchingSolver::resetState()
     candidate_adj_index.clear();
     candidate_adj_pool.clear();
     stats = TimeStats();
-    static_root = 0;
-    static_color.clear();
     static_candidate_count.clear();
     static_edge_support.clear();
 #if CDE_BLACK_WHITE_FIXED_ORDER
