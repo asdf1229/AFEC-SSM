@@ -204,8 +204,10 @@ private:
         const vector<pair<ui, ui>> &anchor_candidates) const;
     bool color1(const SearchState &state, ui u,
         const vector<pair<ui, ui>> &anchor_candidates) const;
-    bool shouldExpandAsWhite(const SearchState &state, ui u,
+    bool colorDynamic(const SearchState &state, ui cost, ui u,
         const vector<pair<ui, ui>> &anchor_candidates) const;
+    bool shouldExpandAsWhite(const SearchState &state, ui u,
+        const vector<pair<ui, ui>> &anchor_candidates, ui cost) const;
     void branchWhite(SearchState &state, ui cost, ui u);
     void branchBlack(SearchState &state, ui cost, ui u,
         const vector<pair<ui, ui>> &anchor_candidates);

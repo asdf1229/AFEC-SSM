@@ -3,6 +3,46 @@
 
 namespace cde_black_white {
 
+namespace {
+
+using BranchEstimate = __uint128_t;
+
+constexpr BranchEstimate MAX_BRANCH_ESTIMATE = ~BranchEstimate{ 0 };
+
+BranchEstimate saturatingAdd(BranchEstimate lhs, BranchEstimate rhs)
+{
+    if (MAX_BRANCH_ESTIMATE - lhs < rhs) return MAX_BRANCH_ESTIMATE;
+    return lhs + rhs;
+}
+
+BranchEstimate saturatingMultiply(BranchEstimate lhs, BranchEstimate rhs)
+{
+    if (lhs == 0 || rhs == 0) return 0;
+    if (lhs > MAX_BRANCH_ESTIMATE / rhs) return MAX_BRANCH_ESTIMATE;
+    return lhs * rhs;
+}
+
+// cumulative[j] = sum_{i=0}^j C(s, i), saturated to BranchEstimate.
+vector<BranchEstimate> cumulativeBinomialBranches(size_t s)
+{
+    vector<BranchEstimate> cumulative(s + 1, 1);
+    BranchEstimate binomial = 1;
+
+    for (size_t j = 1; j <= s; ++j) {
+        BranchEstimate numerator = (BranchEstimate)(s - j + 1);
+        if (binomial > MAX_BRANCH_ESTIMATE / numerator) {
+            binomial = MAX_BRANCH_ESTIMATE;
+        }
+        else {
+            binomial = binomial * numerator / (BranchEstimate)j;
+        }
+        cumulative[j] = saturatingAdd(cumulative[j - 1], binomial);
+    }
+    return cumulative;
+}
+
+} // namespace
+
 bool MatchingSolver::tryMapBlackWithDelta(SearchState &state, ui cost, ui u, ui v, ui delta, ui &next_cost)
 {
     assert(u < qn && v < gn && candidates[u].contains(v));
@@ -198,16 +238,90 @@ bool MatchingSolver::color1(const SearchState &state, ui u,
     return true;
 }
 
-bool MatchingSolver::shouldExpandAsWhite(const SearchState &state, ui u,
+bool MatchingSolver::colorDynamic(const SearchState &state, ui cost, ui u,
     const vector<pair<ui, ui>> &anchor_candidates) const
 {
+    assert(u < qn);
+    assert(cost <= threshold);
+    assert(state.color[u] == COLOR_UNSELECTED);
+    assert(!anchor_candidates.empty());
+
+    const ui remaining_budget = threshold - cost;
+    ui min_delta = std::numeric_limits<ui>::max();
+    ui max_delta = 0;
+    for (const pair<ui, ui> &candidate_delta : anchor_candidates) {
+        ui delta = candidate_delta.second;
+        assert(delta <= remaining_budget);
+        min_delta = std::min(min_delta, delta);
+        max_delta = std::max(max_delta, delta);
+    }
+
+    size_t splittable_white_count = 0;
+    bool has_white_neighbor = false;
+    BranchEstimate materialization_branches = 1;
+    for (ui neighbor : q_neighbors[u]) {
+        if (!isWhite(state, neighbor)) continue;
+
+        has_white_neighbor = true;
+        materialization_branches = saturatingMultiply(
+            materialization_branches,
+            (BranchEstimate)state.white[neighbor].count);
+
+        if (getEdge(state, u, neighbor) == EDGE_UNDECIDED &&
+            !isQueryBridgeEdge(u, neighbor)) {
+            splittable_white_count++;
+        }
+    }
+
+    // With no adjacent white vertex, cost splitting creates no more branches
+    // than mapping u directly, and singleton buckets materialize immediately.
+    if (!has_white_neighbor) return true;
+
+    vector<BranchEstimate> cumulative_branches =
+        cumulativeBinomialBranches(splittable_white_count);
+    BranchEstimate black_branches = 0;
+    for (const pair<ui, ui> &candidate_delta : anchor_candidates) {
+        size_t affordable_missing_edges = (size_t)(
+            remaining_budget - candidate_delta.second);
+        size_t max_added_cost = std::min(
+            splittable_white_count, affordable_missing_edges);
+        black_branches = saturatingAdd(
+            black_branches, cumulative_branches[max_added_cost]);
+    }
+
+    BranchEstimate candidate_count =
+        (BranchEstimate)anchor_candidates.size();
+    BranchEstimate budget_bucket_count =
+        (BranchEstimate)(remaining_budget - min_delta) + 1;
+    BranchEstimate interval_bucket_count =
+        (BranchEstimate)(max_delta - min_delta) +
+        (BranchEstimate)splittable_white_count + 1;
+    BranchEstimate estimated_bucket_count = std::min(
+        candidate_count,
+        std::min(budget_bucket_count, interval_bucket_count));
+    BranchEstimate white_branches = saturatingMultiply(
+        materialization_branches, estimated_bucket_count);
+
+    // A tie maps u immediately so that the injectivity constraint is applied.
+    return white_branches < black_branches;
+}
+
+bool MatchingSolver::shouldExpandAsWhite(const SearchState &state, ui u,
+    const vector<pair<ui, ui>> &anchor_candidates, ui cost) const
+{
 #if CDE_BLACK_WHITE_COLOR_ALL_BLACK
+    (void)cost;
     return colorAllBlack(state, u, anchor_candidates);
 #elif CDE_BLACK_WHITE_COLOR_ALL_WHITE
+    (void)cost;
     return colorAllWhite(state, u, anchor_candidates);
 #elif CDE_BLACK_WHITE_COLOR1
+    (void)cost;
     return color1(state, u, anchor_candidates);
+#elif CDE_BLACK_WHITE_DYNAMIC_COLOR
+    return colorDynamic(state, cost, u, anchor_candidates);
 #else
+    (void)cost;
     // Keep the default behavior behind the same dynamic policy interface so
     // future coloring ablations can be selected here without precoloring q.
     return colorAllWhite(state, u, anchor_candidates);
@@ -264,7 +378,7 @@ void MatchingSolver::branchBlackAnchor(SearchState &state, ui cost, ui u, ui anc
     if (anchor_candidates.empty()) return;
 
     // Decide whether to delay u as white
-    bool expand_as_white = shouldExpandAsWhite(state, u, anchor_candidates);
+    bool expand_as_white = shouldExpandAsWhite(state, u, anchor_candidates, cost);
 
     if(expand_as_white) {
         vector<ui> &white_neighbors = whiteNbrsBuffer(state.selected_count);
