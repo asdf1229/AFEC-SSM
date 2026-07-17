@@ -20,7 +20,7 @@ query_group
 query
 threshold
 status
-cde_match_run_ms
+afee_run_ms
 treespan_run_ms
 ```
 
@@ -44,7 +44,7 @@ python3 -B scripts/make_result_tables.py result/20260423_174256
 To compare a different primary algorithm, pass `--ours`:
 
 ```bash
-python3 -B scripts/make_result_tables.py --ours cde_match result/20260423_174256
+python3 -B scripts/make_result_tables.py --ours afee result/20260423_174256
 ```
 
 To restrict the comparison to specific algorithms, pass `--algorithms`. When
@@ -53,7 +53,7 @@ algorithm:
 
 ```bash
 python3 -B scripts/make_result_tables.py \
-  --algorithms cde_match,treespan \
+  --algorithms afee,treespan \
   result/20260423_174256
 ```
 
@@ -63,8 +63,8 @@ selected set:
 
 ```bash
 python3 -B scripts/make_result_tables.py \
-  --algorithms cde_match,treespan \
-  --ours cde_match \
+  --algorithms afee,treespan \
+  --ours afee \
   result/20260423_174256
 ```
 

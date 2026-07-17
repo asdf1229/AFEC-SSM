@@ -739,6 +739,7 @@ struct S3ANDSolver::Impl {
     void emitResult()
     {
         stats.result_count++;
+        ssm::report_result_progress(stats.result_count, stats.recursion_calls);
 #ifndef NDEBUG
         vector<pair<ui, ui> > result;
         result.reserve(qn);
@@ -828,14 +829,22 @@ void Approximate_S3AND(const Graph *query_graph, const Graph *data_graph,
 {
     Timer t_total;
     S3ANDSolver solver;
-    if (solver.init(query_graph, data_graph, threshold)) {
+    const bool initialized = solver.init(query_graph, data_graph, threshold);
+    if (initialized) {
+        ssm::set_reported_filter_candidates(solver.stats.filter_candidate_count);
+    }
+    ssm::report_preprocessing_complete(solver.stats.init_time);
+    if (initialized) {
         solver.match(results);
     }
 
     solver.stats.total_time = t_total.elapsed();
     ssm::set_reported_phase_times(solver.stats.init_time,
         solver.stats.dfs_time);
+#ifndef NDEBUG
     solver.printStats();
+#endif
+    ssm::set_reported_recursion_calls(solver.stats.recursion_calls);
     ssm::set_reported_result_count(solver.stats.result_count);
 }
 

@@ -25,6 +25,7 @@ public:
         long long sequences_count = 0;
         long long enum_call_count = 0;
         long long duplicate_results = 0;
+        size_t filter_candidate_count = 0;
         size_t result_count = 0;
         bool output_limit_reached = false;
     } stats;

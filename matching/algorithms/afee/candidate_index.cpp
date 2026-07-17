@@ -1,0 +1,88 @@
+#include "matching/algorithms/afee/afee.h"
+
+namespace afee {
+
+unsigned long long MatchingSolver::adjKey(ui data_vertex, ui query_neighbor) const
+{
+    return ((unsigned long long)data_vertex << 32) | (unsigned long long)query_neighbor;
+}
+
+void MatchingSolver::buildAdjIndex()
+{
+    candidate_adj_index.clear();
+    candidate_adj_index.resize(qn);
+    candidate_adj_pool.clear();
+
+    size_t total_candidate_count = 0;
+    for (ui u = 0; u < qn; ++u) {
+        total_candidate_count += (size_t)candidates[u].size();
+        candidate_adj_index[u].reserve((size_t)candidates[u].size() * q_neighbors[u].size());
+    }
+
+    // Reserve temporary buffers
+    candidate_range_buffer.reserve(qn);
+    candidate_source_buffer.reserve(total_candidate_count);
+    candidate_result_buffer.reserve(total_candidate_count);
+    candidate_result_delta_buffer.reserve(total_candidate_count);
+    candidate_intersection_buffer.reserve(total_candidate_count);
+
+    for (ui u = 0; u < qn; ++u) {
+        for (ui v : candidates[u]) {
+            ui degree = 0; const ui *neighbors = data_graph->getVertexNeighbors(v, degree);
+            for (ui query_neighbor : q_neighbors[u]) {
+                size_t begin = candidate_adj_pool.size();
+                for (ui i = 0; i < degree; ++i) {
+                    ui data_neighbor = neighbors[i];
+                    if (candidates[query_neighbor].contains(data_neighbor)) {
+                        candidate_adj_pool.push_back(data_neighbor);
+                    }
+                }
+
+                ui len = (ui)(candidate_adj_pool.size() - begin);
+                if (len == 0) continue;
+
+                pair<size_t, ui> range(begin, len);
+                candidate_adj_index[u].emplace(adjKey(v, query_neighbor), range);
+            }
+        }
+    }
+}
+
+// return to_data set
+const pair<size_t, ui> *MatchingSolver::findAdjRange(ui from_query, ui from_data, ui to_query) const
+{
+    if (from_query >= candidate_adj_index.size()) return nullptr;
+    const auto &index = candidate_adj_index[from_query];
+    auto it = index.find(adjKey(from_data, to_query));
+    if (it == index.end()) return nullptr;
+    return &it->second;
+}
+
+const ui *MatchingSolver::rangeBegin(const pair<size_t, ui> &range) const
+{
+    return candidate_adj_pool.data() + range.first;
+}
+
+const ui *MatchingSolver::rangeEnd(const pair<size_t, ui> &range) const
+{
+    return rangeBegin(range) + range.second;
+}
+
+bool MatchingSolver::rangeHas(const pair<size_t, ui> &range, ui value) const
+{
+    return std::binary_search(rangeBegin(range), rangeEnd(range), value);
+}
+
+bool MatchingSolver::anchorAdjacent(ui anchor_query, ui anchor_data, ui target_query, ui target_data)
+{
+    stats.candidate_edge_check_calls++;
+    const pair<size_t, ui> *range = findAdjRange(anchor_query, anchor_data, target_query);
+    if (range == nullptr) {
+        stats.candidate_range_misses++;
+        return false;
+    }
+    stats.candidate_range_hits++;
+    return rangeHas(*range, target_data);
+}
+
+} // namespace afee

@@ -1074,6 +1074,7 @@ struct DecQSolver::Impl {
         }
 #endif
         stats.result_count++;
+        report_result_progress(stats.result_count);
 #ifndef NDEBUG
         std::vector<std::pair<ui, ui> > result;
         result.reserve(qn);
@@ -1261,6 +1262,9 @@ struct DecQSolver::Impl {
         phase_timer.restart();
         buildGlobalLattice();
         stats.lattice_time = phase_timer.elapsed();
+        report_preprocessing_complete(stats.data_index_time +
+            stats.decomposition_time + stats.local_pattern_time +
+            stats.lattice_time);
         runGlobalMatching();
         stats.total_time = stats.data_index_time + total_timer.elapsed();
     }
@@ -1354,7 +1358,9 @@ void Approximate_DecQ(const Graph *query_graph, const Graph *data_graph,
         ? solver.stats.total_time - preprocessing_time : 0;
     set_reported_phase_times(preprocessing_time, search_time);
     set_reported_result_count(solver.stats.result_count);
+#ifndef NDEBUG
     solver.printStats();
+#endif
 }
 
 namespace {

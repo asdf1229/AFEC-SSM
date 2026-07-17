@@ -74,6 +74,8 @@ struct SASUMSolver::Impl {
 
         if (terminal_distance == 0) {
             stats.terminal_graph_count = 1;
+            report_preprocessing_complete(
+                stats.data_index_time + stats.lattice_time);
             phase_timer.restart();
             MatchSet query_matches;
             exactMatch(lattice_levels[0][0], query_matches);
@@ -99,6 +101,9 @@ struct SASUMSolver::Impl {
         phase_timer.restart();
         selectSeeds(terminals.size());
         stats.seed_selection_time = phase_timer.elapsed();
+
+        report_preprocessing_complete(stats.data_index_time + stats.lattice_time +
+            stats.base_generation_time + stats.seed_selection_time);
 
         phase_timer.restart();
         std::vector<MatchSet> seed_matches(selected_base_ids.size());
@@ -899,6 +904,7 @@ struct SASUMSolver::Impl {
 #endif
 
             stats.result_count++;
+            report_result_progress(stats.result_count);
 
 #if MATCH_OUTPUT_LIMIT > 0
             if (stats.result_count >= static_cast<size_t>(MATCH_OUTPUT_LIMIT)) {
@@ -943,7 +949,9 @@ void Approximate_SASUM(const Graph *query_graph, const Graph *data_graph,
     long long search_time = solver.stats.total_time > preprocessing_time
         ? solver.stats.total_time - preprocessing_time : 0;
     set_reported_phase_times(preprocessing_time, search_time);
+#ifndef NDEBUG
     solver.printStats();
+#endif
     set_reported_result_count(solver.stats.result_count);
 }
 

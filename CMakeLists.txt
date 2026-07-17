@@ -43,19 +43,19 @@ file(GLOB SSM_ALGORITHM_SOURCES CONFIGURE_DEPENDS
     ${PROJECT_SOURCE_DIR}/matching/algorithms/*.cpp
 )
 list(APPEND SSM_ALGORITHM_SOURCES
-    ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/cde_black_white.cpp
+    ${PROJECT_SOURCE_DIR}/matching/algorithms/afee/afee.cpp
 )
 list(SORT SSM_ALGORITHM_SOURCES)
 
-set(SSM_CDE_BLACK_WHITE_SOURCES
-    ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/branching.cpp
-    ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/buffers.cpp
-    ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/candidate_index.cpp
-    ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/filtering.cpp
-    ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/ordering.cpp
-    ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/state_undo.cpp
-    ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/terminal_tail.cpp
-    ${PROJECT_SOURCE_DIR}/matching/algorithms/cde_black_white/white_candidates.cpp
+set(SSM_AFEE_SOURCES
+    ${PROJECT_SOURCE_DIR}/matching/algorithms/afee/branching.cpp
+    ${PROJECT_SOURCE_DIR}/matching/algorithms/afee/buffers.cpp
+    ${PROJECT_SOURCE_DIR}/matching/algorithms/afee/candidate_index.cpp
+    ${PROJECT_SOURCE_DIR}/matching/algorithms/afee/filtering.cpp
+    ${PROJECT_SOURCE_DIR}/matching/algorithms/afee/ordering.cpp
+    ${PROJECT_SOURCE_DIR}/matching/algorithms/afee/state_undo.cpp
+    ${PROJECT_SOURCE_DIR}/matching/algorithms/afee/terminal_tail.cpp
+    ${PROJECT_SOURCE_DIR}/matching/algorithms/afee/white_candidates.cpp
 )
 
 if (NOT SSM_ALGORITHM_SOURCES)
@@ -81,13 +81,35 @@ macro(add_ssm_executable TARGET_NAME ALGO_SOURCE CONFIG_HEADER)
     list(APPEND SSM_EXECUTABLES ${TARGET_NAME})
 endmacro()
 
-macro(set_cde_black_white_identity TARGET_NAME CONFIG_NAME)
-    set(CDE_BLACK_WHITE_ALGORITHM_KEY "cde_black_white_${CONFIG_NAME}")
-    set(CDE_BLACK_WHITE_DISPLAY_NAME "CDE-Black-White (${CONFIG_NAME})")
+macro(set_afee_identity TARGET_NAME CONFIG_NAME)
+    if ("${CONFIG_NAME}" STREQUAL "afee")
+        set(AFEE_ALGORITHM_KEY "afee")
+        set(AFEE_DISPLAY_NAME "AFEE")
+    else()
+        set(AFEE_ALGORITHM_KEY "afee_${CONFIG_NAME}")
+        string(TOUPPER "${CONFIG_NAME}" AFEE_CONFIG_DISPLAY_NAME)
+        set(AFEE_DISPLAY_NAME "AFEE_${AFEE_CONFIG_DISPLAY_NAME}")
+    endif()
     target_compile_definitions(${TARGET_NAME} PRIVATE
-        "CDE_BLACK_WHITE_ALGORITHM_KEY=\"${CDE_BLACK_WHITE_ALGORITHM_KEY}\""
-        "CDE_BLACK_WHITE_DISPLAY_NAME=\"${CDE_BLACK_WHITE_DISPLAY_NAME}\""
+        "AFEE_ALGORITHM_KEY=\"${AFEE_ALGORITHM_KEY}\""
+        "AFEE_DISPLAY_NAME=\"${AFEE_DISPLAY_NAME}\""
     )
+endmacro()
+
+macro(add_afee_executable ALGO_SOURCE CONFIG_HEADER)
+    get_filename_component(CONFIG_NAME "${CONFIG_HEADER}" NAME_WE)
+    if (CONFIG_NAME STREQUAL "afee")
+        set(AFEE_TARGET_NAME "ssm_afee")
+    else()
+        set(AFEE_TARGET_NAME "ssm_afee_${CONFIG_NAME}")
+    endif()
+    add_ssm_executable(
+        "${AFEE_TARGET_NAME}"
+        "${ALGO_SOURCE}"
+        "${CONFIG_HEADER}"
+        ${SSM_AFEE_SOURCES}
+    )
+    set_afee_identity("${AFEE_TARGET_NAME}" "${CONFIG_NAME}")
 endmacro()
 
 foreach(ALGO_SOURCE ${SSM_ALGORITHM_SOURCES})
@@ -100,37 +122,22 @@ foreach(ALGO_SOURCE ${SSM_ALGORITHM_SOURCES})
         set(ALGO_NAME ${ALGO_FILE_NAME})
     endif()
 
-    if (ALGO_NAME STREQUAL "cde_black_white")
+    if (ALGO_NAME STREQUAL "afee")
         if (SSM_CONFIG_HEADER)
-            get_filename_component(CONFIG_NAME "${SSM_CONFIG_HEADER}" NAME_WE)
-            add_ssm_executable(
-                "ssm_cde_black_white_${CONFIG_NAME}"
-                "${ALGO_SOURCE}"
-                "${SSM_CONFIG_HEADER}"
-                ${SSM_CDE_BLACK_WHITE_SOURCES}
-            )
-            set_cde_black_white_identity("ssm_cde_black_white_${CONFIG_NAME}" "${CONFIG_NAME}")
+            add_afee_executable("${ALGO_SOURCE}" "${SSM_CONFIG_HEADER}")
         else()
-            file(GLOB CDE_BLACK_WHITE_ABLATION_CONFIGS CONFIGURE_DEPENDS
+            file(GLOB AFEE_ABLATION_CONFIGS CONFIGURE_DEPENDS
                 RELATIVE "${PROJECT_SOURCE_DIR}"
-                "${PROJECT_SOURCE_DIR}/configuration/cde_black_white_ablation_configs/*.h"
+                "${PROJECT_SOURCE_DIR}/configuration/afee_ablation_configs/*.h"
             )
-            list(SORT CDE_BLACK_WHITE_ABLATION_CONFIGS)
-            if (NOT CDE_BLACK_WHITE_ABLATION_CONFIGS)
+            list(SORT AFEE_ABLATION_CONFIGS)
+            if (NOT AFEE_ABLATION_CONFIGS)
                 message(FATAL_ERROR
-                    "No CDE black-white ablation configs found under configuration/cde_black_white_ablation_configs.")
+                    "No AFEE ablation configs found under configuration/afee_ablation_configs.")
             endif()
 
-            foreach(CONFIG_HEADER ${CDE_BLACK_WHITE_ABLATION_CONFIGS})
-                get_filename_component(CONFIG_NAME "${CONFIG_HEADER}" NAME_WE)
-                set(TARGET_NAME "ssm_cde_black_white_${CONFIG_NAME}")
-                add_ssm_executable(
-                    "${TARGET_NAME}"
-                    "${ALGO_SOURCE}"
-                    "${CONFIG_HEADER}"
-                    ${SSM_CDE_BLACK_WHITE_SOURCES}
-                )
-                set_cde_black_white_identity("${TARGET_NAME}" "${CONFIG_NAME}")
+            foreach(CONFIG_HEADER ${AFEE_ABLATION_CONFIGS})
+                add_afee_executable("${ALGO_SOURCE}" "${CONFIG_HEADER}")
             endforeach()
         endif()
     elseif(ALGO_NAME STREQUAL "s3and")

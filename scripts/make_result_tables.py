@@ -252,7 +252,11 @@ def read_rows(files: Sequence[Path]) -> Tuple[List[Dict[str, str]], List[str]]:
 
 
 def detect_algorithms(fieldnames: Iterable[str], metric: str) -> List[str]:
-    candidates = set()
+    # Preserve the order used by compare.sh.  In particular, compare.sh puts
+    # the standard afee configuration first, so it becomes the
+    # report's default primary algorithm unless --ours overrides it.
+    candidates: List[str] = []
+    seen = set()
     for field in fieldnames:
         for suffix in KNOWN_ALGORITHM_SUFFIXES:
             if not field.endswith(suffix):
@@ -262,11 +266,13 @@ def detect_algorithms(fieldnames: Iterable[str], metric: str) -> List[str]:
                 continue
             if prefix == "expected":
                 continue
-            candidates.add(prefix)
+            if prefix not in seen:
+                candidates.append(prefix)
+                seen.add(prefix)
 
     metric_suffix = f"_{metric}"
     usable = [algo for algo in candidates if f"{algo}{metric_suffix}" in fieldnames]
-    return sorted(usable, key=natural_key)
+    return usable
 
 
 def normalize_name(value: str) -> str:

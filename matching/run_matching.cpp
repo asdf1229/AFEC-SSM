@@ -2,14 +2,152 @@
 
 #include "utility/popl.hpp"
 
+#include <array>
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
+#include <limits>
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
+
 using namespace popl;
 using namespace std;
 
+namespace ssm {
+namespace detail {
+    size_t next_output_report_count = numeric_limits<size_t>::max();
+}
+}
+
 namespace {
+
+    constexpr array<size_t, 4> output_checkpoints = {
+        1000000ULL,
+        10000000ULL,
+        100000000ULL,
+        1000000000ULL,
+    };
 
     bool reported_result_count_set = false;
     size_t reported_result_count = 0;
     ssm::AlgorithmPhaseTimes reported_phase_times;
+    ssm::AlgorithmKeyMetrics reported_key_metrics;
+    string progress_algorithm;
+    chrono::steady_clock::time_point progress_start;
+    size_t next_output_checkpoint_index = output_checkpoints.size();
+    bool progress_reporting_active = false;
+
+    void begin_output_progress_reporting(const string &algorithm)
+    {
+        progress_algorithm = algorithm;
+        progress_start = chrono::steady_clock::now();
+        next_output_checkpoint_index = 0;
+        progress_reporting_active = true;
+        ssm::detail::next_output_report_count = output_checkpoints.front();
+    }
+
+    void end_output_progress_reporting()
+    {
+        progress_reporting_active = false;
+        next_output_checkpoint_index = output_checkpoints.size();
+        ssm::detail::next_output_report_count = numeric_limits<size_t>::max();
+    }
+
+    const char *format_optional_size(
+        bool available, size_t value, char *buffer, size_t buffer_size)
+    {
+        if (!available) return "NA";
+        snprintf(buffer, buffer_size, "%zu", value);
+        return buffer;
+    }
+
+    const char *format_optional_ull(
+        bool available, unsigned long long value, char *buffer, size_t buffer_size)
+    {
+        if (!available) return "NA";
+        snprintf(buffer, buffer_size, "%llu", value);
+        return buffer;
+    }
+
+    bool parse_control_fd(const char *environment_name, int &fd)
+    {
+#if defined(__unix__) || defined(__APPLE__)
+        const char *fd_text = getenv(environment_name);
+        if (fd_text == nullptr || *fd_text == '\0') return false;
+
+        errno = 0;
+        char *end = nullptr;
+        long parsed_fd = strtol(fd_text, &end, 10);
+        if (errno != 0 || end == fd_text || *end != '\0' ||
+            parsed_fd < 0 || parsed_fd > INT_MAX) {
+            return false;
+        }
+        fd = static_cast<int>(parsed_fd);
+        return true;
+#else
+        (void)environment_name;
+        (void)fd;
+        return false;
+#endif
+    }
+
+    bool notify_runner_ready(const string &algorithm, long long load_time_us,
+        int requested_threshold, int effective_threshold)
+    {
+        printf("SSM_READY algorithm=%s load_ms=%.4lf peak_rss_kb=%zu "
+               "requested_threshold=%d effective_threshold=%d\n",
+            algorithm.c_str(), load_time_us / 1000.0,
+            ssm::peak_resident_memory_kb(), requested_threshold,
+            effective_threshold);
+        fflush(stdout);
+
+#if defined(__unix__) || defined(__APPLE__)
+        int ready_fd = -1;
+        int ack_fd = -1;
+        const bool has_ready_fd = parse_control_fd("SSM_READY_FD", ready_fd);
+        const bool has_ack_fd = parse_control_fd("SSM_ACK_FD", ack_fd);
+        if (!has_ready_fd && !has_ack_fd) return true;
+        if (!has_ready_fd || !has_ack_fd) return false;
+
+        const char token[] = "READY\n";
+        size_t offset = 0;
+        bool ready_written = true;
+        while (offset < sizeof(token) - 1) {
+            ssize_t written = write(ready_fd, token + offset,
+                sizeof(token) - 1 - offset);
+            if (written > 0) {
+                offset += static_cast<size_t>(written);
+            }
+            else if (written < 0 && errno == EINTR) {
+                continue;
+            }
+            else {
+                ready_written = false;
+                break;
+            }
+        }
+        close(ready_fd);
+        if (!ready_written) {
+            close(ack_fd);
+            return false;
+        }
+
+        char ack = '\0';
+        while (true) {
+            ssize_t bytes_read = read(ack_fd, &ack, 1);
+            if (bytes_read == 1) break;
+            if (bytes_read < 0 && errno == EINTR) continue;
+            close(ack_fd);
+            return false;
+        }
+        close(ack_fd);
+        return ack == 'A';
+#else
+        return true;
+#endif
+    }
 
     LabelID label2int(const string str, map<string, LabelID> &M)
     {
@@ -300,6 +438,90 @@ namespace {
 
 namespace ssm {
 
+    size_t peak_resident_memory_kb()
+    {
+#if defined(__unix__) || defined(__APPLE__)
+        // Process-lifetime high-water RSS.  This intentionally includes graph
+        // loading as well as preprocessing and search, matching whole-process
+        // peak-memory accounting in compare.sh's parent-side runner.
+        struct rusage usage;
+        if (getrusage(RUSAGE_SELF, &usage) != 0 || usage.ru_maxrss <= 0) {
+            return 0;
+        }
+#if defined(__APPLE__)
+        // macOS reports bytes; Linux and the other supported Unix benchmark
+        // environments report KiB.
+        return (static_cast<size_t>(usage.ru_maxrss) + 1023U) / 1024U;
+#else
+        return static_cast<size_t>(usage.ru_maxrss);
+#endif
+#else
+        return 0;
+#endif
+    }
+
+    namespace detail {
+
+        void emit_output_checkpoint(size_t count, unsigned long long recursion_calls)
+        {
+            if (!progress_reporting_active) {
+                next_output_report_count = numeric_limits<size_t>::max();
+                return;
+            }
+
+            while (next_output_checkpoint_index < output_checkpoints.size() &&
+                   count >= output_checkpoints[next_output_checkpoint_index]) {
+                const size_t output_limit = output_checkpoints[next_output_checkpoint_index];
+                const long long elapsed_us = chrono::duration_cast<chrono::microseconds>(
+                    chrono::steady_clock::now() - progress_start).count();
+                const size_t peak_rss_kb = peak_resident_memory_kb();
+                char recursion_value[32];
+                char filter_candidates_buffer[32];
+                char preprocessing_buffer[32];
+                char search_buffer[32];
+                const char *filter_candidates_value = format_optional_size(
+                    reported_key_metrics.filter_candidates_available,
+                    reported_key_metrics.filter_candidates,
+                    filter_candidates_buffer, sizeof(filter_candidates_buffer));
+                const char *preprocessing_value = "NA";
+                const char *search_value = "NA";
+                if (reported_phase_times.available) {
+                    snprintf(preprocessing_buffer, sizeof(preprocessing_buffer),
+                        "%.4lf", to_ms(reported_phase_times.preprocessing_us));
+                    const long long search_us = std::max(
+                        0LL, elapsed_us - reported_phase_times.preprocessing_us);
+                    snprintf(search_buffer, sizeof(search_buffer),
+                        "%.4lf", to_ms(search_us));
+                    preprocessing_value = preprocessing_buffer;
+                    search_value = search_buffer;
+                }
+                if (recursion_calls == numeric_limits<unsigned long long>::max()) {
+                    snprintf(recursion_value, sizeof(recursion_value), "NA");
+                }
+                else {
+                    snprintf(recursion_value, sizeof(recursion_value), "%llu", recursion_calls);
+                }
+
+                printf("SSM_CHECKPOINT algorithm=%s output_limit=%zu count=%zu "
+                       "run_ms=%.4lf preprocessing_ms=%s search_ms=%s "
+                       "peak_rss_kb=%zu filter_candidates=%s recursion_calls=%s\n",
+                    progress_algorithm.c_str(), output_limit, count,
+                    to_ms(elapsed_us), preprocessing_value, search_value,
+                    peak_rss_kb, filter_candidates_value, recursion_value);
+                // compare.sh may terminate the process later.  Make every
+                // completed checkpoint visible in the redirected output now.
+                fflush(stdout);
+                next_output_checkpoint_index++;
+            }
+
+            next_output_report_count =
+                next_output_checkpoint_index < output_checkpoints.size()
+                ? output_checkpoints[next_output_checkpoint_index]
+                : numeric_limits<size_t>::max();
+        }
+
+    } // namespace detail
+
     void clear_reported_result_count()
     {
         reported_result_count_set = false;
@@ -322,6 +544,21 @@ namespace ssm {
         reported_phase_times = AlgorithmPhaseTimes();
     }
 
+    void report_preprocessing_complete(long long preprocessing_us)
+    {
+        set_reported_phase_times(preprocessing_us, 0);
+        char filter_candidates_buffer[32];
+        const char *filter_candidates_value = format_optional_size(
+            reported_key_metrics.filter_candidates_available,
+            reported_key_metrics.filter_candidates,
+            filter_candidates_buffer, sizeof(filter_candidates_buffer));
+        printf("SSM_PREPROCESSED algorithm=%s preprocessing_ms=%.4lf "
+               "filter_candidates=%s peak_rss_kb=%zu\n",
+            progress_algorithm.c_str(), to_ms(reported_phase_times.preprocessing_us),
+            filter_candidates_value, peak_resident_memory_kb());
+        fflush(stdout);
+    }
+
     void set_reported_phase_times(long long preprocessing_us, long long search_us)
     {
         reported_phase_times.preprocessing_us = std::max(0LL, preprocessing_us);
@@ -334,13 +571,36 @@ namespace ssm {
         return reported_phase_times;
     }
 
+    void clear_reported_key_metrics()
+    {
+        reported_key_metrics = AlgorithmKeyMetrics();
+    }
+
+    void set_reported_filter_candidates(size_t count)
+    {
+        reported_key_metrics.filter_candidates = count;
+        reported_key_metrics.filter_candidates_available = true;
+    }
+
+    void set_reported_recursion_calls(unsigned long long count)
+    {
+        reported_key_metrics.recursion_calls = count;
+        reported_key_metrics.recursion_calls_available = true;
+    }
+
+    AlgorithmKeyMetrics get_reported_key_metrics()
+    {
+        return reported_key_metrics;
+    }
+
     int run_algorithm_main(int argc, char *argv[], const AlgorithmDefinition &algorithm)
     {
+        // Keep newline-terminated diagnostics visible even when stdout is
+        // redirected by compare.sh. Structured milestones still call fflush
+        // explicitly because the runner may terminate the process later.
+        setvbuf(stdout, nullptr, _IOLBF, 0);
 #ifndef NDEBUG
-        printf("**** SSM-GED [%s] (Debug) build at %s %s ***\n",
-            algorithm.display_name.c_str(), __TIME__, __DATE__);
-#else
-        printf("**** SSM-GED [%s] (Release) build at %s %s ***\n",
+        printf("**** SSM-GED [%s] verbose diagnostics build at %s %s ***\n",
             algorithm.display_name.c_str(), __TIME__, __DATE__);
 #endif
 
@@ -372,6 +632,7 @@ namespace ssm {
 
         string data_graph_file = data_option->value();
         string query_graph_file = query_option->value();
+        const int requested_threshold = threshold;
 
         Timer t;
         long long load_time = 0;
@@ -396,32 +657,71 @@ namespace ssm {
         assert(query_undirected_edges >= query_graph->getVerticesCount() - 1);
         threshold = min(threshold, (int)(query_undirected_edges - query_graph->getVerticesCount() + 1));
         load_time = t.elapsed();
+        if (!notify_runner_ready(algorithm.key, load_time,
+                requested_threshold, threshold)) {
+            fprintf(stderr, "SSM handshake failed before algorithm start.\n");
+            delete query_graph;
+            delete data_graph;
+            return 125;
+        }
 
         MatchResults results;
 
         t.restart();
         clear_reported_result_count();
         clear_reported_phase_times();
+        clear_reported_key_metrics();
+        begin_output_progress_reporting(algorithm.key);
         algorithm.entry(query_graph, data_graph, results, threshold);
         run_time = t.elapsed();
+        end_output_progress_reporting();
         size_t result_count = get_reported_result_count(results);
+        size_t peak_rss_kb = peak_resident_memory_kb();
         AlgorithmPhaseTimes phase_times = get_reported_phase_times();
         if (!phase_times.available) {
             phase_times.search_us = run_time;
         }
+        AlgorithmKeyMetrics key_metrics = get_reported_key_metrics();
+        char filter_candidates_buffer[32];
+        char recursion_calls_buffer[32];
+        const char *filter_candidates_value = format_optional_size(
+            key_metrics.filter_candidates_available, key_metrics.filter_candidates,
+            filter_candidates_buffer, sizeof(filter_candidates_buffer));
+        const char *recursion_calls_value = format_optional_ull(
+            key_metrics.recursion_calls_available, key_metrics.recursion_calls,
+            recursion_calls_buffer, sizeof(recursion_calls_buffer));
 
         printf("%s Results:\n", algorithm.display_name.c_str());
-        printf("  Result count: %zu\n", result_count);
-        printf("  Load Graphs Time: %.4lf ms\n", to_ms(load_time));
-        printf("  Run Time: %.4lf ms\n", to_ms(run_time));
-        printf("  Total Time: %.4lf ms\n", to_ms(load_time + run_time));
-        printf("SSM_SUMMARY algorithm=%s count=%zu load_ms=%.4lf run_ms=%.4lf total_ms=%.4lf\n",
-            algorithm.key.c_str(), result_count, to_ms(load_time), to_ms(run_time), to_ms(load_time + run_time));
+        printf("Algorithm:           %s\n", algorithm.key.c_str());
+        printf("Total Time:          %.4lf ms\n", to_ms(run_time));
+        printf("Init Time:           %.4lf ms\n", to_ms(phase_times.preprocessing_us));
+        printf("  - Filter Candidates: %s\n", filter_candidates_value);
+        printf("Search Time:         %.4lf ms\n", to_ms(phase_times.search_us));
+        printf("Recursion Calls:     %s\n", recursion_calls_value);
+        printf("Results Found:       %zu\n", result_count);
+        printf("Output Limit:        %zu%s\n",
+            static_cast<size_t>(MATCH_OUTPUT_LIMIT),
+            result_count >= static_cast<size_t>(MATCH_OUTPUT_LIMIT)
+                ? " (reached)" : " (not reached)");
+        printf("Load Graphs Time:    %.4lf ms\n", to_ms(load_time));
+        printf("Peak Process RSS:    %zu KiB\n", peak_rss_kb);
+        printf("SSM_SUMMARY algorithm=%s count=%zu load_ms=%.4lf run_ms=%.4lf "
+               "total_ms=%.4lf preprocessing_ms=%.4lf search_ms=%.4lf "
+               "peak_rss_kb=%zu filter_candidates=%s recursion_calls=%s "
+               "requested_threshold=%d effective_threshold=%d "
+               "output_limit=%zu output_limit_reached=%d\n",
+            algorithm.key.c_str(), result_count, to_ms(load_time), to_ms(run_time),
+            to_ms(load_time + run_time), to_ms(phase_times.preprocessing_us),
+            to_ms(phase_times.search_us), peak_rss_kb, filter_candidates_value,
+            recursion_calls_value, requested_threshold, threshold,
+            static_cast<size_t>(MATCH_OUTPUT_LIMIT),
+            result_count >= static_cast<size_t>(MATCH_OUTPUT_LIMIT) ? 1 : 0);
         printf("SSM_PHASES algorithm=%s preprocessing_ms=%.4lf search_ms=%.4lf "
                "run_ms=%.4lf end_to_end_ms=%.4lf\n",
             algorithm.key.c_str(), to_ms(phase_times.preprocessing_us),
             to_ms(phase_times.search_us), to_ms(run_time),
             to_ms(load_time + run_time));
+        fflush(stdout);
 
 #ifndef NDEBUG
         if (!results.empty()) {
