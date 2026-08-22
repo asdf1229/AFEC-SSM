@@ -1,6 +1,6 @@
-#include "matching/algorithms/afee/afee.h"
+#include "matching/algorithms/afec/afec.h"
 
-namespace afee {
+namespace afec {
 
 void MatchingSolver::resetBuffers()
 {
@@ -56,4 +56,4 @@ vector<pair<ui, ui>> &MatchingSolver::branchCandsBuffer(ui depth)
     return buffer;
 }
 
-} // namespace afee
+} // namespace afec

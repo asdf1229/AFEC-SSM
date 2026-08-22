@@ -1,139 +1,130 @@
-# SSM-GED
+# AFEC
 
-This repository provides AFEE and four comparable baselines under one exact-label,
-missing-query-edge, preserved-query-connectivity result semantics.
+This repository is the implementation and experiment suite for **AFEC:
+Anchor-Frontier Enumeration with Cost-Split Compression for Subgraph
+Similarity Matching**. It enumerates exact-label vertex mappings under a
+missing-query-edge budget while requiring the preserved query graph to remain
+connected.
 
-## AFEE
+The repository slug and the structured benchmark protocol retain the name
+`SSM-GED`; the proposed algorithm and all public variant names follow the
+paper's terminology below.
 
-The primary algorithm builds as `ssm_afee`. Its ablation executables follow
-the experiment names directly:
+## Implemented algorithms
 
-- `ssm_afee_no_split` (`AFEE_NO_SPLIT`)
-- `ssm_afee_mat` (`AFEE_MAT`)
-- `ssm_afee_batch` (`AFEE_BATCH`)
-- `ssm_afee_random_order` (`AFEE_RANDOM_ORDER`)
-- `ssm_afee_fixed_order` (`AFEE_FIXED_ORDER`)
-- `ssm_afee_only_nlf` (`AFEE_ONLY_NLF`)
+| Category | Display name | Executable | Benchmark key | Role |
+| --- | --- | --- | --- | --- |
+| Proposed | **AFEC** | `build/ssm_afec` | `afec` | Complete paper algorithm |
+| Paper baseline | TreeSpan | `build/ssm_treespan` | `treespan` | Clean-room TreeSpan implementation |
+| Paper baseline | DecQ | `build/ssm_decq` | `decq` | Clean-room DecQ implementation |
+| Paper baseline | SASUM | `build/ssm_sasum` | `sasum` | Clean-room SASUM implementation |
+| Additional implementation | S3AND-SSM | `build/ssm_s3and_ssm` | `s3and_ssm` | S3AND adapted to this repository's SSM semantics; not part of the paper's main comparison |
 
-## TreeSpan baseline
+All executables use the same graph format and command-line interface:
 
-`ssm_treespan` is a deterministic clean-room TreeSpan implementation with
-initial/replacement spanning trees, exclusion sets, QISequences, prefix-shared
-search, and unique-result validation.
+```bash
+build/ssm_afec -d path/to/graph_g.txt -q path/to/query.txt -t 2
+```
 
-See [docs/treespan_reproduction.md](docs/treespan_reproduction.md) for the
-algorithm mapping, deterministic implementation choices, and fidelity limits.
+## Paper ablation variants
 
-## S3AND-SSM baseline
+The default build creates exactly the seven configurations used by the paper.
+Their headers live in `configuration/afec_variants/`.
 
-`ssm_s3and_ssm` adapts S3AND to SSM-GED's single exact label, total missing
-query-edge distance, and preserved-query-edge connectivity. It must be named
-**S3AND-SSM**, not an unqualified S3AND reproduction.
+| Display name | Executable / key | Anchor-frontier | Cost-Split | Black--white policy | Anchor-edge order |
+| --- | --- | --- | --- | --- | --- |
+| **AFEC** | `ssm_afec` / `afec` | On | On | Dynamic | Dynamic |
+| **AFE** | `ssm_afe` / `afe` | On | Off | Candidate-wise black expansion | Dynamic |
+| **AFE-NoAF** | `ssm_afe_no_af` / `afe_no_af` | Off | Off | Candidate-wise expansion | Fixed query-vertex order |
+| **AFEC-White** | `ssm_afec_white` / `afec_white` | On | On | Always white | Dynamic |
+| **AFEC-Black** | `ssm_afec_black` / `afec_black` | On | On | Always black | Dynamic |
+| **AFEC-Fixed** | `ssm_afec_fixed` / `afec_fixed` | On | On | Dynamic | TreeSpan-style static priorities |
+| **AFEC-Random** | `ssm_afec_random` / `afec_random` | On | On | Dynamic | Reproducible random order |
 
-See [docs/s3and_adaptation.md](docs/s3and_adaptation.md) for the semantic
-differences, fixed parameters, timing scope, and fidelity limits.
+These configurations form the paper's four component studies:
 
-## DecQ baseline
+1. **Anchor-frontier expansion:** AFE vs. AFE-NoAF.
+2. **Cost-Split compression:** AFEC vs. AFE.
+3. **Dynamic black--white selection:** AFEC vs. AFEC-White vs. AFEC-Black.
+4. **Dynamic anchor-edge ordering:** AFEC vs. AFEC-Fixed vs. AFEC-Random.
 
-`ssm_decq` is a clean-room reproduction of Zhu et al.'s DASFAA 2012
-algorithm from “Efficient Subgraph Similarity All-Matching.” It preserves the
-paper's per-pattern work counters while adapting its output to this repository's
-one-maximal-result-per-vertex-mapping convention.
+AFE and AFE-NoAF both disable Cost-Split. AFE immediately materializes every
+candidate in an inclusion branch. AFE-NoAF additionally removes anchor-based
+candidate restriction, follows a branch-independent query-vertex order, and
+checks preserved-query connectivity only after a complete mapping is formed.
 
-See [docs/decq_reproduction.md](docs/decq_reproduction.md) for the problem
-comparison, fidelity limits, and repeated benchmark commands.
+AFEC-Black keeps the AFEC configuration surface but always chooses concrete
+black expansion. Consequently it explores the same candidate-wise successor
+space as AFE; it remains a separate control for the black--white policy study.
 
-## SASUM baseline
+The former `OnlyNLF` diagnostic is not an ablation in the current paper and is
+therefore not built or included in paper experiments.
 
-This repository includes a clean-room reproduction of the 2013 SASUM
-sharing-based approximate subgraph matcher.  It builds as
-`build/ssm_sasum` and uses the same graph format and `-d/-q/-t` interface as
-the other algorithms.
+## Dependencies and build
 
-See [docs/sasum_reproduction.md](docs/sasum_reproduction.md) for the problem
-comparison, fidelity limits, and repeated benchmark commands.
-
-## flat_hash_map Dependency
-
-This project uses `absl::flat_hash_map`, which is provided by the Abseil C++ library. Before building SSM-GED, install Abseil on your system.
-
-Linux download/install commands:
+The project requires CMake 3.16+, C++17, threads, and the Abseil C++ library
+for `absl::flat_hash_map`. On Debian or Ubuntu, install Abseil with:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y libabsl-dev
 ```
 
-## Reproducible build
-
-The project requires C++17. For a local Release build:
+Configure and build every algorithm and paper variant:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build \
-  --target ssm_afee ssm_treespan ssm_s3and_ssm ssm_sasum ssm_decq \
-  --parallel
+cmake --build build --parallel
 ```
 
-## Benchmark planning and resume
+To build only one AFEC-family configuration (plus the baselines), select its
+header explicitly:
 
-Use `--dry-run` to build and validate the discovered case/task plan without
-executing algorithms or creating the target result directory:
+```bash
+cmake -S . -B build-afe \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DSSM_CONFIG_HEADER=configuration/afec_variants/afe.h
+cmake --build build-afe --target ssm_afe --parallel
+```
+
+Use a fresh build directory after migrating from the old executable names.
+CMake does not remove obsolete binaries, and `compare.sh` intentionally
+discovers every executable matching `ssm_*` in the selected build directory.
+
+## Reproducing experiment plans
+
+`compare.sh` discovers datasets and query groups, snapshots selected binaries,
+records their hashes, writes task manifests, and supports validated resume.
+Use `--dry-run` to inspect a plan without creating the result directory.
+
+The paper's main comparison uses AFEC and three baselines:
 
 ```bash
 ./compare.sh --dry-run --skip-build \
   --build-dir build \
-  --data-dir test/experiment_main \
-  --algorithms afee,treespan,decq,sasum,s3and_ssm \
+  --data-dir test/datasets \
+  --algorithms afec,treespan,decq,sasum \
   --thresholds 2 \
   --result-dir result/main_comparison
 ```
 
-Use `--result-dir` for a stable experiment location. A non-empty directory is
-never overwritten implicitly:
+Plan all paper ablation configurations with:
 
 ```bash
-./compare.sh --skip-build \
+./compare.sh --dry-run --skip-build \
   --build-dir build \
-  --data-dir test/experiment_main \
-  --algorithms afee,treespan,decq,sasum,s3and_ssm \
+  --data-dir test/datasets \
+  --algorithms afec,afe,afe_no_af,afec_white,afec_black,afec_fixed,afec_random \
   --thresholds 2 \
-  --result-dir result/main_comparison
+  --result-dir result/afec_ablation
 ```
 
-At the start of a real run, the selected executables are copied into
-`result/main_comparison/bin/`. The task manifest runs only these snapshots, so
-later rebuilds cannot change an experiment that is already in progress.
+Remove `--dry-run` to execute a plan. To resume an interrupted run, repeat the
+same arguments with `--resume`; a non-empty result directory is never
+overwritten implicitly. Runs created with the former algorithm keys cannot be
+resumed under the renamed binaries because the manifests and snapshot hashes
+are intentionally strict.
 
-Use `--thresholds 2` for the main comparison and AFEE ablations. Use
-`--thresholds 1,2,3,4,5,6` for the two-dataset threshold experiment. An
-explicit list overrides all query-group threshold defaults and is recorded in
-`run_config.tsv` for resume validation.
-
-While tasks are running, `progress.tsv` in the result directory is atomically
-replaced every 30 seconds. It contains the current `completed`, `succeeded`,
-`failed`, and `pending` task counts plus a session-rate ETA. This file is meant
-for background-run monitoring and is not periodically printed to the terminal
-or `out.log`.
-
-After an interruption, pass the same experiment arguments with `--resume`.
-The script validates the saved manifests, timeouts, parallelism, runner hash,
-and hashes of the executable snapshots under `result-dir/bin/`; the external
-build directory is not executed during resume. It skips every task with a
-valid terminal status and reruns only missing, incomplete, corrupt, or
-output-less tasks. Terminal
-failures such as `Timeout` are retained rather than retried.
-
-```bash
-./compare.sh \
-  --build-dir build \
-  --data-dir test/experiment_main \
-  --algorithms afee,treespan,decq,sasum,s3and_ssm \
-  --thresholds 2 \
-  --result-dir result/main_comparison \
-  --resume
-```
-
-See [docs/experimental_protocol.md](docs/experimental_protocol.md) for timing
-definitions, count-checked repeated runs, provenance fields, single-process
-execution, and release tagging.
+The paper uses threshold `2` for the main comparison and ablations, and
+thresholds `1,2,3,4,5,6` for its threshold study. The benchmark runner records
+output checkpoints at `10^6`, `10^7`, `10^8`, and `10^9` matches.

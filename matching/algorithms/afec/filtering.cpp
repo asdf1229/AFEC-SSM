@@ -1,6 +1,6 @@
-#include "matching/algorithms/afee/afee.h"
+#include "matching/algorithms/afec/afec.h"
 
-namespace afee {
+namespace afec {
 
 // ========================================================================
 // Filtering
@@ -53,7 +53,7 @@ private:
     vector<ui>          seen_right;
     ui                  seen_token = 1;
     vector<char>        left_is_bridge;
-#if AFEE_ENABLE_SPOKE_FILTERING
+#if AFEC_ENABLE_SPOKE_FILTERING
     queue<ui>           pending_spokes;
     vector<char>        queued_spoke;
 #endif
@@ -65,7 +65,7 @@ public:
         match_right(solver.max_g_deg, -1),
         seen_right(solver.max_g_deg, 0),
         left_is_bridge(solver.qn, 0)
-#if AFEE_ENABLE_SPOKE_FILTERING
+#if AFEC_ENABLE_SPOKE_FILTERING
         , queued_spoke(solver.qn, 0)
 #endif
     {
@@ -84,13 +84,13 @@ public:
             return filterByNLF();
         })) return false;
 
-#if AFEE_ENABLE_BRIDGE_FILTERING
+#if AFEC_ENABLE_BRIDGE_FILTERING
         if (!timed(&TimeStats::filter_bridge_time, [&] {
             return initBridgeSupport() && propBridge();
         })) return false;
 #endif
 
-#if AFEE_ENABLE_SPOKE_FILTERING
+#if AFEC_ENABLE_SPOKE_FILTERING
         if (!timed(&TimeStats::filter_spoke_time, [&] {
             pushAllSpokes();
             return propSpokeOnly();
@@ -331,7 +331,7 @@ private:
             return false;
         }
         removed.push({ u, v });
-#if AFEE_ENABLE_SPOKE_FILTERING
+#if AFEC_ENABLE_SPOKE_FILTERING
         for (ui nbr_u : solver.q_neighbors[u]) {
             pushSpoke(nbr_u);
         }
@@ -405,7 +405,7 @@ private:
         return true;
     }
 
-#if AFEE_ENABLE_SPOKE_FILTERING
+#if AFEC_ENABLE_SPOKE_FILTERING
     bool propSpokeOnly()
     {
         // 只沿 spoke 约束传播候选删除，不在 spoke 阶段交替触发桥边支持传播。
@@ -525,7 +525,7 @@ private:
         return std::min(solver.threshold, solver.q_degree[u] - 1);
     }
 
-#if AFEE_ENABLE_SPOKE_FILTERING
+#if AFEC_ENABLE_SPOKE_FILTERING
     void pushSpoke(ui u)
     {
         // 将查询点加入 spoke 待处理队列，避免重复入队。
@@ -572,4 +572,4 @@ bool MatchingSolver::runCandidateFiltering()
     return CandidateFilter(*this).run();
 }
 
-} // namespace afee
+} // namespace afec

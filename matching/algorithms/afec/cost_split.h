@@ -1,11 +1,11 @@
-#ifndef MATCHING_ALGORITHMS_AFEE_SPLIT_H_
-#define MATCHING_ALGORITHMS_AFEE_SPLIT_H_
+#ifndef MATCHING_ALGORITHMS_AFEC_COST_SPLIT_H_
+#define MATCHING_ALGORITHMS_AFEC_COST_SPLIT_H_
 
-#include "matching/algorithms/afee/afee.h"
+#include "matching/algorithms/afec/afec.h"
 
-namespace afee {
+namespace afec {
 
-#if AFEE_ENABLE_SPLIT
+#if AFEC_ENABLE_COST_SPLIT
 
 inline bool MatchingSolver::chooseSplitWhite(const SearchState &state, ui cost,
     ui &split_u, bool &needs_split) const
@@ -162,8 +162,8 @@ inline void MatchingSolver::continueAfterSplit(SearchState &state, ui cost)
         });
 }
 
-#endif // AFEE_ENABLE_SPLIT
+#endif // AFEC_ENABLE_COST_SPLIT
 
-} // namespace afee
+} // namespace afec
 
-#endif // MATCHING_ALGORITHMS_AFEE_SPLIT_H_
+#endif // MATCHING_ALGORITHMS_AFEC_COST_SPLIT_H_

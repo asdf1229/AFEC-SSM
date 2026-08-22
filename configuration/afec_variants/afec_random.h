@@ -1,0 +1,13 @@
+#pragma once
+
+// AFEC-Random: use the reproducible random anchor-edge order.
+#define AFEC_ENABLE_SPOKE_FILTERING 1
+#define AFEC_ENABLE_BRIDGE_FILTERING 1
+#define AFEC_ANCHOR_ORDER_FIXED 0
+#define AFEC_ANCHOR_ORDER_DYNAMIC 0
+#define AFEC_ANCHOR_ORDER_RANDOM 1
+#define AFEC_BW_ALWAYS_BLACK 0
+#define AFEC_BW_ALWAYS_WHITE 0
+#define AFEC_BW_DYNAMIC 1
+#define AFEC_ENABLE_COST_SPLIT 1
+#define AFEC_ENABLE_ANCHOR_FRONTIER 1

@@ -1,12 +1,12 @@
-#ifndef MATCHING_ALGORITHMS_AFEE_TYPES_H_
-#define MATCHING_ALGORITHMS_AFEE_TYPES_H_
+#ifndef MATCHING_ALGORITHMS_AFEC_TYPES_H_
+#define MATCHING_ALGORITHMS_AFEC_TYPES_H_
 
 #include "utility/utility.h"
 #include <limits>
 #include <utility>
 #include <vector>
 
-namespace afee {
+namespace afec {
 
 using namespace std;
 
@@ -52,6 +52,14 @@ struct SearchState {
     vector<pair<ui, ui>> part_M;
     ui selected_count = 0;
     ui white_count = 0;
+};
+
+// AFE-NoAF deliberately keeps no color, edge-state, or anchor-frontier
+// bookkeeping.  Its search state contains only the partial injective mapping.
+struct NoAnchorFrontierState {
+    vector<int> mapped_q;
+    vector<unsigned char> used_data_flag;
+    vector<pair<ui, ui>> part_M;
 };
 
 enum UndoKind : unsigned char {
@@ -105,6 +113,6 @@ struct TimeStats {
     bool output_limit_reached = false;
 };
 
-} // namespace afee
+} // namespace afec
 
 #endif

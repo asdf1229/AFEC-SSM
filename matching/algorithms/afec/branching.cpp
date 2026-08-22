@@ -1,7 +1,7 @@
-#include "matching/algorithms/afee/afee.h"
-#include "matching/algorithms/afee/split.h"
+#include "matching/algorithms/afec/afec.h"
+#include "matching/algorithms/afec/cost_split.h"
 
-namespace afee {
+namespace afec {
 
 namespace {
 
@@ -113,7 +113,7 @@ bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u,
         else { // EDGE_UNDECIDED
             if (!adjacent) {
                 if (isQueryBridgeEdge(white_u, neighbor)) return false;
-#if !AFEE_ENABLE_SPLIT
+#if !AFEC_ENABLE_COST_SPLIT
                 delta++;
                 if (cost + delta > threshold) return false;
 #endif
@@ -122,7 +122,7 @@ bool MatchingSolver::tryMapWhite(SearchState &state, ui cost, ui white_u,
         }
     }
 
-#if AFEE_ENABLE_SPLIT
+#if AFEC_ENABLE_COST_SPLIT
     delta = candidate_delta;
 #else
     assert(delta == candidate_delta);
@@ -147,7 +147,7 @@ void MatchingSolver::branchWhite(SearchState &state, ui cost, ui u)
     replaceBucket(state, u, candidate_result_buffer, candidate_result_delta_buffer);
     setSelectedCnt(state, state.selected_count + 1);
     setWhiteCnt(state, state.white_count + 1);
-#if AFEE_ENABLE_SPLIT
+#if AFEC_ENABLE_COST_SPLIT
     continueAfterSplit(state, cost);
 #else
     search(state, cost);
@@ -292,18 +292,18 @@ bool MatchingSolver::colorDynamic(const SearchState &state, ui cost, ui u,
 bool MatchingSolver::shouldExpandAsWhite(const SearchState &state, ui u,
     const vector<pair<ui, ui>> &anchor_candidates, ui cost) const
 {
-#if AFEE_COLOR_ALL_BLACK
+#if AFEC_BW_ALWAYS_BLACK
     (void)cost;
     return colorAllBlack(state, u, anchor_candidates);
-#elif AFEE_COLOR_ALL_WHITE
+#elif AFEC_BW_ALWAYS_WHITE
     (void)cost;
     return colorAllWhite(state, u, anchor_candidates);
-#elif AFEE_DYNAMIC_COLOR
+#elif AFEC_BW_DYNAMIC
     return colorDynamic(state, cost, u, anchor_candidates);
 #else
     (void)cost;
     // Keep the default behavior behind the same dynamic policy interface so
-    // future coloring ablations can be selected here without precoloring q.
+    // future black--white policy ablations can use the same selection point.
     return colorAllWhite(state, u, anchor_candidates);
 #endif
 }
@@ -320,7 +320,7 @@ void MatchingSolver::branchBlack(SearchState &state, ui cost, ui u,
             return false;
         }
 
-#if AFEE_ENABLE_SPLIT
+#if AFEC_ENABLE_COST_SPLIT
         continueAfterSplit(state, next_cost);
 #else
         search(state, next_cost);
@@ -445,8 +445,8 @@ void MatchingSolver::search(SearchState &state, ui cost)
             return;
         }
 
-#if AFEE_ENABLE_SPLIT
-        // Split has already charged every remaining white candidate's delta.
+#if AFEC_ENABLE_COST_SPLIT
+        // Cost-Split has already charged every remaining white candidate's delta.
         vector<ui> &tail_vertices = whiteNbrsBuffer(state.selected_count);
         for (ui u = 0; u < qn; ++u) {
             if (isWhite(state, u)) tail_vertices.push_back(u);
@@ -466,7 +466,7 @@ void MatchingSolver::search(SearchState &state, ui cost)
             });
         enumTailWhites(state, 0, cost, tail_vertices);
 #else
-        // Without split, terminal enumeration must still charge each white
+        // Without Cost-Split, terminal enumeration must still charge each white
         // candidate's stored delta against the shared remaining budget.
         vector<TerminalTailVertex> tail_vertices;
         if (!buildTerminalTail(state, cost, tail_vertices)) {
@@ -487,4 +487,4 @@ void MatchingSolver::search(SearchState &state, ui cost)
     branchEdges(state, cost, top_edges, 0);
 }
 
-} // namespace afee
+} // namespace afec

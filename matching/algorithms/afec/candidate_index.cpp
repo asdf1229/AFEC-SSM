@@ -1,6 +1,6 @@
-#include "matching/algorithms/afee/afee.h"
+#include "matching/algorithms/afec/afec.h"
 
-namespace afee {
+namespace afec {
 
 unsigned long long MatchingSolver::adjKey(ui data_vertex, ui query_neighbor) const
 {
@@ -85,4 +85,4 @@ bool MatchingSolver::anchorAdjacent(ui anchor_query, ui anchor_data, ui target_q
     return rangeHas(*range, target_data);
 }
 
-} // namespace afee
+} // namespace afec

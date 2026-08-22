@@ -1,8 +1,12 @@
 build*/
 test/
 result/
+output/
+tools/
 .DS_Store
 .*/
+__pycache__/
+*.py[cod]
 com.txt
 tmp/
 out.log

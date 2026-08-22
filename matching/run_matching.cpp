@@ -600,7 +600,7 @@ namespace ssm {
         // explicitly because the runner may terminate the process later.
         setvbuf(stdout, nullptr, _IOLBF, 0);
 #ifndef NDEBUG
-        printf("**** SSM-GED [%s] verbose diagnostics build at %s %s ***\n",
+        printf("**** AFEC suite [%s] verbose diagnostics build at %s %s ***\n",
             algorithm.display_name.c_str(), __TIME__, __DATE__);
 #endif
 

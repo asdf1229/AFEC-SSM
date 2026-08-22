@@ -1,10 +1,10 @@
-#ifndef MATCHING_ALGORITHMS_AFEE_H_
-#define MATCHING_ALGORITHMS_AFEE_H_
+#ifndef MATCHING_ALGORITHMS_AFEC_H_
+#define MATCHING_ALGORITHMS_AFEC_H_
 
 #include "configuration/config.h"
 #include "configuration/types.h"
 #include "graph/graph.h"
-#include "matching/algorithms/afee/types.h"
+#include "matching/algorithms/afec/types.h"
 #include "matching/run_matching.h"
 #include "utility/mybitset.h"
 
@@ -17,7 +17,7 @@
 #include <random>
 #include <unordered_map>
 
-namespace afee {
+namespace afec {
 
 class MatchingSolver {
 public:
@@ -31,7 +31,7 @@ public:
 
 private:
     struct CandidateFilter;
-#if AFEE_FIXED_ORDER
+#if AFEC_ANCHOR_ORDER_FIXED
     struct FixedEdgePriorityEntry;
 #endif
     using ContinueBranch = std::function<void(SearchState &, ui)>;
@@ -47,21 +47,27 @@ private:
     vector<ui> q_degree;
     vector<vector<char>> q_bridge_matrix;
 
+#if !AFEC_ENABLE_ANCHOR_FRONTIER
+    vector<ui> no_af_order;
+    vector<unsigned char> no_af_visited;
+    vector<ui> no_af_queue;
+#endif
+
     vector<MyBitset> candidates;
-#if AFEE_DYNAMIC_ORDER
+#if AFEC_ANCHOR_ORDER_DYNAMIC
     vector<ui> static_candidate_count;
     vector<vector<unsigned long long>> static_edge_support;
 #endif
-#if AFEE_FIXED_ORDER
+#if AFEC_ANCHOR_ORDER_FIXED
     vector<vector<ui>> static_edge_priority;
 #endif
-#if AFEE_RANDOM_ORDER
+#if AFEC_ANCHOR_ORDER_RANDOM
     std::mt19937 random_order_rng;
 #endif
 
     vector<UndoRecord> undo_stack;
 
-#if AFEE_USE_FLAT_HASH_MAP
+#if AFEC_USE_FLAT_HASH_MAP
     vector<absl::flat_hash_map<unsigned long long, pair<size_t, ui>>> candidate_adj_index;
 #else
     vector<unordered_map<unsigned long long, pair<size_t, ui>>> candidate_adj_index;
@@ -94,6 +100,16 @@ private:
     void initQueryBridge();
     void tarjan(ui u, ui parent, vector<int> &dfn, vector<int> &low, int &tim);
     bool isQueryBridgeEdge(ui u, ui v) const;
+
+#if !AFEC_ENABLE_ANCHOR_FRONTIER
+    void buildNoAFOrder(ui root);
+    ui noAFMissingDelta(const NoAnchorFrontierState &state, ui u, ui v,
+        ui limit);
+    bool noAFPreservedQueryGraphIsConnected(
+        const NoAnchorFrontierState &state);
+    void emitNoAFResult(const NoAnchorFrontierState &state);
+    void searchNoAF(NoAnchorFrontierState &state, ui depth, ui cost);
+#endif
 
     bool runCandidateFiltering();
 
@@ -152,17 +168,17 @@ private:
     bool refreshWhiteByBlack(SearchState &state, ui white_u, ui black_u,
         ui black_v, ui cost);
 
-#if AFEE_DYNAMIC_ORDER
+#if AFEC_ANCHOR_ORDER_DYNAMIC
     void initStaticEdgeSupports();
 #endif
-#if AFEE_FIXED_ORDER
+#if AFEC_ANCHOR_ORDER_FIXED
     void initFixedEdgePriorities();
 #endif
-#if AFEE_DYNAMIC_ORDER
+#if AFEC_ANCHOR_ORDER_DYNAMIC
     double blackSupport(const SearchState &state, ui u, ui anchor) const;
     double whiteSupport(const SearchState &state, ui u, ui anchor) const;
 #endif
-#if AFEE_FIXED_ORDER || AFEE_DYNAMIC_ORDER
+#if AFEC_ANCHOR_ORDER_FIXED || AFEC_ANCHOR_ORDER_DYNAMIC
     bool betterEdge(const AnchorEdge &lhs, const AnchorEdge &rhs) const;
 #endif
     void selectTopEdges(ui max_count, vector<AnchorEdge> &top_edges);
@@ -174,7 +190,7 @@ private:
     bool collectActiveEdges(const SearchState &state, ui max_count,
         vector<AnchorEdge> &top_edges);
 
-#if AFEE_ENABLE_SPLIT
+#if AFEC_ENABLE_COST_SPLIT
     void enumTailWhites(SearchState &state, size_t pos, ui cost,
         const vector<ui> &tail_vertices);
 #else
@@ -195,7 +211,7 @@ private:
         ui delta, ui &next_cost);
     bool tryMapWhite(SearchState &state, ui cost, ui white_u,
         ui candidate, ui candidate_delta, ui &next_cost);
-#if AFEE_ENABLE_SPLIT
+#if AFEC_ENABLE_COST_SPLIT
     bool chooseSplitWhite(const SearchState &state, ui cost, ui &split_u,
         bool &needs_split) const;
     void branchSplitWhite(SearchState &state, ui cost, ui white_u,
@@ -226,9 +242,9 @@ private:
     void search(SearchState &state, ui cost);
 };
 
-} // namespace afee
+} // namespace afec
 
-void Approximate_AFEE(const Graph *query_graph, const Graph *data_graph,
+void Approximate_AFEC(const Graph *query_graph, const Graph *data_graph,
     std::vector<std::vector<std::pair<ui, ui>>> &M_ANS, ui threshold);
 
 #endif

@@ -1,6 +1,6 @@
-#include "matching/algorithms/afee/afee.h"
+#include "matching/algorithms/afec/afec.h"
 
-namespace afee {
+namespace afec {
 
 void MatchingSolver::initState(SearchState &state) const
 {
@@ -263,4 +263,4 @@ void MatchingSolver::replaceBucket(SearchState &state, ui u,
     state.white[u] = bucket;
 }
 
-} // namespace afee
+} // namespace afec

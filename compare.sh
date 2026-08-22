@@ -39,7 +39,7 @@ Usage: ./compare.sh [options]
 
 Options:
   -a, --algorithms a,b,c   Only compare the specified algorithm keys.
-                           Example: --algorithms afee,treespan
+                           Example: --algorithms afec,treespan
   -b, --build-dir DIR      Build directory. Default: ./build
   -d, --data-dir DIR       Dataset root. Default: ./test/datasets
                            The script scans synthetic/ and real_graphs/ under this root.
@@ -365,7 +365,7 @@ discover_algorithms() {
         fi
     done
 
-    # Put the standard AFEE configuration first so
+    # Put the complete AFEC configuration first so
     # it is also the correctness baseline and the default primary algorithm
     # for table/report tools that preserve summary-column order.
     printf '%s\n' "${resolved[@]}" | \
@@ -375,7 +375,7 @@ discover_algorithms() {
                 name = executable
                 sub(/^.*\//, "", name)
                 sub(/\.exe$/, "", name)
-                rank = (name == "ssm_afee") ? 0 : 1
+                rank = (name == "ssm_afec") ? 0 : 1
                 printf "%d\t%s\n", rank, executable
             }
         ' | sort -t $'\t' -k1,1n -k2,2 | cut -f2-

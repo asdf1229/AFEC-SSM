@@ -1,8 +1,8 @@
-#include "matching/algorithms/afee/afee.h"
+#include "matching/algorithms/afec/afec.h"
 
-namespace afee {
+namespace afec {
 
-#if AFEE_DYNAMIC_ORDER
+#if AFEC_ANCHOR_ORDER_DYNAMIC
 void MatchingSolver::initStaticEdgeSupports()
 {
     // pairSupport(a,u) is the number of filtered candidate-graph edges
@@ -31,7 +31,7 @@ void MatchingSolver::initStaticEdgeSupports()
 }
 #endif
 
-#if AFEE_FIXED_ORDER
+#if AFEC_ANCHOR_ORDER_FIXED
 struct MatchingSolver::FixedEdgePriorityEntry {
     ui u = 0;
     ui anchor = 0;
@@ -140,7 +140,7 @@ void MatchingSolver::initFixedEdgePriorities()
 }
 #endif
 
-#if AFEE_DYNAMIC_ORDER
+#if AFEC_ANCHOR_ORDER_DYNAMIC
 // black-anchor edge: support(u,a) = |C(u) intersect N_G(M(a))|.
 double MatchingSolver::blackSupport(const SearchState &state, ui u, ui anchor) const
 {
@@ -166,10 +166,10 @@ double MatchingSolver::whiteSupport(const SearchState &state, ui u, ui anchor) c
 }
 #endif
 
-#if AFEE_FIXED_ORDER || AFEE_DYNAMIC_ORDER
+#if AFEC_ANCHOR_ORDER_FIXED || AFEC_ANCHOR_ORDER_DYNAMIC
 bool MatchingSolver::betterEdge(const AnchorEdge &lhs, const AnchorEdge &rhs) const
 {
-#if AFEE_FIXED_ORDER
+#if AFEC_ANCHOR_ORDER_FIXED
     ui lhs_priority = static_edge_priority[lhs.u][lhs.anchor];
     ui rhs_priority = static_edge_priority[rhs.u][rhs.anchor];
     if (lhs_priority != rhs_priority) {
@@ -204,10 +204,10 @@ void MatchingSolver::selectTopEdges(ui max_count, vector<AnchorEdge> &top_edges)
 {
     size_t selected_limit = min((size_t)max_count, top_edges.size());
 
-#if AFEE_RANDOM_ORDER
+#if AFEC_ANCHOR_ORDER_RANDOM
     // Shuffle once per search state, then retain the random Top-(b+1) prefix.
     std::shuffle(top_edges.begin(), top_edges.end(), random_order_rng);
-#elif AFEE_FIXED_ORDER || AFEE_DYNAMIC_ORDER
+#elif AFEC_ANCHOR_ORDER_FIXED || AFEC_ANCHOR_ORDER_DYNAMIC
     auto better_edge = [&](const AnchorEdge &lhs,
         const AnchorEdge &rhs) {
         return betterEdge(lhs, rhs);
@@ -311,7 +311,7 @@ bool MatchingSolver::collectActiveEdges(const SearchState &state, ui max_count, 
         edge.anchor_color = state.color[anchor];
         edge.live_anchor_count = state.anchor_count[u];
         edge.query_degree = q_degree[u];
-#if AFEE_DYNAMIC_ORDER
+#if AFEC_ANCHOR_ORDER_DYNAMIC
         if (edge.anchor_color == COLOR_BLACK) {
             edge.support = blackSupport(state, u, anchor);
         }
@@ -330,4 +330,4 @@ bool MatchingSolver::collectActiveEdges(const SearchState &state, ui max_count, 
     return true;
 }
 
-} // namespace afee
+} // namespace afec

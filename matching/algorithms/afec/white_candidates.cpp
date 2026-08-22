@@ -1,6 +1,6 @@
-#include "matching/algorithms/afee/afee.h"
+#include "matching/algorithms/afec/afec.h"
 
-namespace afee {
+namespace afec {
 
 bool MatchingSolver::calcBlackDelta(const SearchState &state, ui u, ui v, ui cost, ui &delta)
 {
@@ -290,4 +290,4 @@ bool MatchingSolver::refreshWhiteByBlack(SearchState &state, ui white_u, ui blac
     return true;
 }
 
-} // namespace afee
+} // namespace afec

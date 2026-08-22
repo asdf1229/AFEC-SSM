@@ -1,42 +1,28 @@
-#include "matching/algorithms/afee/afee.h"
+#include "matching/algorithms/afec/afec.h"
 
-#ifndef AFEE_ALGORITHM_KEY
-#define AFEE_ALGORITHM_KEY "afee"
+#ifndef AFEC_ALGORITHM_KEY
+#define AFEC_ALGORITHM_KEY "afec"
 #endif
 
-#ifndef AFEE_DISPLAY_NAME
-#define AFEE_DISPLAY_NAME "AFEE"
+#ifndef AFEC_DISPLAY_NAME
+#define AFEC_DISPLAY_NAME "AFEC"
 #endif
 
-namespace afee {
+namespace afec {
 
 MatchingSolver::MatchingSolver() : query_graph(nullptr), data_graph(nullptr), results_ptr(nullptr) {}
 
 ui MatchingSolver::chooseRoot()
 {
     ui root = 0;
-#if AFEE_FIXED_ORDER
-    // Match TreeSpan's root rule: minimum filtered candidate count, then
-    // maximum query degree, then the smallest vertex id.
     for (ui u = 1; u < qn; ++u) {
         size_t cand_u = candidates[u].size();
         size_t cand_root = candidates[root].size();
-        if (cand_u < cand_root ||
-            (cand_u == cand_root && q_degree[u] > q_degree[root])) {
-            root = u;
-        }
-    }
-#elif AFEE_DYNAMIC_ORDER || AFEE_RANDOM_ORDER
-    for (ui u = 1; u < qn; ++u) {
-        size_t cand_u = candidates[u].size();
-        size_t cand_root = candidates[root].size();
-
         ui deg_u = q_degree[u];
         ui deg_root = q_degree[root];
 
         if (cand_u * deg_root < cand_root * deg_u) root = u;
     }
-#endif
     return root;
 }
 
@@ -112,12 +98,13 @@ bool MatchingSolver::init(const Graph *q, const Graph *g, ui match_threshold)
         return false;
     }
 
+#if AFEC_ENABLE_ANCHOR_FRONTIER
     buildAdjIndex();
-
-#if AFEE_FIXED_ORDER
+#if AFEC_ANCHOR_ORDER_FIXED
     initFixedEdgePriorities();
-#elif AFEE_DYNAMIC_ORDER
+#elif AFEC_ANCHOR_ORDER_DYNAMIC
     initStaticEdgeSupports();
+#endif
 #endif
 
     stats.init_time = t_init.elapsed();
@@ -133,6 +120,7 @@ void MatchingSolver::match(vector<vector<pair<ui, ui>>> &results)
     results_ptr->clear();
 
     ui root = chooseRoot();
+#if AFEC_ENABLE_ANCHOR_FRONTIER
     SearchState state;
     initState(state);
     size_t root_mark = mark();
@@ -143,6 +131,14 @@ void MatchingSolver::match(vector<vector<pair<ui, ui>>> &results)
         rollback(state, root_mark);
         if (outputLimitReached()) break;
     }
+#else
+    buildNoAFOrder(root);
+    NoAnchorFrontierState state;
+    state.mapped_q.assign(qn, -1);
+    state.used_data_flag.assign(gn, 0);
+    state.part_M.reserve(qn);
+    searchNoAF(state, 0, 0);
+#endif
 
     stats.search_time = t_search.elapsed();
     stats.total_time = stats.init_time + stats.search_time;
@@ -154,7 +150,7 @@ void MatchingSolver::printStats() const
         return whole > 0 ? (double)part / whole * 100.0 : 0.0;
         };
 
-    printf("\n--- AFEE Time Analysis ---\n");
+    printf("\n--- AFEC Time Analysis ---\n");
 #ifdef NDEBUG
     printf("Total Time:          %.4lf ms\n", stats.total_time / 1000.0);
     printf("Init Time:           %.4lf ms (%.2f%%)\n", stats.init_time / 1000.0, pct(stats.init_time, stats.total_time));
@@ -167,7 +163,7 @@ void MatchingSolver::printStats() const
     printf("  - Filter Time:     %.4lf ms (%.2f%% of Init)\n", stats.filter_time / 1000.0, pct(stats.filter_time, stats.init_time));
     printf("    - NLF:           %.4lf ms (%.2f%% of Filter)\n", stats.filter_nlf_time / 1000.0, pct(stats.filter_nlf_time, stats.filter_time));
     printf("    - Bridge:        %.4lf ms (%.2f%% of Filter)\n", stats.filter_bridge_time / 1000.0, pct(stats.filter_bridge_time, stats.filter_time));
-#if AFEE_ENABLE_SPOKE_FILTERING
+#if AFEC_ENABLE_SPOKE_FILTERING
     printf("    - Spoke:         %.4lf ms (%.2f%% of Filter)\n", stats.filter_spoke_time / 1000.0, pct(stats.filter_spoke_time, stats.filter_time));
 #endif
     printf("  - Filter Candidates:%u\n", stats.filter_candidate_count);
@@ -182,9 +178,9 @@ void MatchingSolver::printStats() const
         stats.candidate_range_hits, stats.candidate_range_misses);
     printf("Range Intersections: %lld\n", stats.candidate_intersection_calls);
     printf("Range Edge Checks:   %lld\n", stats.candidate_edge_check_calls);
-#if AFEE_ENABLE_SPLIT
-    printf("Split Calls:         %lld\n", stats.split_calls);
-    printf("Split Branches:      %lld\n", stats.split_branches);
+#if AFEC_ENABLE_COST_SPLIT
+    printf("Cost-Split Calls:    %lld\n", stats.split_calls);
+    printf("Cost-Split Branches: %lld\n", stats.split_branches);
 #endif
     printf("Results Found:       %zu\n", stats.result_count);
 #if MATCH_OUTPUT_LIMIT > 0
@@ -221,33 +217,39 @@ void MatchingSolver::resetState()
     q_degree.clear();
     q_bridge_matrix.clear();
 
+#if !AFEC_ENABLE_ANCHOR_FRONTIER
+    no_af_order.clear();
+    no_af_visited.clear();
+    no_af_queue.clear();
+#endif
+
     resetBuffers();
     undo_stack.clear();
     candidate_adj_index.clear();
     candidate_adj_pool.clear();
     stats = TimeStats();
-#if AFEE_DYNAMIC_ORDER
+#if AFEC_ANCHOR_ORDER_DYNAMIC
     static_candidate_count.clear();
     static_edge_support.clear();
 #endif
-#if AFEE_FIXED_ORDER
+#if AFEC_ANCHOR_ORDER_FIXED
     static_edge_priority.clear();
 #endif
-#if AFEE_RANDOM_ORDER
+#if AFEC_ANCHOR_ORDER_RANDOM
     // A fixed seed keeps the random-order ablation reproducible.
     random_order_rng.seed(0xC0DEu);
 #endif
 }
 
-} // namespace afee
+} // namespace afec
 
-void Approximate_AFEE(const Graph *query_graph, const Graph *data_graph,
+void Approximate_AFEC(const Graph *query_graph, const Graph *data_graph,
     std::vector<std::vector<std::pair<ui, ui>>> &M_ANS, ui threshold)
 {
     Timer t_total;
     t_total.restart();
 
-    afee::MatchingSolver solver;
+    afec::MatchingSolver solver;
     const bool initialized = solver.init(query_graph, data_graph, threshold);
     if (initialized) {
         ssm::set_reported_filter_candidates(solver.stats.filter_candidate_count);
@@ -271,9 +273,9 @@ namespace ssm {
 
     namespace {
 
-        void run_afee(const Graph *query_graph, const Graph *data_graph, MatchResults &results, ui threshold)
+        void run_afec(const Graph *query_graph, const Graph *data_graph, MatchResults &results, ui threshold)
         {
-            Approximate_AFEE(query_graph, data_graph, results, threshold);
+            Approximate_AFEC(query_graph, data_graph, results, threshold);
         }
 
     } // namespace
@@ -281,9 +283,9 @@ namespace ssm {
     const AlgorithmDefinition &create_algorithm_definition()
     {
         static const AlgorithmDefinition definition = {
-            AFEE_ALGORITHM_KEY,
-            AFEE_DISPLAY_NAME,
-            &run_afee
+            AFEC_ALGORITHM_KEY,
+            AFEC_DISPLAY_NAME,
+            &run_afec
         };
         return definition;
     }

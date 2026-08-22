@@ -1,8 +1,8 @@
-#include "matching/algorithms/afee/afee.h"
+#include "matching/algorithms/afec/afec.h"
 
-namespace afee {
+namespace afec {
 
-#if AFEE_ENABLE_SPLIT
+#if AFEC_ENABLE_COST_SPLIT
 
 void MatchingSolver::enumTailWhites(SearchState &state, size_t pos, ui cost,
     const vector<ui> &tail_vertices)
@@ -154,4 +154,4 @@ void MatchingSolver::enumTailWhites(SearchState &state, size_t pos, ui cost,
 
 #endif
 
-} // namespace afee
+} // namespace afec
