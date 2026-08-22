@@ -6,9 +6,8 @@ Similarity Matching**. It enumerates exact-label vertex mappings under a
 missing-query-edge budget while requiring the preserved query graph to remain
 connected.
 
-The repository slug and the structured benchmark protocol retain the name
-`SSM-GED`; the proposed algorithm and all public variant names follow the
-paper's terminology below.
+This repository contains AFEC, its ablation variants, and the baseline
+implementations used in the paper's experimental evaluation.
 
 ## Implemented algorithms
 
