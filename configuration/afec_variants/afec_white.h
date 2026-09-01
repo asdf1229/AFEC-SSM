@@ -1,8 +1,8 @@
 #pragma once
 
 // AFEC-White: replace dynamic black--white selection with always-white expansion.
-#define AFEC_ENABLE_SPOKE_FILTERING 1
-#define AFEC_ENABLE_BRIDGE_FILTERING 1
+#define AFEC_ENABLE_SPOKE_FILTERING 0
+#define AFEC_ENABLE_BRIDGE_FILTERING 0
 #define AFEC_ANCHOR_ORDER_FIXED 0
 #define AFEC_ANCHOR_ORDER_DYNAMIC 1
 #define AFEC_ANCHOR_ORDER_RANDOM 0

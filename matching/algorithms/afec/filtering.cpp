@@ -69,12 +69,13 @@ public:
         , queued_spoke(solver.qn, 0)
 #endif
     {
-        // 绑定外层求解器，并初始化过滤阶段需要的临时匹配结构。
+        // Bind the enclosing solver and initialize the temporary matching state used during filtering.
     }
 
     bool run()
     {
-        // 依次执行桥边索引、NLF、桥边闭包和可选 spoke 过滤。
+        // Run bridge indexing, NLF filtering, bridge-support propagation to a fixed
+        // point, and optional spoke filtering in sequence.
         if (!timed(&TimeStats::filter_bridge_time, [&] {
             buildBridgeIndex();
             return true;
@@ -105,7 +106,7 @@ private:
     template <typename Fn>
     bool timed(long long TimeStats::*field, Fn &&fn)
     {
-        // 执行一个过滤步骤，并在调试构建中累计该步骤耗时。
+        // Run one filtering stage and accumulate its elapsed time in debug builds.
 #ifndef NDEBUG
         Timer t;
 #endif
@@ -118,7 +119,7 @@ private:
 
     void updateCandidateCount()
     {
-        // 统计过滤后所有查询点的候选总数。
+        // Count the total number of candidates remaining across all query vertices after filtering.
         solver.stats.filter_candidate_count = 0;
         for (ui u = 0; u < solver.qn; ++u) {
             solver.stats.filter_candidate_count += (ui)solver.candidates[u].size();
@@ -127,14 +128,14 @@ private:
 
     ui addBridgeArc(ui from, ui to)
     {
-        // 添加一条有向桥边弧，返回其编号。
+        // Add a directed bridge arc and return its ID.
         bridge_arcs.push_back({ from, to });
         return (ui)bridge_arcs.size() - 1;
     }
 
     void addBridge(ui a, ui b)
     {
-        // 记录一条无向桥边，并建立两个方向的支持依赖。
+        // Record an undirected bridge edge and create support dependencies in both directions.
         ui ab = addBridgeArc(a, b);
         ui ba = addBridgeArc(b, a);
         bridge_nbrs[a].push_back({ b, ba });
@@ -143,7 +144,8 @@ private:
 
     void buildBridgeIndex()
     {
-        // 构建过滤阶段使用的桥边邻接索引；桥边标记由 solver 初始化。
+        // Build the bridge-edge adjacency index used during filtering; the solver
+        // initializes the bridge-edge flags.
         bridge_arcs.clear();
         bridge_nbrs.assign(solver.qn, vector<BridgeNbr>());
 
@@ -159,7 +161,7 @@ private:
 
     void buildLabelCache()
     {
-        // 缓存查询点标签、数据点标签和数据点度数。
+        // Cache query-vertex labels, data-vertex labels, and data-vertex degrees.
         query_label.assign(solver.qn, 0);
         for (ui u = 0; u < solver.qn; ++u) {
             query_label[u] = solver.query_graph->getVertexLabel(u);
@@ -175,7 +177,7 @@ private:
 
     void buildQReqs()
     {
-        // 按标签汇总每个查询点的桥边和非桥边邻居需求。
+        // Aggregate each query vertex's bridge and non-bridge neighbor requirements by label.
         query_label_reqs.assign(solver.qn, vector<QueryLabelReq>());
         query_bridge_degree.assign(solver.qn, 0);
         vector<ui> bridge_counts(solver.label_count, 0);
@@ -219,7 +221,8 @@ private:
 
     void buildGFreqs()
     {
-        // 按标签汇总每个数据点的邻居频次，并建立数据点标签分桶。
+        // Aggregate each data vertex's neighbor-label frequencies and bucket data
+        // vertices by label.
         data_label_freqs.assign(solver.gn, vector<LabelFreq>());
         data_by_label.assign(solver.label_count, vector<ui>());
         vector<ui> label_counts(solver.label_count, 0);
@@ -257,7 +260,8 @@ private:
 
     ui nlfDiff(ui u, ui v) const
     {
-        // 计算查询点 u 映射到数据点 v 时的邻域标签频次缺口。
+        // Compute the neighborhood-label-frequency deficit when mapping query
+        // vertex u to data vertex v.
         ui diff = 0;
         const vector<QueryLabelReq> &query_reqs = query_label_reqs[u];
         const vector<LabelFreq> &data_freqs = data_label_freqs[v];
@@ -292,7 +296,7 @@ private:
 
     bool filterByNLF()
     {
-        // 使用标签和邻域标签频次过滤初始候选集。
+        // Build the initial candidate sets using vertex labels and neighborhood-label frequencies.
         buildLabelCache();
         buildQReqs();
         buildGFreqs();
@@ -315,13 +319,13 @@ private:
 
     ui &support(ui arc_id, ui v)
     {
-        // 返回桥边弧 arc_id 在数据点 v 上的支持计数引用。
+        // Return a reference to the support count for bridge arc arc_id at data vertex v.
         return bridge_support[(size_t)arc_id * solver.gn + v];
     }
 
     bool pruneCandidate(ui u, ui v)
     {
-        // 删除候选 (u, v)，并把相关传播任务加入队列。
+        // Prune candidate (u, v) and enqueue the resulting propagation work.
         if (!solver.candidates[u].contains(v)) {
             return true;
         }
@@ -341,7 +345,7 @@ private:
 
     bool initBridgeSupport()
     {
-        // 初始化桥边候选支持，并删除零支持候选。
+        // Initialize bridge-arc support counts and prune candidates with zero support.
         bridge_support.assign((size_t)bridge_arcs.size() * solver.gn, 0);
         vector<pair<ui, ui>> zero_support_candidates;
 
@@ -373,7 +377,8 @@ private:
 
     bool propBridge()
     {
-        // 沿桥边支持关系传播候选删除，直到删除队列清空。
+        // Propagate candidate removals through bridge-support dependencies until
+        // the removal queue is empty.
         while (!removed.empty()) {
             ui removed_u = removed.front().first;
             ui removed_v = removed.front().second;
@@ -408,7 +413,8 @@ private:
 #if AFEC_ENABLE_SPOKE_FILTERING
     bool propSpokeOnly()
     {
-        // 只沿 spoke 约束传播候选删除，不在 spoke 阶段交替触发桥边支持传播。
+        // Propagate candidate removals only through spoke constraints; do not
+        // interleave bridge-support propagation during the spoke phase.
         while (!pending_spokes.empty()) {
             ui u = pending_spokes.front();
             pending_spokes.pop();
@@ -423,7 +429,7 @@ private:
 
     bool augmentSpoke(ui left_idx)
     {
-        // 在 spoke 二分图中为指定左点寻找增广路径。
+        // Find an augmenting path from the specified left vertex in the spoke bipartite graph.
         for (ui right_idx : spoke_adj[left_idx]) {
             if (seen_right[right_idx] == seen_token) continue;
             seen_right[right_idx] = seen_token;
@@ -438,7 +444,8 @@ private:
 
     bool tryAugmentSpoke(ui left_idx)
     {
-        // 刷新访问 token 后尝试为一个 spoke 左点增广。
+        // Advance the visitation token, then try to augment from the specified
+        // left vertex in the spoke graph.
         seen_token++;
         if (seen_token == 0) {
             std::fill(seen_right.begin(), seen_right.end(), 0);
@@ -449,7 +456,7 @@ private:
 
     void buildSpokeAdj(ui u, ui v, ui &deg_u, ui &deg_v)
     {
-        // 为候选 (u, v) 建立查询邻居到数据邻居的 spoke 二分图。
+        // Build the spoke bipartite graph from query neighbors to data neighbors for candidate (u, v).
         const vector<ui> &u_neighbors = solver.q_neighbors[u];
         deg_u = solver.q_degree[u];
         const ui *v_neighbors = solver.data_graph->getVertexNeighbors(v, deg_v);
@@ -469,7 +476,8 @@ private:
 
     bool checkSpoke(ui u, ui v, ui budget)
     {
-        // 检查候选 (u, v) 的 spoke 匹配是否满足缺边预算。
+        // Check whether the spoke matching for candidate (u, v) satisfies the
+        // missing-edge budget.
         ui deg_u = 0;
         ui deg_v = 0;
         buildSpokeAdj(u, v, deg_u, deg_v);
@@ -520,7 +528,7 @@ private:
 
     ui edgeBudget(ui u) const
     {
-        // 返回查询点 u 的关联边最多可缺失数量。
+        // Return the maximum number of edges incident to query vertex u that may be missing.
         if (solver.q_degree[u] == 0) return 0;
         return std::min(solver.threshold, solver.q_degree[u] - 1);
     }
@@ -528,7 +536,7 @@ private:
 #if AFEC_ENABLE_SPOKE_FILTERING
     void pushSpoke(ui u)
     {
-        // 将查询点加入 spoke 待处理队列，避免重复入队。
+        // Enqueue query vertex u for spoke processing unless it is already queued.
         if (queued_spoke[u]) {
             return;
         }
@@ -538,7 +546,7 @@ private:
 
     void pushAllSpokes()
     {
-        // 将所有查询点加入 spoke 队列，作为初始传播入口。
+        // Enqueue all query vertices to seed the initial spoke propagation.
         for (ui u = 0; u < solver.qn; ++u) {
             pushSpoke(u);
         }
@@ -546,7 +554,7 @@ private:
 
     bool filterSpoke(ui u)
     {
-        // 删除查询点 u 下所有不满足 spoke 约束的候选。
+        // Prune every candidate of query vertex u that violates the spoke constraint.
         ui budget = edgeBudget(u);
 
         vector<ui> to_remove;

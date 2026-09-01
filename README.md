@@ -1,13 +1,11 @@
 # AFEC
 
-This repository is the implementation and experiment suite for **AFEC:
+This repository provides the implementation of **AFEC:
 Anchor-Frontier Enumeration with Cost-Split Compression for Subgraph
-Similarity Matching**. It enumerates exact-label vertex mappings under a
+Similarity Matching**. AFEC enumerates exact-label vertex mappings under a
 missing-query-edge budget while requiring the preserved query graph to remain
-connected.
-
-This repository contains AFEC, its ablation variants, and the baseline
-implementations used in the paper's experimental evaluation.
+connected. The repository also includes the paper's ablation variants and the
+baseline implementations used in its experimental evaluation.
 
 ## Implemented algorithms
 
@@ -56,8 +54,7 @@ AFEC-Black keeps the AFEC configuration surface but always chooses concrete
 black expansion. Consequently it explores the same candidate-wise successor
 space as AFE; it remains a separate control for the black--white policy study.
 
-The former `OnlyNLF` diagnostic is not an ablation in the current paper and is
-therefore not built or included in paper experiments.
+All seven configurations enable TreeSpan's NLF filtering.
 
 ## Dependencies and build
 
@@ -76,8 +73,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-To build only one AFEC-family configuration (plus the baselines), select its
-header explicitly:
+To build only one AFEC-family configuration, select its header and build the
+corresponding target:
 
 ```bash
 cmake -S . -B build-afe \
@@ -85,71 +82,3 @@ cmake -S . -B build-afe \
   -DSSM_CONFIG_HEADER=configuration/afec_variants/afe.h
 cmake --build build-afe --target ssm_afe --parallel
 ```
-
-Use a fresh build directory after migrating from the old executable names.
-CMake does not remove obsolete binaries, and `compare.sh` intentionally
-discovers every executable matching `ssm_*` in the selected build directory.
-
-## Reproducing experiment plans
-
-`compare.sh` discovers datasets and query groups, snapshots selected binaries,
-records their hashes, writes task manifests, and supports validated resume.
-Use `--dry-run` to inspect a plan without creating the result directory.
-
-The paper's main comparison uses AFEC and three baselines:
-
-```bash
-./compare.sh --dry-run --skip-build \
-  --build-dir build \
-  --data-dir test/datasets \
-  --algorithms afec,treespan,decq,sasum \
-  --thresholds 2 \
-  --result-dir result/main_comparison
-```
-
-Plan all paper ablation configurations with:
-
-```bash
-./compare.sh --dry-run --skip-build \
-  --build-dir build \
-  --data-dir test/datasets \
-  --algorithms afec,afe,afe_no_af,afec_white,afec_black,afec_fixed,afec_random \
-  --thresholds 2 \
-  --result-dir result/afec_ablation
-```
-
-Run the anchor-frontier ablation independently with:
-
-```bash
-./compare.sh --skip-build \
-  --build-dir build \
-  --data-dir test/datasets \
-  --algorithms afe,afe_no_af \
-  --thresholds 2 \
-  --result-dir result/ablation_anchor_frontier
-```
-
-After the run completes, validate its checkpoints and reproduce the paper's
-dataset-level aggregates with:
-
-```bash
-python3 -B tools/experiments/summarize_anchor_frontier_ablation.py \
-  --result-dir result/ablation_anchor_frontier
-```
-
-The script writes a Markdown report and TSV tables under the result
-directory's `analysis/` subdirectory. The paper's default output limit is
-`10^8`; the script reads `summary_at_100000000.tsv` for that result instead of
-using the terminal status of the longer `10^9` run. If the result came from an
-archive, pass `--archive path/to/results.tar.gz` to verify the analysis inputs
-against the archive before generating the report.
-
-Remove `--dry-run` to execute a plan. To resume an interrupted run, repeat the
-same arguments with `--resume`; a non-empty result directory is never
-overwritten implicitly. Runs created with the former algorithm keys cannot be
-resumed under the renamed binaries because the manifests and snapshot hashes
-are intentionally strict.
-
-The paper uses threshold `2` for the main comparison and ablations, and
-thresholds `1,2,3,4,5,6` for its threshold study. The benchmark runner records
-output checkpoints at `10^6`, `10^7`, `10^8`, and `10^9` matches.

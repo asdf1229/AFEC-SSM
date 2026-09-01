@@ -1,8 +1,8 @@
 #pragma once
 
 // AFEC-Fixed: use TreeSpan-style static anchor-edge priorities.
-#define AFEC_ENABLE_SPOKE_FILTERING 1
-#define AFEC_ENABLE_BRIDGE_FILTERING 1
+#define AFEC_ENABLE_SPOKE_FILTERING 0
+#define AFEC_ENABLE_BRIDGE_FILTERING 0
 #define AFEC_ANCHOR_ORDER_FIXED 1
 #define AFEC_ANCHOR_ORDER_DYNAMIC 0
 #define AFEC_ANCHOR_ORDER_RANDOM 0
