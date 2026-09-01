@@ -12,3 +12,4 @@ tmp/
 out.log
 essay/
 nohup.out
+compare.sh
