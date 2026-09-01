@@ -118,6 +118,32 @@ Plan all paper ablation configurations with:
   --result-dir result/afec_ablation
 ```
 
+Run the anchor-frontier ablation independently with:
+
+```bash
+./compare.sh --skip-build \
+  --build-dir build \
+  --data-dir test/datasets \
+  --algorithms afe,afe_no_af \
+  --thresholds 2 \
+  --result-dir result/ablation_anchor_frontier
+```
+
+After the run completes, validate its checkpoints and reproduce the paper's
+dataset-level aggregates with:
+
+```bash
+python3 -B tools/experiments/summarize_anchor_frontier_ablation.py \
+  --result-dir result/ablation_anchor_frontier
+```
+
+The script writes a Markdown report and TSV tables under the result
+directory's `analysis/` subdirectory. The paper's default output limit is
+`10^8`; the script reads `summary_at_100000000.tsv` for that result instead of
+using the terminal status of the longer `10^9` run. If the result came from an
+archive, pass `--archive path/to/results.tar.gz` to verify the analysis inputs
+against the archive before generating the report.
+
 Remove `--dry-run` to execute a plan. To resume an interrupted run, repeat the
 same arguments with `--resume`; a non-empty result directory is never
 overwritten implicitly. Runs created with the former algorithm keys cannot be
