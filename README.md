@@ -2,10 +2,7 @@
 
 This repository provides the implementation of **AFEC:
 Anchor-Frontier Enumeration with Cost-Split Compression for Subgraph
-Similarity Matching**. AFEC enumerates exact-label vertex mappings under a
-missing-query-edge budget while requiring the preserved query graph to remain
-connected. The repository also includes the paper's ablation variants and the
-baseline implementations used in its experimental evaluation.
+Similarity Matching**.
 
 ## Implemented algorithms
 
@@ -36,7 +33,7 @@ Their headers live in `configuration/afec_variants/`.
 | **AFEC-White** | `ssm_afec_white` / `afec_white` | On | On | Always white | Dynamic |
 | **AFEC-Black** | `ssm_afec_black` / `afec_black` | On | On | Always black | Dynamic |
 | **AFEC-Fixed** | `ssm_afec_fixed` / `afec_fixed` | On | On | Dynamic | TreeSpan-style static priorities |
-| **AFEC-Random** | `ssm_afec_random` / `afec_random` | On | On | Dynamic | Reproducible random order |
+| **AFEC-Random** | `ssm_afec_random` / `afec_random` | On | On | Dynamic | Random order |
 
 These configurations form the paper's four component studies:
 
